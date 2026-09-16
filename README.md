@@ -8,6 +8,7 @@
 - 插件启动时不启动或重启 ChatGPT/Codex；点击面板中的“保存并重启 ChatGPT”后，启用一个仅监听 `127.0.0.1` 的随机 Chromium 调试端口并应用配置。
 - 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应。
 - 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”。
+- 面板底部显示当前版本并提供“检查更新”：检测到新版本时，可直接打开对应 GitHub Release 下载页。
 - 注入只存在于当前 ChatGPT/Codex renderer 的内存中。插件停止或删除后，正常重启 ChatGPT/Codex，之前注入的模型会全部丢弃；再次使用时，在插件面板中点击“保存并重启 ChatGPT”即可重新应用。
 
 它不会修改 `ChatGPT.app`、`Codex.app`、`app.asar`、代码签名、API 密钥或历史会话。
@@ -42,6 +43,8 @@
 - “保存并重启 ChatGPT”：先保存配置，再重启 ChatGPT 并应用模型列表。
 
 配置保存在 `~/Library/Application Support/GPTSwitch/models.json`，属于本插件。首次使用时模型列表为空，请在面板中自行添加；升级插件不会覆盖已保存的配置。删除全部模型并点击“保存并重启 ChatGPT”后，自定义模型全部移除。
+
+从 0.1.27 起插件更名为 GPT Switch（原 CodexModelUnlocker）：首次启动会把旧配置目录 `~/Library/Application Support/CodexModelUnlocker/models.json` 自动复制到新目录，无需手动迁移。
 
 首次打开如果被 macOS 拦截：
 
@@ -79,7 +82,7 @@
 
 ```sh
 git config core.hooksPath .githooks   # 每个克隆执行一次
-git tag -a v0.1.26 -m "Release v0.1.26"
+git tag -a v0.1.28 -m "Release v0.1.28"
 git push origin main
 ```
 
