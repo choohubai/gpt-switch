@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { loadModels, handlePanelRequest, buildCatalog, writeCatalog } from "./model-config.mjs";
 
-const VERSION = "0.1.27";
+const VERSION = "0.1.28";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const HOME = os.homedir();

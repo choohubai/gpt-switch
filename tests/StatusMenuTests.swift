@@ -81,6 +81,17 @@ struct StatusMenuTests {
         assert((requests.last?["models"] as? [[String: Any]])?.isEmpty == true)
         controller.receive(["ok": true, "saved": true, "restarted": true, "models": []])
         assert(controller.windowShouldClose(controller.window!))
+        let layoutWindow = controller.window!
+        let layoutContent = layoutWindow.contentView!
+        for width in [640, 720, 900] {
+            layoutWindow.setContentSize(NSSize(width: width, height: 440))
+            layoutContent.layoutSubtreeIfNeeded()
+            controller.fitTableColumns()
+            let visible = controller.table.enclosingScrollView?.contentSize.width ?? 0
+            let lastColumn = controller.table.tableColumns.count - 1
+            assert(controller.table.rect(ofColumn: lastColumn).maxX <= visible + 0.5,
+                   "\(width) 宽度下最后一列超出可视区域")
+        }
         controller.receive(["ok": true, "models": submitted])
         if CommandLine.arguments.count > 2, let window = controller.window, let content = window.contentView {
             for width in [640, 900] {

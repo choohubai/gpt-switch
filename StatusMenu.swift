@@ -119,6 +119,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     var parentMonitor: Timer?
     var window: NSWindow?
     let table = NSTableView()
+    let idColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("id"))
+    let contextColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("context"))
+    let convertedColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("converted"))
     let feedback = NSTextField(wrappingLabelWithString: "")
     let emptyLabel = NSTextField(labelWithString: "暂无自定义模型")
     let emptyState = NSStackView()
@@ -189,7 +192,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     }
 
     func buildPanel() {
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 460),
+        let defaultContentWidth: CGFloat = 720
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: defaultContentWidth, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
         panel.title = "GPT Switch"
@@ -226,16 +230,12 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         header.spacing = 12
         header.distribution = .fill
 
-        let idColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("id"))
         idColumn.title = "模型 ID"
-        idColumn.width = 520
         idColumn.minWidth = 200
-        let contextColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("context"))
         contextColumn.title = "上下文窗口"
         contextColumn.width = 128
         contextColumn.minWidth = 120
         contextColumn.maxWidth = 160
-        let convertedColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("converted"))
         convertedColumn.title = "会话大小"
         convertedColumn.width = 96
         convertedColumn.minWidth = 88
@@ -349,6 +349,37 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
             emptyState.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -16),
         ])
         updateControls()
+        content.layoutSubtreeIfNeeded()
+        fitTableColumns()
+    }
+
+    /// Size the flexible model-id column from the real list width so all three columns
+    /// stay visible at any window size.
+    func fitTableColumns() {
+        guard let scroll = table.enclosingScrollView else { return }
+        let available = scroll.contentSize.width
+        guard available > 0, let lastIndex = table.tableColumns.indices.last else { return }
+        idColumn.width = max(idColumn.minWidth,
+                             available - contextColumn.width - convertedColumn.width)
+        // The table adds header padding around every column, so shrink the flexible
+        // column by the measured overflow until the last column fits the visible width.
+        for _ in 0..<4 {
+            let overflow = table.rect(ofColumn: lastIndex).maxX - available
+            if overflow <= 0.5 { break }
+            let next = idColumn.width - overflow
+            if next < idColumn.minWidth {
+                idColumn.width = idColumn.minWidth
+                break
+            }
+            idColumn.width = next
+        }
+        var frame = table.frame
+        frame.size.width = max(available, table.rect(ofColumn: lastIndex).maxX)
+        table.frame = frame
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        fitTableColumns()
     }
 
     func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector) {
