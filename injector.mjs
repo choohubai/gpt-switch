@@ -7,17 +7,19 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { loadModels, handlePanelRequest, buildCatalog, writeCatalog } from "./model-config.mjs";
 
-const VERSION = "0.1.26";
-const APP_TITLE = "ChatGPT自定义模型";
+const VERSION = "0.1.27";
+const REPOSITORY = "choohubai/gpt-switch";
+const APP_TITLE = "GPT Switch";
 const HOME = os.homedir();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SUPPORT_DIR = path.join(HOME, "Library", "Application Support", "CodexModelUnlocker");
+const SUPPORT_DIR = path.join(HOME, "Library", "Application Support", "GPTSwitch");
+const LEGACY_SUPPORT_DIR = path.join(HOME, "Library", "Application Support", "CodexModelUnlocker");
 const STATE_PATH = path.join(SUPPORT_DIR, "state.json");
 const LOCK_PATH = path.join(SUPPORT_DIR, "launcher.lock");
-const LOG_PATH = path.join(HOME, "Library", "Logs", "CodexModelUnlocker.log");
+const LOG_PATH = path.join(HOME, "Library", "Logs", "GPTSwitch.log");
 const MODEL_CONFIG = path.join(SUPPORT_DIR, "models.json");
 const DEFAULT_MODELS = path.join(SCRIPT_DIR, "models.json");
-const STATUS_MENU_PATH = path.join(SCRIPT_DIR, "ChatGPTCustomModelsStatusMenu");
+const STATUS_MENU_PATH = path.join(SCRIPT_DIR, "GPTSwitchStatusMenu");
 const STATUS_ICON_PATH = path.join(SCRIPT_DIR, "MenuBarIcon.png");
 const BUNDLE_ID = "com.openai.codex";
 let statusMenuProcess = null;
@@ -50,6 +52,22 @@ const runAppleScript = (script) => spawnSync(
   ["-e", script],
   { encoding: "utf8" },
 );
+
+/// Carry the model list over from the previous CodexModelUnlocker config directory.
+const migrateLegacyConfig = () => {
+  try {
+    if (fs.existsSync(MODEL_CONFIG)) return;
+    const legacy = path.join(LEGACY_SUPPORT_DIR, "models.json");
+    if (!fs.existsSync(legacy)) return;
+    fs.mkdirSync(SUPPORT_DIR, { recursive: true, mode: 0o700 });
+    fs.copyFileSync(legacy, MODEL_CONFIG);
+    log("config_migrated", { from: legacy, to: MODEL_CONFIG });
+  } catch (error) {
+    log("config_migration_failed", String(error?.message || error));
+  }
+};
+
+migrateLegacyConfig();
 
 const quoteAppleScript = (value) => String(value)
   .replaceAll("\\", "\\\\")
@@ -235,10 +253,51 @@ const buildInjectionSource = (models) => {
   return template.replace(marker, `const BOOT_MODELS = ${JSON.stringify(models)};`);
 };
 
-const fetchJson = async (url, timeoutMs = 1500) => {
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+const fetchJson = async (url, timeoutMs = 1500, headers = null) => {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    ...(headers ? { headers } : {}),
+  });
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
   return response.json();
+};
+
+const parseVersion = (value) => String(value || "")
+  .replace(/^v/, "")
+  .split(".")
+  .map((part) => Number.parseInt(part, 10) || 0);
+
+const compareVersions = (left, right) => {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] || 0) - (b[index] || 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+};
+
+const checkForUpdate = async () => {
+  try {
+    const release = await fetchJson(
+      `https://api.github.com/repos/${REPOSITORY}/releases/latest`,
+      5000,
+      { "User-Agent": "gpt-switch", Accept: "application/vnd.github+json" },
+    );
+    const latest = String(release?.tag_name || "").replace(/^v/, "");
+    if (!latest) throw new Error("发布信息缺少版本号");
+    const newer = compareVersions(latest, VERSION) > 0;
+    log("update_checked", { current: VERSION, latest, newer });
+    return {
+      ok: true,
+      version: VERSION,
+      latest,
+      url: String(release?.html_url || ""),
+      newer,
+    };
+  } catch (error) {
+    return { ok: false, version: VERSION, error: `检查更新失败：${String(error?.message || error)}` };
+  }
 };
 
 const fetchTargets = async (port) => {
@@ -524,16 +583,18 @@ const main = async () => {
   while (true) {
     const pending = requests.shift();
     if (pending) {
-      const result = await handlePanelRequest(pending.request, {
-        configPath: MODEL_CONFIG, defaultPath: DEFAULT_MODELS, restart,
-        applyCatalog: async (nextModels) => {
-          if (!appPath) throw new Error("未找到 ChatGPT.app 或 Codex.app");
-          const dest = resolveCatalogPath();
-          writeCatalog(dest, buildCatalog(readBundledCatalog(appPath), nextModels));
-          ensureCatalogPointer(dest);
-          log("catalog_written", { path: dest, models: nextModels.map((model) => model.id) });
-        },
-      });
+      const result = pending.request.action === "check-update"
+        ? await checkForUpdate()
+        : { ...await handlePanelRequest(pending.request, {
+            configPath: MODEL_CONFIG, defaultPath: DEFAULT_MODELS, restart,
+            applyCatalog: async (nextModels) => {
+              if (!appPath) throw new Error("未找到 ChatGPT.app 或 Codex.app");
+              const dest = resolveCatalogPath();
+              writeCatalog(dest, buildCatalog(readBundledCatalog(appPath), nextModels));
+              ensureCatalogPointer(dest);
+              log("catalog_written", { path: dest, models: nextModels.map((model) => model.id) });
+            },
+          }), version: VERSION };
       if (!result.ok) log("panel_action_failed", result.error);
       pending.reply(result);
     }

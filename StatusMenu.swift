@@ -122,6 +122,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     let feedback = NSTextField(wrappingLabelWithString: "")
     let emptyLabel = NSTextField(labelWithString: "暂无自定义模型")
     let emptyState = NSStackView()
+    let versionLabel = NSTextField(labelWithString: "")
+    let updateButton = NSButton(title: "检查更新", target: nil, action: nil)
     let addButton = NSButton()
     let removeButton = NSButton()
     let saveButton = CodexPillButton(title: "保存", primary: false)
@@ -130,6 +132,10 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     var savedModels: [ModelRow] = []
     var loaded = false
     var busy = false
+    var currentVersion = ""
+    var latestVersion: String?
+    var releaseURL: String?
+    var checkingUpdate = false
     var sendRequest: ([String: Any]) -> Void = { message in
         guard var data = try? JSONSerialization.data(withJSONObject: message) else { return }
         data.append(0x0a)
@@ -148,8 +154,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         icon?.isTemplate = true
         statusItem?.button?.image = icon
         statusItem?.button?.imageScaling = .scaleProportionallyDown
-        statusItem?.button?.toolTip = "ChatGPT自定义模型"
-        statusItem?.button?.setAccessibilityLabel("ChatGPT自定义模型")
+        statusItem?.button?.toolTip = "GPT Switch"
+        statusItem?.button?.setAccessibilityLabel("GPT Switch")
         let menu = NSMenu()
         let open = NSMenuItem(title: "打开面板", action: #selector(openPanel), keyEquivalent: "")
         open.target = self
@@ -186,7 +192,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
-        panel.title = "ChatGPT自定义模型"
+        panel.title = "GPT Switch"
         panel.minSize = NSSize(width: 640, height: 420)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
@@ -280,6 +286,21 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         let hint = NSTextField(labelWithString: "窗口单位 k：1000k = 1M，保存后需重启 ChatGPT/Codex 才生效")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = CodexTheme.tertiaryText
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = CodexTheme.tertiaryText
+        updateButton.isBordered = false
+        updateButton.target = self
+        updateButton.action = #selector(checkForUpdates)
+        updateButton.setContentHuggingPriority(.required, for: .horizontal)
+        updateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        setUpdateButtonTitle("检查更新", enabled: true)
+        let metaSpacer = NSView()
+        metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        metaSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let meta = NSStackView(views: [hint, metaSpacer, versionLabel, updateButton])
+        meta.orientation = .horizontal
+        meta.alignment = .centerY
+        meta.spacing = 8
 
         saveButton.target = self
         saveButton.action = #selector(save)
@@ -302,7 +323,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         footer.spacing = 12
         footer.distribution = .fill
 
-        for view in [header, card, hint, footer, emptyState] {
+        for view in [header, card, meta, footer, emptyState] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -314,10 +335,10 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
             card.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
             card.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             card.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            card.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -10),
-            hint.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            hint.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
-            hint.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
+            card.bottomAnchor.constraint(equalTo: meta.topAnchor, constant: -10),
+            meta.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            meta.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            meta.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
@@ -441,6 +462,14 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     }
 
     func receive(_ response: [String: Any]) {
+        if let version = response["version"] as? String, !version.isEmpty, version != currentVersion {
+            currentVersion = version
+            refreshVersionLabel()
+        }
+        if checkingUpdate {
+            finishUpdateCheck(response)
+            return
+        }
         busy = false
         let ok = response["ok"] as? Bool == true
         if ok || response["saved"] as? Bool == true {
@@ -468,6 +497,67 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     func setFeedback(_ text: String, error: Bool = false) {
         feedback.stringValue = text
         feedback.textColor = error ? .systemRed : CodexTheme.secondaryText
+    }
+
+    func setUpdateButtonTitle(_ title: String, enabled: Bool) {
+        updateButton.isEnabled = enabled
+        updateButton.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: enabled ? CodexTheme.secondaryText : CodexTheme.tertiaryText,
+        ])
+        updateButton.setAccessibilityLabel(title)
+    }
+
+    func refreshVersionLabel(_ suffix: String = "") {
+        guard !currentVersion.isEmpty else { return }
+        versionLabel.stringValue = suffix.isEmpty
+            ? "v\(currentVersion)"
+            : "v\(currentVersion) · \(suffix)"
+    }
+
+    @objc func checkForUpdates() {
+        if latestVersion != nil, let url = releaseURL.flatMap(URL.init(string:)) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        guard !checkingUpdate else { return }
+        checkingUpdate = true
+        setUpdateButtonTitle("检查中…", enabled: false)
+        sendRequest(["action": "check-update"])
+    }
+
+    func finishUpdateCheck(_ response: [String: Any]) {
+        checkingUpdate = false
+        guard response["ok"] as? Bool == true, let latest = response["latest"] as? String else {
+            refreshVersionLabel("检查更新失败")
+            setUpdateButtonTitle("重试", enabled: true)
+            return
+        }
+        if isVersion(latest, newerThan: currentVersion) {
+            latestVersion = latest
+            releaseURL = response["url"] as? String
+            refreshVersionLabel("有新版本 v\(latest)")
+            setUpdateButtonTitle("去下载", enabled: true)
+        } else {
+            latestVersion = nil
+            releaseURL = nil
+            refreshVersionLabel("已是最新")
+            setUpdateButtonTitle("检查更新", enabled: true)
+        }
+    }
+
+    func isVersion(_ candidate: String, newerThan base: String) -> Bool {
+        func parts(_ value: String) -> [Int] {
+            value.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let left = parts(candidate)
+        let right = parts(base)
+        for index in 0..<max(left.count, right.count) {
+            let leftPart = index < left.count ? left[index] : 0
+            let rightPart = index < right.count ? right[index] : 0
+            if leftPart != rightPart { return leftPart > rightPart }
+        }
+        return false
     }
 
     func updateControls() {

@@ -18,7 +18,7 @@ fi
 "$NODE" --check "$SOURCE_DIR/injection.js"
 "$NODE" --test "$SOURCE_DIR"/tests/*.test.mjs
 /bin/zsh "$SOURCE_DIR/swiftc.sh" -parse-as-library -target "$(uname -m)-apple-macosx13.0" -typecheck "$SOURCE_DIR/StatusMenu.swift"
-/bin/zsh -n "$SOURCE_DIR/CodexModelUnlocker"
+/bin/zsh -n "$SOURCE_DIR/GPTSwitch"
 /bin/zsh -n "$SOURCE_DIR/build.sh"
 /bin/zsh -n "$SOURCE_DIR/swiftc.sh"
 /bin/bash -n "$SOURCE_DIR/local-release.sh"

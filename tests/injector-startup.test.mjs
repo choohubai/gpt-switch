@@ -14,7 +14,7 @@ const preload = `
   import { syncBuiltinESMExports } from "node:module";
   os.homedir = () => process.env.CUSTOM_MODELS_TEST_DIR;
   const existsSync = fs.existsSync;
-  fs.existsSync = (value) => /ChatGPTCustomModelsStatusMenu$|MenuBarIcon\.png$/.test(String(value))
+  fs.existsSync = (value) => /GPTSwitchStatusMenu$|MenuBarIcon\.png$/.test(String(value))
     ? false : existsSync(value);
   childProcess.spawnSync = (file, args) => {
     console.log(JSON.stringify({ file, args }));
@@ -27,7 +27,7 @@ const preload = `
 test("startup does not launch, restart, or activate ChatGPT", (context) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-startup-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const support = path.join(directory, "Library", "Application Support", "CodexModelUnlocker");
+  const support = path.join(directory, "Library", "Application Support", "GPTSwitch");
   fs.mkdirSync(support, { recursive: true });
   const config = path.join(support, "models.json");
   const lock = path.join(support, "launcher.lock");

@@ -3,23 +3,23 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>ChatGPT自定义模型</string>
+  <string>GPT Switch</string>
   <key>CFBundleExecutable</key>
-  <string>CodexModelUnlocker</string>
+  <string>GPTSwitch</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
-  <string>local.codex.model-unlocker</string>
+  <string>local.gpt-switch</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>ChatGPT自定义模型</string>
+  <string>GPT Switch</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-	<string>0.1.26</string>
+	<string>0.1.27</string>
   <key>CFBundleVersion</key>
-	<string>26</string>
+	<string>27</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>

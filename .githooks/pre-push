@@ -54,12 +54,12 @@ for tag in $(git -C "$root" tag --points-at HEAD); do
   fi
   version="${tag#v}"
   printf '检测到未发布的 %s，正在本地打包并上传安装包...\n' "$tag" >&2
-  if ! CODEX_MODEL_UNLOCKER_RELEASE_SKIP_SYNC=1 "$release" prepare "$version" >&2; then
+  if ! GPT_SWITCH_RELEASE_SKIP_SYNC=1 "$release" prepare "$version" >&2; then
     printf '错误：%s 打包失败，已取消推送。\n' "$tag" >&2
     status=1
     continue
   fi
-  if ! CODEX_MODEL_UNLOCKER_RELEASE_SKIP_SYNC=1 "$release" publish "$version" >&2; then
+  if ! GPT_SWITCH_RELEASE_SKIP_SYNC=1 "$release" publish "$version" >&2; then
     printf '错误：%s 上传失败，已取消推送；修复后重新 git push origin main。\n' "$tag" >&2
     status=1
   fi

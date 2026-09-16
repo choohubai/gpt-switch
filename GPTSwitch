@@ -14,7 +14,7 @@ elif [[ -x "$HOME/.nvm/versions/node/v24.14.0/bin/node" ]]; then
 elif command -v node >/dev/null 2>&1; then
   NODE="$(command -v node)"
 else
-  /usr/bin/osascript -e 'display alert "ChatGPT自定义模型" message "未找到 Node.js。请重新安装或更新 Codex 桌面端。" as critical'
+  /usr/bin/osascript -e 'display alert "GPT Switch" message "未找到 Node.js。请重新安装或更新 Codex 桌面端。" as critical'
   exit 1
 fi
 

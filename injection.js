@@ -2,8 +2,8 @@
   "use strict";
 
   const BOOT_MODELS = [];
-  const VERSION = "0.1.26";
-  const GLOBAL_KEY = "__CODEX_MODEL_UNLOCKER__";
+  const VERSION = "0.1.27";
+  const GLOBAL_KEY = "__GPT_SWITCH__";
   const STATSIG_MODEL_CONFIG = "107580212";
   const modelListRequestIds = new Set();
   const appServerModulePromises = new Map();
@@ -359,20 +359,20 @@
 
   const patchAppServerClient = (client) => {
     if (!client || typeof client.sendRequest !== "function") return false;
-    if (client.__codexModelUnlockerPatched === VERSION) return true;
-    const previousOriginal = client.__codexModelUnlockerOriginal;
-    if (previousOriginal && client.__codexModelUnlockerPatched !== VERSION) {
+    if (client.__gptSwitchPatched === VERSION) return true;
+    const previousOriginal = client.__gptSwitchOriginal;
+    if (previousOriginal && client.__gptSwitchPatched !== VERSION) {
       try { client.sendRequest = previousOriginal; } catch {}
     }
     const original = previousOriginal || client.sendRequest.bind(client);
-    client.__codexModelUnlockerOriginal = original;
+    client.__gptSwitchOriginal = original;
     const wrapper = async (method, params, options) => {
       const result = await original(method, params, options);
       return patchAppServerResult(appServerMethod(String(method || ""), params), result);
     };
     client.sendRequest = wrapper;
-    client.__codexModelUnlockerPatched = VERSION;
-    client.__codexModelUnlockerWrapper = wrapper;
+    client.__gptSwitchPatched = VERSION;
+    client.__gptSwitchWrapper = wrapper;
     state.appServerPatches.push({ client, original, wrapper });
     return true;
   };
@@ -393,7 +393,7 @@
   };
 
   const installModelResponsePatch = () => {
-    const previous = window.__codexModelUnlockerResponsePatch;
+    const previous = window.__gptSwitchResponsePatch;
     if (previous?.version === VERSION) return;
     previous?.dispose?.();
     const originalJson = Response.prototype.json;
@@ -413,7 +413,7 @@
       },
     };
     Response.prototype.json = wrapper;
-    window.__codexModelUnlockerResponsePatch = record;
+    window.__gptSwitchResponsePatch = record;
     state.responsePatch = record;
   };
 
@@ -431,7 +431,7 @@
   };
 
   const installModelListMessagePatch = () => {
-    const previous = window.__codexModelUnlockerMessagePatch;
+    const previous = window.__gptSwitchMessagePatch;
     if (previous?.version === VERSION) return;
     previous?.dispose?.();
     const originalDispatchEvent = window.dispatchEvent;
@@ -464,7 +464,7 @@
         if (window.dispatchEvent === dispatchWrapper) window.dispatchEvent = originalDispatchEvent;
       },
     };
-    window.__codexModelUnlockerMessagePatch = record;
+    window.__gptSwitchMessagePatch = record;
     state.dispatchPatch = record;
   };
 
@@ -487,8 +487,8 @@
     let patched = false;
     for (const client of statsigClients()) {
       if (typeof client.getDynamicConfig !== "function") continue;
-      if (client.__codexModelUnlockerPatched !== VERSION) {
-        const previousOriginal = client.__codexModelUnlockerOriginal;
+      if (client.__gptSwitchPatched !== VERSION) {
+        const previousOriginal = client.__gptSwitchOriginal;
         if (previousOriginal) {
           try { client.getDynamicConfig = previousOriginal; } catch {}
         }
@@ -500,9 +500,9 @@
             : config;
         };
         client.getDynamicConfig = wrapper;
-        client.__codexModelUnlockerOriginal = original;
-        client.__codexModelUnlockerWrapper = wrapper;
-        client.__codexModelUnlockerPatched = VERSION;
+        client.__gptSwitchOriginal = original;
+        client.__gptSwitchWrapper = wrapper;
+        client.__gptSwitchPatched = VERSION;
         state.statsigPatches.push({ client, original, wrapper });
         patched = true;
       }
@@ -563,25 +563,25 @@
     if (responsePatch && Response.prototype.json === responsePatch.wrapper) {
       Response.prototype.json = responsePatch.original;
     }
-    if (window.__codexModelUnlockerResponsePatch === responsePatch) {
-      delete window.__codexModelUnlockerResponsePatch;
+    if (window.__gptSwitchResponsePatch === responsePatch) {
+      delete window.__gptSwitchResponsePatch;
     }
     const dispatchPatch = state.dispatchPatch;
     dispatchPatch?.dispose?.();
-    if (window.__codexModelUnlockerMessagePatch === dispatchPatch) {
-      delete window.__codexModelUnlockerMessagePatch;
+    if (window.__gptSwitchMessagePatch === dispatchPatch) {
+      delete window.__gptSwitchMessagePatch;
     }
     for (const { client, original, wrapper } of state.statsigPatches) {
       if (client.getDynamicConfig === wrapper) client.getDynamicConfig = original;
-      if (client.__codexModelUnlockerWrapper === wrapper) delete client.__codexModelUnlockerWrapper;
-      if (client.__codexModelUnlockerOriginal === original) delete client.__codexModelUnlockerOriginal;
-      if (client.__codexModelUnlockerPatched === VERSION) delete client.__codexModelUnlockerPatched;
+      if (client.__gptSwitchWrapper === wrapper) delete client.__gptSwitchWrapper;
+      if (client.__gptSwitchOriginal === original) delete client.__gptSwitchOriginal;
+      if (client.__gptSwitchPatched === VERSION) delete client.__gptSwitchPatched;
     }
     for (const { client, original, wrapper } of state.appServerPatches) {
       if (client.sendRequest === wrapper) client.sendRequest = original;
-      if (client.__codexModelUnlockerWrapper === wrapper) delete client.__codexModelUnlockerWrapper;
-      if (client.__codexModelUnlockerOriginal === original) delete client.__codexModelUnlockerOriginal;
-      if (client.__codexModelUnlockerPatched === VERSION) delete client.__codexModelUnlockerPatched;
+      if (client.__gptSwitchWrapper === wrapper) delete client.__gptSwitchWrapper;
+      if (client.__gptSwitchOriginal === original) delete client.__gptSwitchOriginal;
+      if (client.__gptSwitchPatched === VERSION) delete client.__gptSwitchPatched;
     }
     state.statsigPatches.length = 0;
     state.appServerPatches.length = 0;

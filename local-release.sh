@@ -5,10 +5,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFO_PLIST="${SCRIPT_DIR}/Info.plist"
 BUILD_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/dist}"
-ARTIFACT_DIR="${CODEX_MODEL_UNLOCKER_RELEASE_ARTIFACT_DIR:-${HOME}/.cache/codex-model-unlocker/releases}"
-KEEP_RELEASES="${CODEX_MODEL_UNLOCKER_KEEP_RELEASES:-4}"
-GITHUB_REPOSITORY="${CODEX_MODEL_UNLOCKER_GITHUB_REPOSITORY:-}"
-APP_NAME="ChatGPT自定义模型.app"
+ARTIFACT_DIR="${GPT_SWITCH_RELEASE_ARTIFACT_DIR:-${HOME}/.cache/gpt-switch/releases}"
+KEEP_RELEASES="${GPT_SWITCH_KEEP_RELEASES:-4}"
+GITHUB_REPOSITORY="${GPT_SWITCH_GITHUB_REPOSITORY:-}"
+APP_NAME="GPT Switch.app"
 
 if [[ "${BUILD_DIR}" != /* ]]; then BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}"; fi
 if [[ "${ARTIFACT_DIR}" != /* ]]; then ARTIFACT_DIR="${SCRIPT_DIR}/${ARTIFACT_DIR}"; fi
@@ -25,7 +25,7 @@ Examples:
   ./local-release.sh publish 0.1.18
 
 prepare checks the source, builds the macOS app, and creates a DMG, metadata,
-SHA256 file, and release notes under ~/.cache/codex-model-unlocker/releases.
+SHA256 file, and release notes under ~/.cache/gpt-switch/releases.
 publish verifies that prepared artifact belongs to the current commit, creates
 and pushes v<version>, then creates and publishes a GitHub Release.
 EOF
@@ -71,7 +71,7 @@ ensure_release_source() {
   [[ -z "$(git -C "$SCRIPT_DIR" status --porcelain)" ]] || \
     die "工作树不干净，请先提交当前改动"
 
-  if [[ -z "${CODEX_MODEL_UNLOCKER_RELEASE_SKIP_SYNC:-}" ]]; then
+  if [[ -z "${GPT_SWITCH_RELEASE_SKIP_SYNC:-}" ]]; then
     git -C "$SCRIPT_DIR" fetch origin main --quiet
     [[ "$(git -C "$SCRIPT_DIR" rev-parse HEAD)" == "$(git -C "$SCRIPT_DIR" rev-parse origin/main)" ]] || \
       die "本地 main 必须与 origin/main 完全一致"
@@ -101,7 +101,7 @@ run_release_gate() {
 }
 
 artifact_name() {
-  printf 'ChatGPT-Custom-Models-v%s-macOS.dmg\n' "$1"
+  printf 'GPT-Switch-v%s-macOS.dmg\n' "$1"
 }
 
 artifact_path() {
@@ -117,7 +117,7 @@ checksum_path() {
 }
 
 release_notes_path() {
-  printf '%s/ChatGPT-Custom-Models-v%s-macOS-release-notes.md\n' "$ARTIFACT_DIR" "$1"
+  printf '%s/GPT-Switch-v%s-macOS-release-notes.md\n' "$ARTIFACT_DIR" "$1"
 }
 
 record_local_artifact() {
@@ -136,7 +136,7 @@ record_local_artifact() {
   fi
   mv "$temporary" "$history"
 
-  for candidate in "$ARTIFACT_DIR"/ChatGPT-Custom-Models-v*-macOS.dmg; do
+  for candidate in "$ARTIFACT_DIR"/GPT-Switch-v*-macOS.dmg; do
     [[ -f "$candidate" ]] || continue
     item="$(basename "$candidate")"
     if ! grep -Fqx "$item" "$history"; then
@@ -154,7 +154,7 @@ generate_release_notes() {
   commit="$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD)"
 
   {
-    printf '# ChatGPT自定义模型 %s\n\n' "$version"
+    printf '# GPT Switch %s\n\n' "$version"
     printf '> 构建提交：`%s`。\n\n' "$commit"
     printf '## 更新内容\n\n'
     printf '%s\n' '- 支持从 `models.json` 读取自定义模型名称和模型 ID。'
@@ -191,13 +191,13 @@ prepare_release() {
   commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
   build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  dmg_source="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-custom-models-dmg.XXXXXX")"
+  dmg_source="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-dmg.XXXXXX")"
   trap 'rm -rf "$dmg_source"; rm -f "$artifact_tmp" "$metadata_tmp" "$checksum_tmp" "$notes_tmp"' EXIT
   info "打包 macOS 应用"
   /usr/bin/ditto "$APP_PATH" "$dmg_source/$APP_NAME"
   /bin/ln -s /Applications "$dmg_source/Applications"
   /usr/bin/hdiutil create -quiet -ov -format UDZO \
-    -volname "ChatGPT自定义模型" -srcfolder "$dmg_source" "$artifact_tmp"
+    -volname "GPT Switch" -srcfolder "$dmg_source" "$artifact_tmp"
   artifact_sha256="$(shasum -a 256 "$artifact_tmp" | awk '{print $1}')"
   {
     printf 'version=%s\n' "$version"
@@ -232,7 +232,7 @@ resolve_github_repository() {
       's#^git@github\.com:##; s#^https://github\.com/##; s#^ssh://git@github\.com/##; s#\.git$##')"
   fi
   [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
-    die "无法从 origin 解析 GitHub 仓库，请设置 CODEX_MODEL_UNLOCKER_GITHUB_REPOSITORY"
+    die "无法从 origin 解析 GitHub 仓库，请设置 GPT_SWITCH_GITHUB_REPOSITORY"
   printf '%s\n' "$repository"
 }
 
@@ -307,14 +307,14 @@ publish_release() {
     is_draft="$(gh release view "$tag" --repo "$repository" --json isDraft --jq '.isDraft')"
     [[ "$is_draft" == "true" ]] || die "$tag 的 GitHub Release 已存在且不是 Draft，请使用新的版本号"
     info "更新 GitHub Draft Release $tag"
-    gh release edit "$tag" --repo "$repository" --title "ChatGPT自定义模型 $version" \
+    gh release edit "$tag" --repo "$repository" --title "GPT Switch $version" \
       --notes-file "$notes" --draft=true >/dev/null
     gh release upload "$tag" --repo "$repository" --clobber \
       "$artifact" "$metadata" "$checksum"
   else
     info "创建 GitHub Draft Release $tag"
     gh release create "$tag" --repo "$repository" --verify-tag \
-      --title "ChatGPT自定义模型 $version" --notes-file "$notes" --draft \
+      --title "GPT Switch $version" --notes-file "$notes" --draft \
       "$artifact" "$metadata" "$checksum" >/dev/null
   fi
 
@@ -334,7 +334,7 @@ main() {
   fi
   [[ $# -eq 2 ]] || { usage; exit 2; }
   validate_version "$version"
-  [[ "$KEEP_RELEASES" =~ ^[1-9][0-9]*$ ]] || die "CODEX_MODEL_UNLOCKER_KEEP_RELEASES 必须是正整数"
+  [[ "$KEEP_RELEASES" =~ ^[1-9][0-9]*$ ]] || die "GPT_SWITCH_KEEP_RELEASES 必须是正整数"
 
   case "$action" in
     prepare) prepare_release "$version" ;;

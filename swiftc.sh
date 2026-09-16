@@ -11,7 +11,7 @@ if [[ -f "$SWIFT_HEADERS/module.modulemap" && -f "$SWIFT_HEADERS/bridging.module
   SWIFT_SHIMS="$SDK_PATH/usr/lib/swift/shims/module.modulemap"
   [[ -f "$SWIFT_SHIMS" ]] || exit 1
 
-  OVERLAY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/custom-models-swift.XXXXXX")"
+  OVERLAY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-swift.XXXXXX")"
   trap 'rm -rf "$OVERLAY_DIR"' EXIT
   OVERLAY="$OVERLAY_DIR/overlay.json"
   print -r -- "{\"version\":0,\"case-sensitive\":false,\"roots\":[{\"name\":\"$SWIFT_HEADERS/module.modulemap\",\"type\":\"file\",\"external-contents\":\"/dev/null\"}]}" > "$OVERLAY"

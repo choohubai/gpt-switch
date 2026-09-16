@@ -3,9 +3,9 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SOURCE_DIR/dist}"
-APP="$OUTPUT_DIR/ChatGPT自定义模型.app"
+APP="$OUTPUT_DIR/GPT Switch.app"
 CONTENTS="$APP/Contents"
-ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-model-unlocker.XXXXXX")"
+ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch.XXXXXX")"
 ICONSET="$ICON_WORK_DIR/AppIcon.iconset"
 MASTER_ICON="$ICON_WORK_DIR/AppIcon-1024.png"
 
@@ -27,7 +27,7 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET"
 
 cp "$SOURCE_DIR/Info.plist" "$CONTENTS/Info.plist"
-cp "$SOURCE_DIR/CodexModelUnlocker" "$CONTENTS/MacOS/CodexModelUnlocker"
+cp "$SOURCE_DIR/GPTSwitch" "$CONTENTS/MacOS/GPTSwitch"
 cp "$SOURCE_DIR/injector.mjs" "$CONTENTS/Resources/injector.mjs"
 cp "$SOURCE_DIR/model-config.mjs" "$CONTENTS/Resources/model-config.mjs"
 cp "$SOURCE_DIR/injection.js" "$CONTENTS/Resources/injection.js"
@@ -35,9 +35,9 @@ cp "$SOURCE_DIR/models.json" "$CONTENTS/Resources/models.json"
 cp "$SOURCE_DIR/MenuBarIcon.png" "$CONTENTS/Resources/MenuBarIcon.png"
 /bin/zsh "$SOURCE_DIR/swiftc.sh" -parse-as-library -O -target "$(uname -m)-apple-macosx13.0" \
   "$SOURCE_DIR/StatusMenu.swift" \
-  -o "$CONTENTS/Resources/ChatGPTCustomModelsStatusMenu"
-chmod 755 "$CONTENTS/MacOS/CodexModelUnlocker"
-chmod 755 "$CONTENTS/Resources/ChatGPTCustomModelsStatusMenu"
+  -o "$CONTENTS/Resources/GPTSwitchStatusMenu"
+chmod 755 "$CONTENTS/MacOS/GPTSwitch"
+chmod 755 "$CONTENTS/Resources/GPTSwitchStatusMenu"
 
 cp "$SOURCE_DIR/AppIcon.png" "$MASTER_ICON"
 

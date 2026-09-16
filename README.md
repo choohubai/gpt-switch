@@ -1,4 +1,4 @@
-# ChatGPT自定义模型
+# GPT Switch
 
 独立的 macOS 启动器，可在模型配置面板中添加模型 ID 和窗口大小（单位 k），通过 CDP 注入 ChatGPT/Codex 的 renderer。用户选中后，客户端按该模型 ID 发起请求。
 
@@ -27,10 +27,10 @@
 
 ## 使用方法
 
-请从 [GitHub Releases](https://github.com/choohubai/codex-model-unlocker/releases) 下载最新版本的 DMG，双击打开后将 `ChatGPT自定义模型.app` 拖入“应用程序”文件夹。
+请从 [GitHub Releases](https://github.com/choohubai/gpt-switch/releases) 下载最新版本的 DMG，双击打开后将 `GPT Switch.app` 拖入“应用程序”文件夹。
 
 1. 确认 Codex 桌面端已经安装在 `/Applications/ChatGPT.app` 或 `/Applications/Codex.app`。
-2. 双击 `ChatGPT自定义模型.app`，点击菜单栏图标，选择“打开面板”。
+2. 双击 `GPT Switch.app`，点击菜单栏图标，选择“打开面板”。
 3. 添加模型 ID 和窗口（k），点击“保存并重启 ChatGPT”，然后新建任务并打开模型选择器。
 4. 需要停止插件时，点击 macOS 菜单栏中的插件图标，选择“退出”。
 
@@ -41,25 +41,25 @@
 - “保存”：只保存配置，点击“保存并重启 ChatGPT”后生效。
 - “保存并重启 ChatGPT”：先保存配置，再重启 ChatGPT 并应用模型列表。
 
-配置保存在 `~/Library/Application Support/CodexModelUnlocker/models.json`，属于本插件。首次使用时模型列表为空，请在面板中自行添加；升级插件不会覆盖已保存的配置。删除全部模型并点击“保存并重启 ChatGPT”后，自定义模型全部移除。
+配置保存在 `~/Library/Application Support/GPTSwitch/models.json`，属于本插件。首次使用时模型列表为空，请在面板中自行添加；升级插件不会覆盖已保存的配置。删除全部模型并点击“保存并重启 ChatGPT”后，自定义模型全部移除。
 
 首次打开如果被 macOS 拦截：
 
 1. 打开“系统设置”。
 2. 进入“隐私与安全性”。
 3. 往下滚动到“安全性”区域。
-4. 找到“ChatGPT自定义模型.app 已被阻止”，点击“仍要打开”。
+4. 找到“GPT Switch.app 已被阻止”，点击“仍要打开”。
 5. 输入 macOS 登录密码确认。
 
 ### 卸载
 
-退出插件并删除 `ChatGPT自定义模型.app` 后，完全退出并正常重新打开 ChatGPT/Codex，此前注入的模型会全部消失。仅刷新页面或只关闭窗口不等于完全重启应用。
+退出插件并删除 `GPT Switch.app` 后，完全退出并正常重新打开 ChatGPT/Codex，此前注入的模型会全部消失。仅刷新页面或只关闭窗口不等于完全重启应用。
 
 ## 源码结构
 
 | 文件 | 作用 |
 | --- | --- |
-| `CodexModelUnlocker` | `.app` 的启动入口，选择 Codex 内置 Node.js |
+| `GPTSwitch` | `.app` 的启动入口，选择 Codex 内置 Node.js |
 | `injector.mjs` | 读取模型、启动 Codex、连接本机 CDP 并维护注入状态 |
 | `injection.js` | 在模型菜单出现时补充白名单与自定义模型选项 |
 | `StatusMenu.swift` | Swift 原生菜单栏与模型配置面板 |
