@@ -27,7 +27,7 @@
 
 ## 使用方法
 
-请从 [GitHub Releases](https://github.com/felix5166/codex-model-unlocker/releases) 下载最新版本的 DMG，双击打开后将 `ChatGPT自定义模型.app` 拖入“应用程序”文件夹。
+请从 [GitHub Releases](https://github.com/choohubai/codex-model-unlocker/releases) 下载最新版本的 DMG，双击打开后将 `ChatGPT自定义模型.app` 拖入“应用程序”文件夹。
 
 1. 确认 Codex 桌面端已经安装在 `/Applications/ChatGPT.app` 或 `/Applications/Codex.app`。
 2. 双击 `ChatGPT自定义模型.app`，点击菜单栏图标，选择“打开面板”。

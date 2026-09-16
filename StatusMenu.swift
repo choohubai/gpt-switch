@@ -1,5 +1,91 @@
 import AppKit
 
+/// Colors and type scale sampled from the Codex desktop UI. The light values are measured
+/// from a live window; the dark values keep the same surface hierarchy.
+enum CodexTheme {
+    static let surface = dynamic(light: 0xFDFDFD, dark: 0x1B1B1D)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x232326)
+    static let subtle = dynamic(light: 0xEDEDEE, dark: 0x333336)
+    static let border = dynamic(light: 0xEDEDEE, dark: 0x3A3A3D)
+    static let text = dynamic(light: 0x212327, dark: 0xF2F2F4)
+    static let secondaryText = dynamic(light: 0x656667, dark: 0xA6A6AA)
+    static let tertiaryText = dynamic(light: 0x88898A, dark: 0x8E8E93)
+    static let primaryButton = dynamic(light: 0x212327, dark: 0xF2F2F4)
+    static let primaryButtonText = dynamic(light: 0xFFFFFF, dark: 0x1B1B1D)
+
+    private static func dynamic(light: UInt32, dark: UInt32) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? dark : light)
+        }
+    }
+}
+
+private extension NSColor {
+    convenience init(hex: UInt32) {
+        self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                  green: CGFloat((hex >> 8) & 0xFF) / 255,
+                  blue: CGFloat(hex & 0xFF) / 255,
+                  alpha: 1)
+    }
+}
+
+/// Flat pill button matching the Codex action buttons: gray for secondary actions,
+/// near-black for the primary action.
+final class CodexPillButton: NSButton {
+    private let fill: NSColor
+    private let foreground: NSColor
+    private let label: String
+
+    init(title: String, primary: Bool) {
+        label = title
+        fill = primary ? CodexTheme.primaryButton : CodexTheme.subtle
+        foreground = primary ? CodexTheme.primaryButtonText : CodexTheme.text
+        super.init(frame: .zero)
+        self.title = title
+        isBordered = false
+        bezelStyle = .regularSquare
+        setButtonType(.momentaryPushIn)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.masksToBounds = true
+        font = .systemFont(ofSize: 12, weight: primary ? .semibold : .regular)
+        let titleWidth = (title as NSString).size(withAttributes: [.font: font as Any]).width
+        widthAnchor.constraint(equalToConstant: (titleWidth + 24).rounded(.up)).isActive = true
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        applyTheme()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var isEnabled: Bool { didSet { applyTheme() } }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTheme()
+    }
+
+    override func highlight(_ flag: Bool) {
+        super.highlight(flag)
+        layer?.opacity = flag ? 0.75 : 1
+    }
+
+    private func applyTheme() {
+        setAccessibilityLabel(label)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let resolvedFill = fill.usingColorSpace(.sRGB) ?? fill
+            let resolvedForeground = foreground.usingColorSpace(.sRGB) ?? foreground
+            layer?.backgroundColor = (isEnabled ? resolvedFill : resolvedFill.withAlphaComponent(0.4)).cgColor
+            attributedTitle = NSAttributedString(string: label, attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 12),
+                .foregroundColor: isEnabled ? resolvedForeground : resolvedForeground.withAlphaComponent(0.45),
+            ])
+        }
+    }
+}
+
 struct ModelRow: Codable, Equatable {
     var id: String
     var context: Int
@@ -35,10 +121,11 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     let table = NSTableView()
     let feedback = NSTextField(wrappingLabelWithString: "")
     let emptyLabel = NSTextField(labelWithString: "暂无自定义模型")
+    let emptyState = NSStackView()
     let addButton = NSButton()
     let removeButton = NSButton()
-    let saveButton = NSButton(title: "保存", target: nil, action: nil)
-    let restartButton = NSButton(title: "保存并重启 ChatGPT", target: nil, action: nil)
+    let saveButton = CodexPillButton(title: "保存", primary: false)
+    let restartButton = CodexPillButton(title: "保存并重启 ChatGPT", primary: true)
     var models: [ModelRow] = []
     var savedModels: [ModelRow] = []
     var loaded = false
@@ -96,25 +183,42 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     }
 
     func buildPanel() {
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 440),
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
         panel.title = "ChatGPT自定义模型"
-        panel.minSize = NSSize(width: 640, height: 380)
+        panel.minSize = NSSize(width: 640, height: 420)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
+        panel.backgroundColor = CodexTheme.surface
         panel.center()
         window = panel
         guard let content = panel.contentView else { return }
 
         let heading = NSTextField(labelWithString: "模型配置")
-        heading.font = .systemFont(ofSize: 17, weight: .semibold)
-        heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        heading.font = .systemFont(ofSize: 15, weight: .semibold)
+        heading.textColor = CodexTheme.text
+        let subtitle = NSTextField(labelWithString: "自定义模型 ID 与上下文窗口，保存并重启后在新任务中生效")
+        subtitle.font = .systemFont(ofSize: 12)
+        subtitle.textColor = CodexTheme.secondaryText
+        let titles = NSStackView(views: [heading, subtitle])
+        titles.orientation = .vertical
+        titles.alignment = .leading
+        titles.spacing = 3
+        titles.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         configureIconButton(addButton, symbol: "plus", label: "添加模型", action: #selector(addModel))
         configureIconButton(removeButton, symbol: "minus", label: "删除选中模型", action: #selector(removeModel))
-        let toolbar = NSStackView(views: [heading, addButton, removeButton])
-        toolbar.spacing = 8
-        toolbar.distribution = .fill
+        let headerActions = NSStackView(views: [addButton, removeButton])
+        headerActions.spacing = 6
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        headerSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let header = NSStackView(views: [titles, headerSpacer, headerActions])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+        header.distribution = .fill
 
         let idColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("id"))
         idColumn.title = "模型 ID"
@@ -135,63 +239,107 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         table.addTableColumn(convertedColumn)
         table.delegate = self
         table.dataSource = self
-        table.rowHeight = 36
-        table.usesAlternatingRowBackgroundColors = true
+        table.rowHeight = 40
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
+        table.selectionHighlightStyle = .regular
         table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.allowsColumnReordering = false
         table.allowsEmptySelection = true
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        emptyLabel.textColor = .secondaryLabelColor
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.automaticallyAdjustsContentInsets = false
+
+        let card = NSBox()
+        card.boxType = .custom
+        card.titlePosition = .noTitle
+        card.cornerRadius = 12
+        card.borderWidth = 1
+        card.borderColor = CodexTheme.border
+        card.fillColor = CodexTheme.card
+        card.contentViewMargins = NSSize(width: 0, height: 0)
+        card.contentView = scroll
+
+        let emptyIcon = NSImageView()
+        emptyIcon.image = NSImage(systemSymbolName: "square.stack.3d.up",
+                                  accessibilityDescription: "暂无自定义模型")
+        emptyIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 26, weight: .regular)
+        emptyIcon.contentTintColor = CodexTheme.tertiaryText
+        emptyLabel.textColor = CodexTheme.text
+        let emptyHint = NSTextField(labelWithString: "点击右上角 + 添加模型，例如 gpt-6-astra")
+        emptyHint.font = .systemFont(ofSize: 11)
+        emptyHint.textColor = CodexTheme.tertiaryText
+        emptyState.setViews([emptyIcon, emptyLabel, emptyHint], in: .top)
+        emptyState.orientation = .vertical
+        emptyState.alignment = .centerX
+        emptyState.spacing = 8
+
+        let hint = NSTextField(labelWithString: "窗口单位 k：1000k = 1M，保存后需重启 ChatGPT/Codex 才生效")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = CodexTheme.tertiaryText
 
         saveButton.target = self
         saveButton.action = #selector(save)
         restartButton.target = self
         restartButton.action = #selector(saveAndRestart)
-        for button in [saveButton, restartButton] { button.bezelStyle = .rounded }
         restartButton.keyEquivalent = "\r"
         let buttons = NSStackView(views: [saveButton, restartButton])
         buttons.spacing = 8
         feedback.font = .systemFont(ofSize: 12)
+        feedback.textColor = CodexTheme.secondaryText
         feedback.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        feedback.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        feedback.lineBreakMode = .byTruncatingTail
+        let footerSpacer = NSView()
+        footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        footerSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let footer = NSStackView(views: [feedback, footerSpacer, buttons])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 12
+        footer.distribution = .fill
 
-        for view in [toolbar, scroll, feedback, buttons, emptyLabel] {
+        for view in [header, card, hint, footer, emptyState] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
         NSLayoutConstraint.activate([
-            toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            toolbar.heightAnchor.constraint(equalToConstant: 30),
-            scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 14),
-            scroll.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: feedback.topAnchor, constant: -12),
-            emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
-            feedback.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
-            feedback.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
-            feedback.heightAnchor.constraint(equalToConstant: 36),
-            feedback.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -8),
-            buttons.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
-            buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
-            buttons.heightAnchor.constraint(equalToConstant: 32),
+            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            header.heightAnchor.constraint(greaterThanOrEqualToConstant: 34),
+            card.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            card.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            card.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -10),
+            hint.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor),
+            hint.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
+            footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            footer.heightAnchor.constraint(equalToConstant: 32),
+            emptyState.centerXAnchor.constraint(equalTo: card.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            emptyState.leadingAnchor.constraint(greaterThanOrEqualTo: card.leadingAnchor, constant: 16),
+            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -16),
         ])
         updateControls()
     }
 
     func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        button.imagePosition = .imageOnly
         button.toolTip = label
         button.setAccessibilityLabel(label)
-        button.bezelStyle = .texturedRounded
+        button.bezelStyle = .accessoryBarAction
         button.target = self
         button.action = action
-        button.widthAnchor.constraint(equalToConstant: 30).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { models.count }
@@ -214,15 +362,19 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         field.isBordered = false
         field.drawsBackground = false
         field.alignment = (isContext || isConverted) ? .right : .natural
-        field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        if isConverted { field.textColor = .secondaryLabelColor }
+        if isContext || isConverted {
+            field.font = .monospacedDigitSystemFont(ofSize: isConverted ? 12 : 13, weight: .regular)
+        } else {
+            field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        }
+        field.textColor = isConverted ? CodexTheme.secondaryText : CodexTheme.text
         field.setAccessibilityLabel("第 \(row + 1) 行\(tableColumn.title)")
         field.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(field)
         cell.textField = field
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
             field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
@@ -315,7 +467,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     func setFeedback(_ text: String, error: Bool = false) {
         feedback.stringValue = text
-        feedback.textColor = error ? .systemRed : .secondaryLabelColor
+        feedback.textColor = error ? .systemRed : CodexTheme.secondaryText
     }
 
     func updateControls() {
@@ -323,7 +475,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         removeButton.isEnabled = loaded && !busy && models.indices.contains(table.selectedRow)
         saveButton.isEnabled = loaded && !busy && models != savedModels
         restartButton.isEnabled = loaded && !busy
-        emptyLabel.isHidden = !models.isEmpty || !loaded
+        let showEmptyState = loaded && models.isEmpty
+        emptyLabel.isHidden = !showEmptyState
+        emptyState.isHidden = !showEmptyState
         window?.isDocumentEdited = models != savedModels
     }
 

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { loadModels, handlePanelRequest, buildCatalog, writeCatalog } from "./model-config.mjs";
 
-const VERSION = "0.1.25";
+const VERSION = "0.1.26";
 const APP_TITLE = "ChatGPT自定义模型";
 const HOME = os.homedir();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));

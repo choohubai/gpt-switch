@@ -2,16 +2,13 @@
   "use strict";
 
   const BOOT_MODELS = [];
-  const VERSION = "0.1.24";
+  const VERSION = "0.1.26";
   const GLOBAL_KEY = "__CODEX_MODEL_UNLOCKER__";
   const STATSIG_MODEL_CONFIG = "107580212";
   const modelListRequestIds = new Set();
   const appServerModulePromises = new Map();
   const appServerModuleFailures = new Map();
   const APP_SERVER_RETRY_COOLDOWN_MS = 3000;
-  let appServerPatchMisses = 0;
-  let appServerPatchCandidates = 0;
-  let appServerPatchPatched = 0;
 
   const normalizeModel = (value) => {
     const id = typeof value === "string" ? value : value?.id || value?.model || value?.slug;
@@ -50,8 +47,6 @@
   const state = {
     version: VERSION,
     models: initialModels,
-    installedAt: Date.now(),
-    failures: [],
     refreshTimer: null,
     refreshUntil: 0,
     interval: null,
@@ -62,15 +57,6 @@
     statsigPatches: [],
     appServerPatches: [],
     disposed: false,
-  };
-
-  const recordFailure = (scope, error) => {
-    state.failures.push({
-      scope,
-      message: String(error?.message || error),
-      at: Date.now(),
-    });
-    if (state.failures.length > 30) state.failures.shift();
   };
 
   const modelDescriptor = (model) => ({
@@ -396,21 +382,12 @@
     if (state.disposed || appServerPatchPromise) return;
     appServerPatchPromise = loadAppServerModules().then((modules) => {
       if (state.disposed) return;
-      let count = 0;
-      appServerPatchCandidates = modules.reduce((total, module) => total + Object.keys(module || {}).length, 0);
       for (const module of modules) {
         for (const candidate of collectAppServerCandidates(module)) {
-          if (patchAppServerClient(candidate)) count += 1;
+          patchAppServerClient(candidate);
         }
       }
-      if (count === 0) appServerPatchMisses += 1;
-      else {
-        appServerPatchMisses = 0;
-        appServerPatchPatched = count;
-      }
-    }).catch(() => {
-      if (!state.disposed) appServerPatchMisses += 1;
-    }).finally(() => {
+    }).catch(() => {}).finally(() => {
       appServerPatchPromise = null;
     });
   };
@@ -467,13 +444,13 @@
           if (request.id != null) modelListRequestIds.add(String(request.id));
         }
         if (event?.type === "message") patchMcpModelResponse(event.data);
-      } catch (error) {
-        recordFailure("model-list-message", error);
+      } catch {
+        // A failed model-list patch must not break the renderer.
       }
       return Reflect.apply(originalDispatchEvent, window, [event]);
     };
     const messageListener = (event) => {
-      try { patchMcpModelResponse(event.data); } catch (error) { recordFailure("model-list-response", error); }
+      try { patchMcpModelResponse(event.data); } catch { /* Best effort. */ }
     };
     window.dispatchEvent = dispatchWrapper;
     window.addEventListener("message", messageListener, true);
@@ -533,8 +510,8 @@
         patchStatsigConfig(client.getDynamicConfig(STATSIG_MODEL_CONFIG, {
           disableExposureLog: true,
         }));
-      } catch (error) {
-        recordFailure("statsig-config", error);
+      } catch {
+        // Statsig clients that reject the read are skipped.
       }
     }
     return patched;
@@ -553,8 +530,8 @@
       state.refreshTimer = null;
       try {
         refreshOnce();
-      } catch (error) {
-        recordFailure("refresh", error);
+      } catch {
+        // Refreshing patches is best effort.
       }
       if (Date.now() < state.refreshUntil) {
         state.refreshTimer = window.setTimeout(tick, 120);
@@ -569,24 +546,6 @@
     refreshBurst(3500);
     return state.models;
   };
-  state.refresh = () => {
-    if (!state.disposed) refreshBurst(3500);
-  };
-  state.diagnostics = () => ({
-    version: state.version,
-    models: state.models.map((model) => ({ ...model })),
-    installedAt: state.installedAt,
-    failures: [...state.failures],
-    statsigClients: statsigClients().length,
-    appServerPatch: {
-      disabled: false,
-      misses: appServerPatchMisses,
-      candidates: appServerPatchCandidates,
-      patched: appServerPatchPatched,
-    },
-    disposed: state.disposed,
-  });
-
   state.dispose = () => {
     if (state.disposed) return;
     state.disposed = true;
