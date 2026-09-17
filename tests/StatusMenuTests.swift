@@ -80,6 +80,15 @@ struct StatusMenuTests {
         controller.saveAndRestart()
         assert((requests.last?["models"] as? [[String: Any]])?.isEmpty == true)
         controller.receive(["ok": true, "saved": true, "restarted": true, "models": []])
+        assert(controller.clearButton.title == "清空并重启")
+        assert(controller.restartButton.keyEquivalent.isEmpty, "回车不应触发保存并重启")
+        controller.submitClear()
+        assert(requests.last?["action"] as? String == "clear")
+        assert(controller.busy && !controller.clearButton.isEnabled)
+        controller.receive(["ok": true, "cleared": true, "restarted": true, "models": []])
+        assert(controller.models.isEmpty && controller.savedModels.isEmpty)
+        assert(controller.feedback.stringValue == "已清空并重启 ChatGPT")
+        assert(controller.clearButton.isEnabled)
         assert(controller.windowShouldClose(controller.window!))
         let layoutWindow = controller.window!
         let layoutContent = layoutWindow.contentView!

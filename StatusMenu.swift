@@ -131,6 +131,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     let removeButton = NSButton()
     let saveButton = CodexPillButton(title: "保存", primary: false)
     let restartButton = CodexPillButton(title: "保存并重启 ChatGPT", primary: true)
+    let clearButton = CodexPillButton(title: "清空并重启", primary: false)
     var models: [ModelRow] = []
     var savedModels: [ModelRow] = []
     var loaded = false
@@ -306,8 +307,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         saveButton.action = #selector(save)
         restartButton.target = self
         restartButton.action = #selector(saveAndRestart)
-        restartButton.keyEquivalent = "\r"
-        let buttons = NSStackView(views: [saveButton, restartButton])
+        clearButton.target = self
+        clearButton.action = #selector(clearAndRestart)
+        let buttons = NSStackView(views: [clearButton, saveButton, restartButton])
         buttons.spacing = 8
         feedback.font = .systemFont(ofSize: 12)
         feedback.textColor = CodexTheme.secondaryText
@@ -481,6 +483,30 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     @objc func save() { submit(restart: false) }
     @objc func saveAndRestart() { submit(restart: true) }
 
+    @objc func clearAndRestart() {
+        guard loaded, !busy, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "清空自定义模型并重启 ChatGPT？"
+        alert.informativeText = "将删除插件保存的模型配置，并清理写入 Codex 的模型目录和 model_catalog_json 配置。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "清空并重启")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.submitClear()
+        }
+    }
+
+    func submitClear() {
+        guard loaded && !busy else { return }
+        window?.makeFirstResponder(nil)
+        busy = true
+        setFeedback("正在清空并重启 ChatGPT…")
+        table.reloadData()
+        updateControls()
+        sendRequest(["action": "clear"])
+    }
+
     func submit(restart: Bool) {
         guard loaded && !busy else { return }
         window?.makeFirstResponder(nil)
@@ -503,7 +529,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         }
         busy = false
         let ok = response["ok"] as? Bool == true
-        if ok || response["saved"] as? Bool == true {
+        let cleared = response["cleared"] as? Bool == true
+        if ok || response["saved"] as? Bool == true || cleared {
             if let value = response["models"],
                let data = try? JSONSerialization.data(withJSONObject: value),
                let rows = try? JSONDecoder().decode([ModelRow].self, from: data) {
@@ -514,6 +541,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         }
         if !ok {
             setFeedback(response["error"] as? String ?? "操作失败", error: true)
+        } else if cleared {
+            setFeedback("已清空并重启 ChatGPT")
         } else if response["restarted"] as? Bool == true {
             setFeedback("已保存，ChatGPT 已重启")
         } else if response["saved"] as? Bool == true {
@@ -596,6 +625,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         removeButton.isEnabled = loaded && !busy && models.indices.contains(table.selectedRow)
         saveButton.isEnabled = loaded && !busy && models != savedModels
         restartButton.isEnabled = loaded && !busy
+        clearButton.isEnabled = loaded && !busy
         let showEmptyState = loaded && models.isEmpty
         emptyLabel.isHidden = !showEmptyState
         emptyState.isHidden = !showEmptyState

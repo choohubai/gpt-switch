@@ -5,9 +5,12 @@ import path from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { loadModels, handlePanelRequest, buildCatalog, writeCatalog } from "./model-config.mjs";
+import {
+  loadModels, handlePanelRequest, buildCatalog, writeCatalog,
+  catalogPathFromToml, writeCatalogRecord, clearCatalogFiles,
+} from "./model-config.mjs";
 
-const VERSION = "0.1.28";
+const VERSION = "0.1.29";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const HOME = os.homedir();
@@ -423,10 +426,18 @@ class CDPSession {
   }
 }
 
+const writeFileAtomic = (filePath, contents) => {
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, contents, { mode: 0o600 });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+};
+
 const writeState = (state) => {
-  const temporary = `${STATE_PATH}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, STATE_PATH);
+  writeFileAtomic(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
 };
 
 const cleanupState = () => {
@@ -455,6 +466,7 @@ const waitForTargets = async (port, timeoutMs = 30_000) => {
 const CODEX_HOME = path.join(HOME, ".codex");
 const USER_CONFIG = path.join(CODEX_HOME, "config.toml");
 const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
+const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
 
 const readBundledCatalog = (appPath) => {
   const binary = path.join(appPath, "Contents", "Resources", "codex");
@@ -475,32 +487,34 @@ const readBundledCatalog = (appPath) => {
   return parsed;
 };
 
-const catalogPathFromToml = (text) => {
-  const match = text.match(/^[ \t]*model_catalog_json[ \t]*=[ \t]*"([^"]+)"/m);
-  if (!match) return null;
-  const raw = match[1].replace(/^~(?=\/)/, HOME);
-  return path.isAbsolute(raw) ? raw : path.resolve(CODEX_HOME, raw);
-};
-
 const ensureCatalogPointer = (catalogPath) => {
-  if (!fs.existsSync(USER_CONFIG)) return;
+  if (!fs.existsSync(USER_CONFIG)) return false;
   const text = fs.readFileSync(USER_CONFIG, "utf8");
-  if (/^[ \t]*model_catalog_json[ \t]*=/m.test(text)) return;
+  if (/^[ \t]*model_catalog_json[ \t]*=/m.test(text)) return false;
   const line = `model_catalog_json = ${JSON.stringify(catalogPath)}\n`;
   const table = text.search(/^[ \t]*\[/m);
   const next = table < 0 ? `${text.replace(/\s*$/, "")}\n${line}` : `${text.slice(0, table)}${line}${text.slice(table)}`;
-  const temporary = `${USER_CONFIG}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(temporary, next, { mode: 0o600 });
-    fs.renameSync(temporary, USER_CONFIG);
-  } finally {
-    fs.rmSync(temporary, { force: true });
-  }
+  writeFileAtomic(USER_CONFIG, next);
+  return true;
 };
 
 const resolveCatalogPath = () => {
   if (!fs.existsSync(USER_CONFIG)) return DEFAULT_CATALOG_PATH;
-  return catalogPathFromToml(fs.readFileSync(USER_CONFIG, "utf8")) || DEFAULT_CATALOG_PATH;
+  return catalogPathFromToml(fs.readFileSync(USER_CONFIG, "utf8"), HOME, CODEX_HOME) || DEFAULT_CATALOG_PATH;
+};
+
+const clearCatalog = (appPath) => {
+  if (!appPath) throw new Error("未找到 ChatGPT.app 或 Codex.app");
+  const plan = clearCatalogFiles({
+    recordPath: CATALOG_RECORD,
+    userConfigPath: USER_CONFIG,
+    home: HOME,
+    codexHome: CODEX_HOME,
+    catalogPath: resolveCatalogPath(),
+    defaultCatalogPath: DEFAULT_CATALOG_PATH,
+    readBundledCatalog: () => readBundledCatalog(appPath),
+  });
+  log("catalog_cleared", plan);
 };
 
 const main = async () => {
@@ -590,10 +604,17 @@ const main = async () => {
             applyCatalog: async (nextModels) => {
               if (!appPath) throw new Error("未找到 ChatGPT.app 或 Codex.app");
               const dest = resolveCatalogPath();
+              const fileCreated = !fs.existsSync(dest);
               writeCatalog(dest, buildCatalog(readBundledCatalog(appPath), nextModels));
-              ensureCatalogPointer(dest);
+              const pointerAdded = ensureCatalogPointer(dest) || dest === DEFAULT_CATALOG_PATH;
+              writeCatalogRecord(CATALOG_RECORD, {
+                path: dest,
+                pointerAdded,
+                fileCreated: fileCreated || dest === DEFAULT_CATALOG_PATH,
+              });
               log("catalog_written", { path: dest, models: nextModels.map((model) => model.id) });
             },
+            clearCatalog: () => clearCatalog(appPath),
           }), version: VERSION };
       if (!result.ok) log("panel_action_failed", result.error);
       pending.reply(result);

@@ -104,11 +104,86 @@ export const writeCatalog = (catalogPath, catalog) => {
   atomicWrite(catalogPath, `${JSON.stringify(catalog)}\n`);
 };
 
-export const handlePanelRequest = async (request, { configPath, defaultPath, restart, applyCatalog }) => {
+const CATALOG_POINTER = /^[ \t]*model_catalog_json[ \t]*=[ \t]*"([^"]+)"/m;
+
+export const catalogPathFromToml = (text, home, codexHome) => {
+  const match = text.match(CATALOG_POINTER);
+  if (!match) return null;
+  const raw = match[1].replace(/^~(?=\/)/, home);
+  return path.isAbsolute(raw) ? raw : path.resolve(codexHome, raw);
+};
+
+export const removeCatalogPointerLine = (text, catalogPath, home, codexHome) => {
+  if (catalogPathFromToml(text, home, codexHome) !== catalogPath) return text;
+  return text.replace(/^[ \t]*model_catalog_json[ \t]*=[ \t]*"[^"]*"[ \t]*\r?\n?/m, "");
+};
+
+export const catalogClearPlan = (record, catalogPath, defaultCatalogPath) => {
+  const target = typeof record?.path === "string" ? record.path : catalogPath;
+  const ownedByDefaultPath = target === defaultCatalogPath;
+  const pointerAdded = record ? record.pointerAdded === true : ownedByDefaultPath;
+  const fileCreated = record ? record.fileCreated === true : ownedByDefaultPath;
+  return {
+    path: target,
+    removePointer: pointerAdded,
+    deleteFile: pointerAdded && fileCreated,
+    rewriteBundled: !(pointerAdded && fileCreated),
+  };
+};
+
+export const readCatalogRecord = (recordPath) => {
+  try {
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+    return typeof record?.path === "string" ? record : null;
+  } catch {
+    return null;
+  }
+};
+
+export const writeCatalogRecord = (recordPath, { path: catalogPath, pointerAdded, fileCreated }) => {
+  const previous = readCatalogRecord(recordPath);
+  const record = previous?.path === catalogPath
+    ? {
+        path: catalogPath,
+        pointerAdded: previous.pointerAdded === true || pointerAdded,
+        fileCreated: previous.fileCreated === true || fileCreated,
+      }
+    : { path: catalogPath, pointerAdded, fileCreated };
+  atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+  return record;
+};
+
+export const clearCatalogFiles = ({
+  recordPath, userConfigPath, home, codexHome, catalogPath, defaultCatalogPath, readBundledCatalog,
+}) => {
+  const plan = catalogClearPlan(readCatalogRecord(recordPath), catalogPath, defaultCatalogPath);
+  if (plan.removePointer && fs.existsSync(userConfigPath)) {
+    const text = fs.readFileSync(userConfigPath, "utf8");
+    const next = removeCatalogPointerLine(text, plan.path, home, codexHome);
+    if (next !== text) atomicWrite(userConfigPath, next);
+  }
+  if (plan.deleteFile) {
+    fs.rmSync(plan.path, { force: true });
+  } else if (fs.existsSync(plan.path)) {
+    writeCatalog(plan.path, buildCatalog(readBundledCatalog(), []));
+  }
+  fs.rmSync(recordPath, { force: true });
+  return plan;
+};
+
+export const handlePanelRequest = async (request, { configPath, defaultPath, restart, applyCatalog, clearCatalog }) => {
   let savedModels;
+  let cleared = false;
   try {
     if (request.action === "load") {
       return { ok: true, models: loadModels(configPath, defaultPath) };
+    }
+    if (request.action === "clear") {
+      await clearCatalog();
+      fs.rmSync(configPath, { force: true });
+      cleared = true;
+      await restart([]);
+      return { ok: true, cleared: true, restarted: true, models: [] };
     }
     if (request.action !== "save" || typeof request.restart !== "boolean") {
       throw new Error("无效的面板操作");
@@ -118,11 +193,13 @@ export const handlePanelRequest = async (request, { configPath, defaultPath, res
     if (request.restart) await restart(savedModels);
     return { ok: true, saved: true, restarted: request.restart, models: savedModels };
   } catch (error) {
+    const prefix = cleared ? "配置已清空，但重启失败：" : savedModels === undefined ? "" : "配置已保存，但未能生效：";
     return {
       ok: false,
       saved: savedModels !== undefined,
+      ...(cleared ? { cleared: true, models: [] } : {}),
       ...(savedModels === undefined ? {} : { models: savedModels }),
-      error: `${savedModels === undefined ? "" : "配置已保存，但未能生效："}${error.message}`,
+      error: `${prefix}${error.message}`,
     };
   }
 };

@@ -3,7 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildCatalog, loadModels, saveModels, validateModels, handlePanelRequest } from "../model-config.mjs";
+import {
+  buildCatalog, loadModels, saveModels, validateModels, handlePanelRequest, writeCatalog,
+  catalogPathFromToml, removeCatalogPointerLine, catalogClearPlan, readCatalogRecord, writeCatalogRecord,
+  clearCatalogFiles,
+} from "../model-config.mjs";
 
 const defaults = [{ id: "gpt-6-astra", context: 272 }];
 
@@ -143,4 +147,121 @@ test("save/load/restart contract preserves config on invalid input and restart f
   assert.equal(restarts, 2);
   assert.equal(catalogs, 4);
   assert.equal(fs.readFileSync(blockedPath, "utf8"), "untouched");
+});
+
+test("clear removes the saved config and clears the catalog before restart", async (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const configPath = path.join(directory, "models.json");
+  const defaultPath = path.join(directory, "defaults.json");
+  saveModels(defaultPath, defaults);
+  saveModels(configPath, [{ id: "relay-alias", context: 1000 }]);
+  let clearCalls = 0;
+  let restartedWith = null;
+  let restartFails = false;
+  const options = {
+    configPath,
+    defaultPath,
+    clearCatalog: async () => { clearCalls += 1; },
+    restart: async (models) => {
+      restartedWith = models;
+      if (restartFails) throw new Error("test restart failure");
+    },
+  };
+  const cleared = await handlePanelRequest({ action: "clear" }, options);
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.cleared, true);
+  assert.equal(cleared.restarted, true);
+  assert.equal(clearCalls, 1);
+  assert.deepEqual(restartedWith, []);
+  assert.equal(fs.existsSync(configPath), false);
+  assert.deepEqual(loadModels(configPath, defaultPath), defaults);
+  restartFails = true;
+  saveModels(configPath, [{ id: "relay-alias", context: 1000 }]);
+  const failed = await handlePanelRequest({ action: "clear" }, options);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.cleared, true);
+  assert.deepEqual(failed.models, []);
+  assert.match(failed.error, /配置已清空，但重启失败/);
+  assert.equal(fs.existsSync(configPath), false);
+  assert.equal(clearCalls, 2);
+});
+
+test("catalog cleanup only touches the plugin-managed catalog", () => {
+  const home = "/Users/example";
+  const codexHome = path.join(home, ".codex");
+  const defaultPath = path.join(codexHome, "model_catalog.json");
+  const text = 'model = "gpt-6-astra"\nmodel_catalog_json = "~/.codex/model_catalog.json"\n\n[features]\n';
+  assert.equal(catalogPathFromToml(text, home, codexHome), defaultPath);
+  const removed = removeCatalogPointerLine(text, defaultPath, home, codexHome);
+  assert.equal(removed.includes("model_catalog_json"), false);
+  assert.equal(removed.includes('model = "gpt-6-astra"'), true);
+  assert.equal(removed.includes("[features]"), true);
+  assert.equal(removeCatalogPointerLine(text, path.join(codexHome, "other.json"), home, codexHome), text);
+  assert.deepEqual(
+    catalogClearPlan({ path: defaultPath, pointerAdded: true, fileCreated: true }, defaultPath, defaultPath),
+    { path: defaultPath, removePointer: true, deleteFile: true, rewriteBundled: false });
+  assert.deepEqual(
+    catalogClearPlan({ path: "/tmp/user-catalog.json", pointerAdded: false, fileCreated: false },
+      "/tmp/user-catalog.json", defaultPath),
+    { path: "/tmp/user-catalog.json", removePointer: false, deleteFile: false, rewriteBundled: true });
+  assert.deepEqual(
+    catalogClearPlan(null, defaultPath, defaultPath),
+    { path: defaultPath, removePointer: true, deleteFile: true, rewriteBundled: false });
+  assert.deepEqual(
+    catalogClearPlan(null, "/tmp/user-catalog.json", defaultPath),
+    { path: "/tmp/user-catalog.json", removePointer: false, deleteFile: false, rewriteBundled: true });
+});
+
+test("catalog ownership record keeps the first flags for the same path", (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const recordPath = path.join(directory, "catalog.json");
+  assert.equal(readCatalogRecord(recordPath), null);
+  writeCatalogRecord(recordPath, { path: "/tmp/catalog.json", pointerAdded: true, fileCreated: true });
+  writeCatalogRecord(recordPath, { path: "/tmp/catalog.json", pointerAdded: false, fileCreated: false });
+  assert.deepEqual(readCatalogRecord(recordPath),
+    { path: "/tmp/catalog.json", pointerAdded: true, fileCreated: true });
+  writeCatalogRecord(recordPath, { path: "/tmp/other.json", pointerAdded: false, fileCreated: false });
+  assert.deepEqual(readCatalogRecord(recordPath),
+    { path: "/tmp/other.json", pointerAdded: false, fileCreated: false });
+});
+
+test("clearCatalogFiles removes plugin-created files and keeps user-owned catalogs", (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const codexHome = path.join(directory, ".codex");
+  const userConfigPath = path.join(codexHome, "config.toml");
+  const defaultCatalogPath = path.join(codexHome, "model_catalog.json");
+  const recordPath = path.join(directory, "support", "catalog.json");
+  const bundled = { models: [{ slug: "gpt-6-astra", context_window: 272000 }] };
+  const readBundledCatalog = () => bundled;
+  fs.mkdirSync(codexHome, { recursive: true });
+
+  fs.writeFileSync(userConfigPath, 'model = "gpt-6-astra"\nmodel_catalog_json = "~/.codex/model_catalog.json"\n');
+  writeCatalog(defaultCatalogPath, buildCatalog(bundled, [{ id: "relay-alias", context: 512 }]));
+  writeCatalogRecord(recordPath, { path: defaultCatalogPath, pointerAdded: true, fileCreated: true });
+  const created = clearCatalogFiles({
+    recordPath, userConfigPath, home: directory, codexHome,
+    catalogPath: defaultCatalogPath, defaultCatalogPath, readBundledCatalog,
+  });
+  assert.deepEqual(created,
+    { path: defaultCatalogPath, removePointer: true, deleteFile: true, rewriteBundled: false });
+  assert.equal(fs.existsSync(defaultCatalogPath), false);
+  assert.equal(fs.existsSync(recordPath), false);
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), 'model = "gpt-6-astra"\n');
+
+  const userCatalogPath = path.join(directory, "user-catalog.json");
+  fs.writeFileSync(userConfigPath, `model_catalog_json = "${userCatalogPath}"\n`);
+  writeCatalog(userCatalogPath, buildCatalog(bundled, [{ id: "relay-alias", context: 512 }]));
+  writeCatalogRecord(recordPath, { path: userCatalogPath, pointerAdded: false, fileCreated: false });
+  const kept = clearCatalogFiles({
+    recordPath, userConfigPath, home: directory, codexHome,
+    catalogPath: userCatalogPath, defaultCatalogPath, readBundledCatalog,
+  });
+  assert.deepEqual(kept,
+    { path: userCatalogPath, removePointer: false, deleteFile: false, rewriteBundled: true });
+  assert.equal(fs.existsSync(userCatalogPath), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(userCatalogPath, "utf8")).models, bundled.models);
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), `model_catalog_json = "${userCatalogPath}"\n`);
 });

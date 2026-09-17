@@ -1,17 +1,18 @@
 # GPT Switch
 
-独立的 macOS 启动器，可在模型配置面板中添加模型 ID 和窗口大小（单位 k），通过 CDP 注入 ChatGPT/Codex 的 renderer。用户选中后，客户端按该模型 ID 发起请求。
+独立的 macOS 启动器，可在模型配置面板中添加模型 ID 和窗口大小（单位 k），通过 CDP 注入 ChatGPT/Codex 的 renderer，并把自定义模型写入 Codex 模型目录。用户选中后，客户端按该模型 ID 发起请求。
 
 ## 它做了什么
 
 - 模型配置填写 `id` 和窗口（k），新增行默认 272k；界面显示和实际请求均使用该模型 ID。
 - 插件启动时不启动或重启 ChatGPT/Codex；点击面板中的“保存并重启 ChatGPT”后，启用一个仅监听 `127.0.0.1` 的随机 Chromium 调试端口并应用配置。
-- 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应。
+- 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应，这部分注入只存在于当前 renderer 会话，重启后失效。
+- 保存模型时会把自定义模型合并进 Codex 模型目录：默认写入 `~/.codex/model_catalog.json`，并在 `~/.codex/config.toml` 中补上 `model_catalog_json` 配置。该目录是磁盘文件，由 Codex 自己读取，所以插件退出或删除后，已保存的自定义模型仍然保留。
+- 点击“清空并重启”会删除插件保存的模型配置，并清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启 ChatGPT/Codex。
 - 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”。
 - 面板底部显示当前版本并提供“检查更新”：检测到新版本时，可直接打开对应 GitHub Release 下载页。
-- 注入只存在于当前 ChatGPT/Codex renderer 的内存中。插件停止或删除后，正常重启 ChatGPT/Codex，之前注入的模型会全部丢弃；再次使用时，在插件面板中点击“保存并重启 ChatGPT”即可重新应用。
 
-它不会修改 `ChatGPT.app`、`Codex.app`、`app.asar`、代码签名、API 密钥或历史会话。
+它不会修改 `ChatGPT.app`、`Codex.app`、`app.asar`、代码签名、API 密钥或历史会话；但会写入 `~/.codex/config.toml` 和 `~/.codex/model_catalog.json`。
 
 ## 赞助商
 
@@ -33,16 +34,18 @@
 1. 确认 Codex 桌面端已经安装在 `/Applications/ChatGPT.app` 或 `/Applications/Codex.app`。
 2. 双击 `GPT Switch.app`，点击菜单栏图标，选择“打开面板”。
 3. 添加模型 ID 和窗口（k），点击“保存并重启 ChatGPT”，然后新建任务并打开模型选择器。
-4. 需要停止插件时，点击 macOS 菜单栏中的插件图标，选择“退出”。
+4. 需要移除全部自定义模型时，点击“清空并重启”，插件会清理配置和模型目录并重启 ChatGPT/Codex。
+5. 需要停止插件时，点击 macOS 菜单栏中的插件图标，选择“退出”。
 
 ### 模型配置
 
 点击菜单栏图标，选择“打开面板”，编辑模型 ID 和窗口（k）；使用加号添加模型，减号删除选中的模型。
 
-- “保存”：只保存配置，点击“保存并重启 ChatGPT”后生效。
+- “保存”：保存配置并更新 Codex 模型目录；当前已打开的模型菜单需要重启 ChatGPT/Codex 后才会刷新。
 - “保存并重启 ChatGPT”：先保存配置，再重启 ChatGPT 并应用模型列表。
+- “清空并重启”：删除本插件保存的模型配置，清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启 ChatGPT/Codex。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 
-配置保存在 `~/Library/Application Support/GPTSwitch/models.json`，属于本插件。首次使用时模型列表为空，请在面板中自行添加；升级插件不会覆盖已保存的配置。删除全部模型并点击“保存并重启 ChatGPT”后，自定义模型全部移除。
+配置保存在 `~/Library/Application Support/GPTSwitch/models.json`，属于本插件。首次使用时模型列表为空，请在面板中自行添加；升级插件不会覆盖已保存的配置。删除全部模型并点击“保存并重启 ChatGPT”后，自定义模型会从模型目录中移除，但目录文件和 `model_catalog_json` 配置仍在；要一并清理，请点击“清空并重启”。
 
 从 0.1.27 起插件更名为 GPT Switch（原 CodexModelUnlocker）：首次启动会把旧配置目录 `~/Library/Application Support/CodexModelUnlocker/models.json` 自动复制到新目录，无需手动迁移。
 
@@ -56,7 +59,9 @@
 
 ### 卸载
 
-退出插件并删除 `GPT Switch.app` 后，完全退出并正常重新打开 ChatGPT/Codex，此前注入的模型会全部消失。仅刷新页面或只关闭窗口不等于完全重启应用。
+只想停止使用：退出插件并删除 `GPT Switch.app` 即可。此前保存的自定义模型仍会保留，Codex 重启后依然可见。
+
+要连自定义模型一起移除：先在面板点击“清空并重启”，确认模型选择器中不再有自定义模型，再退出插件并删除 `GPT Switch.app`。如果已经删除了 app，可以手动删除 `~/.codex/model_catalog.json`，并移除 `~/.codex/config.toml` 中的 `model_catalog_json` 配置行（仅当这些是本插件写入的），然后完全退出并重新打开 ChatGPT/Codex；仅刷新页面或只关闭窗口不算完全重启。
 
 ## 源码结构
 
