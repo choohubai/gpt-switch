@@ -7,7 +7,7 @@ import {
   buildCatalog, loadModels, saveModels, validateModels, handlePanelRequest, writeCatalog,
   catalogPathFromToml, removeCatalogPointerLine, catalogClearPlan, readCatalogRecord, writeCatalogRecord,
   clearCatalogFiles,
-} from "../model-config.mjs";
+} from "../Sources/model-config.mjs";
 
 const defaults = [{ id: "gpt-6-astra", context: 272 }];
 
@@ -15,7 +15,7 @@ test("bundled config starts empty without replacing saved models", (context) => 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const configPath = path.join(directory, "models.json");
-  const defaultPath = new URL("../models.json", import.meta.url);
+  const defaultPath = new URL("../Resources/models.json", import.meta.url);
   assert.deepEqual(loadModels(configPath, defaultPath), []);
   assert.equal(fs.existsSync(configPath), false);
   const previousConfig = JSON.stringify({ models: [{ id: "gpt-6-astra", displayName: "GPT-6 Astra" }] });

@@ -3,15 +3,16 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INFO_PLIST="${SCRIPT_DIR}/Info.plist"
-BUILD_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/dist}"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+INFO_PLIST="${ROOT_DIR}/Resources/Info.plist"
+BUILD_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 ARTIFACT_DIR="${GPT_SWITCH_RELEASE_ARTIFACT_DIR:-${HOME}/.cache/gpt-switch/releases}"
 KEEP_RELEASES="${GPT_SWITCH_KEEP_RELEASES:-4}"
 GITHUB_REPOSITORY="${GPT_SWITCH_GITHUB_REPOSITORY:-}"
 APP_NAME="GPT Switch.app"
 
-if [[ "${BUILD_DIR}" != /* ]]; then BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}"; fi
-if [[ "${ARTIFACT_DIR}" != /* ]]; then ARTIFACT_DIR="${SCRIPT_DIR}/${ARTIFACT_DIR}"; fi
+if [[ "${BUILD_DIR}" != /* ]]; then BUILD_DIR="${ROOT_DIR}/${BUILD_DIR}"; fi
+if [[ "${ARTIFACT_DIR}" != /* ]]; then ARTIFACT_DIR="${ROOT_DIR}/${ARTIFACT_DIR}"; fi
 APP_PATH="${BUILD_DIR}/${APP_NAME}"
 
 usage() {
@@ -65,15 +66,15 @@ ensure_release_source() {
   [[ "$current_version" == "$version" ]] || \
     die "Info.plist 版本为 ${current_version}，传入版本为 ${version}"
 
-  current_branch="$(git -C "$SCRIPT_DIR" branch --show-current)"
+  current_branch="$(git -C "$ROOT_DIR" branch --show-current)"
   [[ "$current_branch" == "main" ]] || \
     die "发布必须从 main 分支执行，当前分支：${current_branch}"
-  [[ -z "$(git -C "$SCRIPT_DIR" status --porcelain)" ]] || \
+  [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]] || \
     die "工作树不干净，请先提交当前改动"
 
   if [[ -z "${GPT_SWITCH_RELEASE_SKIP_SYNC:-}" ]]; then
-    git -C "$SCRIPT_DIR" fetch origin main --quiet
-    [[ "$(git -C "$SCRIPT_DIR" rev-parse HEAD)" == "$(git -C "$SCRIPT_DIR" rev-parse origin/main)" ]] || \
+    git -C "$ROOT_DIR" fetch origin main --quiet
+    [[ "$(git -C "$ROOT_DIR" rev-parse HEAD)" == "$(git -C "$ROOT_DIR" rev-parse origin/main)" ]] || \
       die "本地 main 必须与 origin/main 完全一致"
   fi
 }
@@ -86,7 +87,7 @@ run_release_gate() {
 
   /usr/bin/plutil -lint "$INFO_PLIST"
   "$SCRIPT_DIR/test.sh"
-  git -C "$SCRIPT_DIR" diff --check
+  git -C "$ROOT_DIR" diff --check
   node -e '
     const fs = require("fs");
     const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -97,7 +98,7 @@ run_release_gate() {
         throw new Error("models.json 中存在无效模型 ID");
       }
     }
-  ' "$SCRIPT_DIR/models.json"
+  ' "$ROOT_DIR/Resources/models.json"
 }
 
 artifact_name() {
@@ -151,7 +152,7 @@ generate_release_notes() {
   local output="$2"
   local commit
 
-  commit="$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD)"
+  commit="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD)"
 
   {
     printf '# GPT Switch %s\n\n' "$version"
@@ -188,7 +189,7 @@ prepare_release() {
   metadata_tmp="${metadata}.tmp.$$"
   checksum_tmp="${checksum}.tmp.$$"
   notes_tmp="${notes}.tmp.$$"
-  commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+  commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   dmg_source="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-dmg.XXXXXX")"
@@ -227,7 +228,7 @@ resolve_github_repository() {
   if [[ -n "$GITHUB_REPOSITORY" ]]; then
     repository="$GITHUB_REPOSITORY"
   else
-    remote_url="$(git -C "$SCRIPT_DIR" remote get-url origin)"
+    remote_url="$(git -C "$ROOT_DIR" remote get-url origin)"
     repository="$(printf '%s\n' "$remote_url" | sed -E \
       's#^git@github\.com:##; s#^https://github\.com/##; s#^ssh://git@github\.com/##; s#\.git$##')"
   fi
@@ -244,7 +245,7 @@ verify_prepared_artifact() {
   metadata="$(metadata_path "$version")"
   checksum="$(checksum_path "$version")"
   notes="$(release_notes_path "$version")"
-  expected_commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+  expected_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   [[ -s "$artifact" && -s "$metadata" && -s "$checksum" && -s "$notes" ]] || \
     die "找不到完整的 prepare 产物，请先执行 prepare $version"
   artifact_commit="$(awk -F= '$1 == "commit" { print $2; exit }' "$metadata")"
@@ -286,20 +287,20 @@ publish_release() {
   checksum="$(checksum_path "$version")"
   notes="$(release_notes_path "$version")"
 
-  if git -C "$SCRIPT_DIR" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    existing_commit="$(git -C "$SCRIPT_DIR" rev-list -n 1 "$tag")"
-    [[ "$existing_commit" == "$(git -C "$SCRIPT_DIR" rev-parse HEAD)" ]] || \
+  if git -C "$ROOT_DIR" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    existing_commit="$(git -C "$ROOT_DIR" rev-list -n 1 "$tag")"
+    [[ "$existing_commit" == "$(git -C "$ROOT_DIR" rev-parse HEAD)" ]] || \
       die "$tag 已经指向其他提交：$existing_commit"
   else
     printf '请输入要创建的 tag（%s）：' "$tag"
     IFS= read -r confirmation
     [[ "$confirmation" == "$tag" ]] || die "tag 确认不匹配"
-    git -C "$SCRIPT_DIR" tag -a "$tag" -m "Release $tag"
+    git -C "$ROOT_DIR" tag -a "$tag" -m "Release $tag"
   fi
 
-  if ! git -C "$SCRIPT_DIR" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  if ! git -C "$ROOT_DIR" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
     info "推送 $tag"
-    git -C "$SCRIPT_DIR" push origin "refs/tags/$tag"
+    git -C "$ROOT_DIR" push origin "refs/tags/$tag"
   fi
 
   repository="$(resolve_github_repository)"

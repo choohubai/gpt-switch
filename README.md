@@ -67,18 +67,18 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `GPTSwitch` | `.app` 的启动入口，选择 Codex 内置 Node.js |
-| `injector.mjs` | 读取模型、启动 Codex、连接本机 CDP 并维护注入状态 |
-| `injection.js` | 在模型菜单出现时补充白名单与自定义模型选项 |
-| `StatusMenu.swift` | Swift 原生菜单栏与模型配置面板 |
-| `model-config.mjs` | 模型校验、配置读写与保存操作 |
-| `models.json` | 首次使用的默认模型配置 |
-| `Info.plist` | macOS 应用元数据 |
-| `AppIcon.png` | 应用图标，取自 ChatGPT 桌面端图标 |
-| `MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |
-| `build.sh` | 生成并临时签名 `.app` |
-| `swiftc.sh` | Swift 编译入口，隔离旧工具链的重复模块定义 |
-| `test.sh` | 源码和构建产物的静态检查 |
+| `Sources/injector.mjs` | 读取模型、启动 Codex、连接本机 CDP 并维护注入状态 |
+| `Sources/injection.js` | 在模型菜单出现时补充白名单与自定义模型选项 |
+| `Sources/StatusMenu.swift` | Swift 原生菜单栏与模型配置面板 |
+| `Sources/model-config.mjs` | 模型校验、配置读写与保存操作 |
+| `Resources/models.json` | 首次使用的默认模型配置 |
+| `Resources/Info.plist` | macOS 应用元数据 |
+| `Resources/AppIcon.png` | 应用图标，取自 ChatGPT 桌面端图标 |
+| `Resources/MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |
+| `Scripts/GPTSwitch` | `.app` 的启动入口，选择 Codex 内置 Node.js |
+| `Scripts/build.sh` | 生成并临时签名 `.app` |
+| `Scripts/swiftc.sh` | Swift 编译入口，隔离旧工具链的重复模块定义 |
+| `Scripts/test.sh` | 源码和构建产物的静态检查 |
 | `.githooks/pre-push` | 推送版本标签时在本地打包并上传安装包 |
 
 ## 兼容性说明

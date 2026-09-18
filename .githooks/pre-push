@@ -18,7 +18,7 @@ set -u
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$root" 2>/dev/null || exit 0
-release="$root/local-release.sh"
+release="$root/Scripts/local-release.sh"
 [ -x "$release" ] || exit 0
 
 pushing_main=0
@@ -39,7 +39,7 @@ if [ -n "$(git -C "$root" status --porcelain)" ]; then
 fi
 
 if ! command -v gh >/dev/null 2>&1; then
-  printf '提示：未找到 gh，无法自动上传安装包。安装后运行 ./local-release.sh prepare <版本> && ./local-release.sh publish <版本>。\n' >&2
+  printf '提示：未找到 gh，无法自动上传安装包。安装后运行 ./Scripts/local-release.sh prepare <版本> && ./Scripts/local-release.sh publish <版本>。\n' >&2
   exit 0
 fi
 

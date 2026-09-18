@@ -1,8 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
 
-SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="${OUTPUT_DIR:-$SOURCE_DIR/dist}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_DIR="$ROOT_DIR/Sources"
+RESOURCE_DIR="$ROOT_DIR/Resources"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
 APP="$OUTPUT_DIR/GPT Switch.app"
 CONTENTS="$APP/Contents"
 ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch.XXXXXX")"
@@ -26,20 +29,20 @@ fi
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET"
 
-cp "$SOURCE_DIR/Info.plist" "$CONTENTS/Info.plist"
-cp "$SOURCE_DIR/GPTSwitch" "$CONTENTS/MacOS/GPTSwitch"
+cp "$RESOURCE_DIR/Info.plist" "$CONTENTS/Info.plist"
+cp "$SCRIPT_DIR/GPTSwitch" "$CONTENTS/MacOS/GPTSwitch"
 cp "$SOURCE_DIR/injector.mjs" "$CONTENTS/Resources/injector.mjs"
 cp "$SOURCE_DIR/model-config.mjs" "$CONTENTS/Resources/model-config.mjs"
 cp "$SOURCE_DIR/injection.js" "$CONTENTS/Resources/injection.js"
-cp "$SOURCE_DIR/models.json" "$CONTENTS/Resources/models.json"
-cp "$SOURCE_DIR/MenuBarIcon.png" "$CONTENTS/Resources/MenuBarIcon.png"
-/bin/zsh "$SOURCE_DIR/swiftc.sh" -parse-as-library -O -target "$(uname -m)-apple-macosx13.0" \
+cp "$RESOURCE_DIR/models.json" "$CONTENTS/Resources/models.json"
+cp "$RESOURCE_DIR/MenuBarIcon.png" "$CONTENTS/Resources/MenuBarIcon.png"
+/bin/zsh "$SCRIPT_DIR/swiftc.sh" -parse-as-library -O -target "$(uname -m)-apple-macosx13.0" \
   "$SOURCE_DIR/StatusMenu.swift" \
   -o "$CONTENTS/Resources/GPTSwitchStatusMenu"
 chmod 755 "$CONTENTS/MacOS/GPTSwitch"
 chmod 755 "$CONTENTS/Resources/GPTSwitchStatusMenu"
 
-cp "$SOURCE_DIR/AppIcon.png" "$MASTER_ICON"
+cp "$RESOURCE_DIR/AppIcon.png" "$MASTER_ICON"
 
 for spec in \
   "16 icon_16x16.png" \

@@ -40,7 +40,7 @@ test("startup does not launch, restart, or activate ChatGPT", (context) => {
     if (scenario === "duplicate") fs.writeFileSync(lock, String(process.pid));
     const result = spawnSync(process.execPath, [
       "--import", "data:text/javascript," + encodeURIComponent(preload),
-      fileURLToPath(new URL("../injector.mjs", import.meta.url)), "--once", "--app", app,
+      fileURLToPath(new URL("../Sources/injector.mjs", import.meta.url)), "--once", "--app", app,
     ], {
       encoding: "utf8", timeout: 5000,
       env: { ...process.env, CUSTOM_MODELS_TEST_DIR: directory,
