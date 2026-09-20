@@ -1,0 +1,56 @@
+# 只做验证：在 Windows runner 上用真实 Chromium 起一个 CDP 端点，跑 Scripts/cdp-probe.mjs。
+# 不参与打包，确认完可以直接删掉这个文件。
+name: Windows probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/windows-probe.yml"
+      - "Scripts/cdp-probe.mjs"
+      - "Sources/injection.js"
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 启动带调试端口的 Chromium
+        shell: pwsh
+        run: |
+          $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          if (-not (Test-Path $chrome)) { throw "找不到 Chrome：$chrome" }
+          $profile = Join-Path $env:RUNNER_TEMP "probe-profile"
+          Start-Process -FilePath $chrome -ArgumentList @(
+            "--headless",
+            "--remote-debugging-port=9222",
+            "--remote-debugging-address=127.0.0.1",
+            "--user-data-dir=$profile",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "about:blank"
+          )
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              $targets = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json/list" -TimeoutSec 2
+              if ($targets.Count -gt 0) {
+                Write-Host "CDP 已就绪：$($targets.Count) 个 target"
+                exit 0
+              }
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          throw "调试端口一直没有起来"
+
+      - name: 跑 cdp-probe
+        shell: pwsh
+        run: |
+          node Scripts/cdp-probe.mjs --port 9222 --models grok-4.6
+          if ($LASTEXITCODE -ne 0) { throw "cdp-probe 退出码 $LASTEXITCODE" }
+

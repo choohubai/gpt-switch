@@ -84,6 +84,7 @@ run_release_gate() {
   require_command node
   require_command shasum
   require_command hdiutil
+  require_command makensis
 
   /usr/bin/plutil -lint "$INFO_PLIST"
   "$SCRIPT_DIR/test.sh"
@@ -117,6 +118,18 @@ checksum_path() {
   printf '%s/%s.sha256\n' "$ARTIFACT_DIR" "$(artifact_name "$1")"
 }
 
+exe_name() {
+  printf 'GPT-Switch-Setup-%s.exe\n' "$1"
+}
+
+exe_path() {
+  printf '%s/%s\n' "$ARTIFACT_DIR" "$(exe_name "$1")"
+}
+
+exe_checksum_path() {
+  printf '%s/%s.sha256\n' "$ARTIFACT_DIR" "$(exe_name "$1")"
+}
+
 release_notes_path() {
   printf '%s/GPT-Switch-v%s-macOS-release-notes.md\n' "$ARTIFACT_DIR" "$1"
 }
@@ -124,7 +137,7 @@ release_notes_path() {
 record_local_artifact() {
   local filename="$1"
   local history="${ARTIFACT_DIR}/history"
-  local temporary candidate item
+  local temporary candidate item version
 
   mkdir -p "$ARTIFACT_DIR"
   temporary="$(mktemp "${history}.tmp.XXXXXX")"
@@ -145,6 +158,15 @@ record_local_artifact() {
       rm -f "${ARTIFACT_DIR}/${item%.dmg}-release-notes.md"
     fi
   done
+
+  for candidate in "$ARTIFACT_DIR"/GPT-Switch-Setup-*.exe; do
+    [[ -f "$candidate" ]] || continue
+    version="$(basename "$candidate")"
+    version="${version#GPT-Switch-Setup-}"
+    version="${version%.exe}"
+    grep -Fqx "$(artifact_name "$version")" "$history" || \
+      rm -f "$candidate" "${candidate}.sha256"
+  done
 }
 
 generate_release_notes() {
@@ -160,7 +182,7 @@ generate_release_notes() {
     printf '## 更新内容\n\n'
     printf '%s\n' '- 支持从 `models.json` 读取自定义模型名称和模型 ID。'
     printf '%s\n' '- 将模型名称注入界面，选中后按配置的模型 ID 发起请求。'
-    printf '%s\n' '- 提供 macOS DMG 安装包。'
+    printf '%s\n' '- 提供 macOS DMG 与 Windows 安装包。'
     printf '\n## 模型配置\n\n'
     printf '%s\n' '`displayName` 用于界面显示，`id` 用于客户端模型标识和实际请求。'
   } > "$output"
@@ -171,6 +193,7 @@ prepare_release() {
   local artifact metadata checksum notes
   local artifact_tmp metadata_tmp checksum_tmp notes_tmp
   local dmg_source commit build_date artifact_sha256
+  local exe exe_checksum exe_sha256
 
   ensure_macos
   ensure_release_source "$version"
@@ -200,12 +223,20 @@ prepare_release() {
   /usr/bin/hdiutil create -quiet -ov -format UDZO \
     -volname "GPT Switch" -srcfolder "$dmg_source" "$artifact_tmp"
   artifact_sha256="$(shasum -a 256 "$artifact_tmp" | awk '{print $1}')"
+  info "打包 Windows 安装包"
+  OUTPUT_DIR="$ARTIFACT_DIR" "$SCRIPT_DIR/package-windows.sh" "$version" >/dev/null
+  exe="$(exe_path "$version")"
+  exe_checksum="$(exe_checksum_path "$version")"
+  [[ -s "$exe" ]] || die "构建后没有找到 Windows 安装包：$exe"
+  exe_sha256="$(shasum -a 256 "$exe" | awk '{print $1}')"
   {
     printf 'version=%s\n' "$version"
     printf 'commit=%s\n' "$commit"
     printf 'app=%s\n' "$APP_NAME"
     printf 'created_at=%s\n' "$build_date"
     printf 'sha256=%s\n' "$artifact_sha256"
+    printf 'exe=%s\n' "$(basename "$exe")"
+    printf 'exe_sha256=%s\n' "$exe_sha256"
   } > "$metadata_tmp"
   printf '%s  %s\n' "$artifact_sha256" "$(basename "$artifact")" > "$checksum_tmp"
   generate_release_notes "$version" "$notes_tmp"
@@ -220,6 +251,7 @@ prepare_release() {
 
   info "已准备发布产物：$artifact"
   info "校验文件：$checksum"
+  info "Windows 安装包：$exe"
 }
 
 resolve_github_repository() {
@@ -240,13 +272,16 @@ resolve_github_repository() {
 verify_prepared_artifact() {
   local version="$1"
   local artifact metadata checksum notes expected_commit artifact_commit expected_sha256 actual_sha256
+  local exe exe_checksum expected_exe_sha256 actual_exe_sha256
 
   artifact="$(artifact_path "$version")"
   metadata="$(metadata_path "$version")"
   checksum="$(checksum_path "$version")"
   notes="$(release_notes_path "$version")"
+  exe="$(exe_path "$version")"
+  exe_checksum="$(exe_checksum_path "$version")"
   expected_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-  [[ -s "$artifact" && -s "$metadata" && -s "$checksum" && -s "$notes" ]] || \
+  [[ -s "$artifact" && -s "$metadata" && -s "$checksum" && -s "$notes" && -s "$exe" && -s "$exe_checksum" ]] || \
     die "找不到完整的 prepare 产物，请先执行 prepare $version"
   artifact_commit="$(awk -F= '$1 == "commit" { print $2; exit }' "$metadata")"
   [[ "$artifact_commit" == "$expected_commit" ]] || \
@@ -255,6 +290,10 @@ verify_prepared_artifact() {
   actual_sha256="$(shasum -a 256 "$artifact" | awk '{print $1}')"
   [[ -n "$expected_sha256" && "$expected_sha256" == "$actual_sha256" ]] || \
     die "产物 SHA256 校验失败"
+  expected_exe_sha256="$(awk -F= '$1 == "exe_sha256" { print $2; exit }' "$metadata")"
+  actual_exe_sha256="$(shasum -a 256 "$exe" | awk '{print $1}')"
+  [[ -n "$expected_exe_sha256" && "$expected_exe_sha256" == "$actual_exe_sha256" ]] || \
+    die "Windows 安装包 SHA256 校验失败"
 }
 
 verify_release_assets() {
@@ -273,7 +312,7 @@ verify_release_assets() {
 publish_release() {
   local version="$1"
   local tag repository artifact metadata checksum notes
-  local existing_commit confirmation is_draft
+  local existing_commit confirmation is_draft exe exe_checksum
 
   ensure_macos
   require_command gh
@@ -286,6 +325,8 @@ publish_release() {
   metadata="$(metadata_path "$version")"
   checksum="$(checksum_path "$version")"
   notes="$(release_notes_path "$version")"
+  exe="$(exe_path "$version")"
+  exe_checksum="$(exe_checksum_path "$version")"
 
   if git -C "$ROOT_DIR" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     existing_commit="$(git -C "$ROOT_DIR" rev-list -n 1 "$tag")"
@@ -311,15 +352,15 @@ publish_release() {
     gh release edit "$tag" --repo "$repository" --title "GPT Switch $version" \
       --notes-file "$notes" --draft=true >/dev/null
     gh release upload "$tag" --repo "$repository" --clobber \
-      "$artifact" "$metadata" "$checksum"
+      "$artifact" "$metadata" "$checksum" "$exe" "$exe_checksum"
   else
     info "创建 GitHub Draft Release $tag"
     gh release create "$tag" --repo "$repository" --verify-tag \
       --title "GPT Switch $version" --notes-file "$notes" --draft \
-      "$artifact" "$metadata" "$checksum" >/dev/null
+      "$artifact" "$metadata" "$checksum" "$exe" "$exe_checksum" >/dev/null
   fi
 
-  verify_release_assets "$repository" "$tag" "$artifact" "$metadata" "$checksum"
+  verify_release_assets "$repository" "$tag" "$artifact" "$metadata" "$checksum" "$exe" "$exe_checksum"
   info "GitHub Release 资产校验通过，发布 $tag"
   gh release edit "$tag" --repo "$repository" --draft=false --prerelease=false >/dev/null
   info "已发布 GitHub Release：$tag"
