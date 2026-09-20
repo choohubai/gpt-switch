@@ -67,8 +67,10 @@ ensure_release_source() {
     die "Info.plist 版本为 ${current_version}，传入版本为 ${version}"
 
   current_branch="$(git -C "$ROOT_DIR" branch --show-current)"
-  [[ "$current_branch" == "main" ]] || \
-    die "发布必须从 main 分支执行，当前分支：${current_branch}"
+  # CI 上按 tag 检出时是 detached HEAD，本地发布仍然强制 main。
+  if [[ "$current_branch" != "main" && -z "${GPT_SWITCH_RELEASE_ALLOW_DETACHED:-}" ]]; then
+    die "发布必须从 main 分支执行，当前分支：${current_branch:-detached HEAD}"
+  fi
   [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]] || \
     die "工作树不干净，请先提交当前改动"
 
@@ -182,7 +184,7 @@ generate_release_notes() {
     printf '## 更新内容\n\n'
     printf '%s\n' '- 支持从 `models.json` 读取自定义模型名称和模型 ID。'
     printf '%s\n' '- 将模型名称注入界面，选中后按配置的模型 ID 发起请求。'
-    printf '%s\n' '- 提供 macOS DMG 与 Windows 安装包。'
+    printf '%s\n' '- 提供 macOS DMG 安装包；Windows 安装包为预览版，注入逻辑尚未移植。'
     printf '\n## 模型配置\n\n'
     printf '%s\n' '`displayName` 用于界面显示，`id` 用于客户端模型标识和实际请求。'
   } > "$output"
@@ -318,7 +320,10 @@ publish_release() {
   require_command gh
   ensure_release_source "$version"
   verify_prepared_artifact "$version"
-  gh auth status --hostname github.com >/dev/null 2>&1 || die "请先执行 gh auth login"
+  # CI 里用 GH_TOKEN / GITHUB_TOKEN，没有交互式登录。
+  if [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]]; then
+    gh auth status --hostname github.com >/dev/null 2>&1 || die "请先执行 gh auth login"
+  fi
 
   tag="v${version}"
   artifact="$(artifact_path "$version")"

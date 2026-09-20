@@ -10,7 +10,7 @@ import {
   catalogPathFromToml, writeCatalogRecord, clearCatalogFiles,
 } from "./model-config.mjs";
 
-const VERSION = "0.1.29";
+const VERSION = "0.1.30";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const HOME = os.homedir();

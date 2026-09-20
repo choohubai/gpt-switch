@@ -1,0 +1,35 @@
+# 推 tag 触发：在 macOS runner 上出 dmg + exe，直接创建并发布 GitHub Release。
+# 复用 Scripts/local-release.sh，和本地打包走同一套逻辑。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 安装 NSIS
+        run: brew install makensis
+
+      - name: 打包并发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPT_SWITCH_RELEASE_SKIP_SYNC: "1"
+          GPT_SWITCH_RELEASE_ALLOW_DETACHED: "1"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ./Scripts/local-release.sh prepare "$version"
+          ./Scripts/local-release.sh publish "$version"
+
