@@ -182,11 +182,12 @@ generate_release_notes() {
     printf '# GPT Switch %s\n\n' "$version"
     printf '> 构建提交：`%s`。\n\n' "$commit"
     printf '## 更新内容\n\n'
-    printf '%s\n' '- 支持从 `models.json` 读取自定义模型名称和模型 ID。'
-    printf '%s\n' '- 将模型名称注入界面，选中后按配置的模型 ID 发起请求。'
-    printf '%s\n' '- 提供 macOS DMG 安装包；Windows 安装包为预览版，注入逻辑尚未移植。'
+    printf '%s\n' '- 在模型配置面板里维护模型 ID 与上下文窗口（单位 k），保存后写入 Codex 模型目录。'
+    printf '%s\n' '- 通过本机 CDP 把自定义模型注入模型选择器，选中后按该模型 ID 发起请求。'
+    printf '%s\n' '- Windows 版提供桌面面板（模型列表、保存、保存并重启、清空并重启、检查更新），安装包不再内置 Node.js。'
+    printf '%s\n' '- macOS 版继续使用菜单栏面板，DMG 与 Windows 安装包一起发布。'
     printf '\n## 模型配置\n\n'
-    printf '%s\n' '`displayName` 用于界面显示，`id` 用于客户端模型标识和实际请求。'
+    printf '%s\n' '`id` 是客户端使用的模型标识，`context` 是上下文窗口（单位 k，1000k = 1M）。'
   } > "$output"
 }
 

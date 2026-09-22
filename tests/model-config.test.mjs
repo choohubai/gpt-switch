@@ -106,7 +106,10 @@ test("save/load/restart contract preserves config on invalid input and restart f
   assert.deepEqual(loadModels(configPath, defaultPath), custom);
   assert.deepEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), { models: custom });
   assert.deepEqual(loadModels(defaultPath, defaultPath), defaults);
-  assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+  // Windows 没有 POSIX 权限位，statSync 只会返回合成的 0o666。
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+  }
   assert.deepEqual(fs.readdirSync(path.dirname(configPath)), ["models.json"]);
   const invalid = await handlePanelRequest({ action: "save", restart: true, models: [...custom, ...custom] }, options);
   assert.equal(invalid.ok, false);

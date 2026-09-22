@@ -37,6 +37,17 @@
 4. 需要移除全部自定义模型时，点击“清空并重启”，插件会清理配置和模型目录并重启 ChatGPT/Codex。
 5. 需要停止插件时，点击 macOS 菜单栏中的插件图标，选择“退出”。
 
+### Windows
+
+Windows 版下载 `GPT-Switch-Setup-<版本>.exe`，安装后从开始菜单打开 `GPT Switch`，会弹出和 macOS 一样的模型配置面板；托盘图标提供“打开面板 / 退出”。
+
+1. 先安装 ChatGPT/Codex 桌面端，商店版和官方独立安装版都可以。
+2. 面板里添加模型 ID 和窗口（k），点击“保存并重启 ChatGPT”：插件会关掉客户端、带着本机调试端口重新拉起它，再把模型注入进去。
+3. 关闭面板窗口只是最小化到任务栏，插件继续在托盘运行；再次点击开始菜单里的 `GPT Switch` 会把面板叫回前台。
+4. 要停止插件，右键托盘图标选择“退出”；要移除插件，从开始菜单卸载即可。
+
+Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node 运行时，找不到时才回退到系统 PATH 里的 node。配置、状态和日志都放在 `%LOCALAPPDATA%\GPTSwitch`。
+
 ### 模型配置
 
 点击菜单栏图标，选择“打开面板”，编辑模型 ID 和窗口（k）；使用加号添加模型，减号删除选中的模型。
@@ -69,17 +80,21 @@
 | --- | --- |
 | `Sources/injector.mjs` | 读取模型、启动 Codex、连接本机 CDP 并维护注入状态 |
 | `Sources/injection.js` | 在模型菜单出现时补充白名单与自定义模型选项 |
-| `Sources/StatusMenu.swift` | Swift 原生菜单栏与模型配置面板 |
+| `Sources/StatusMenu.swift` | macOS 的 Swift 原生菜单栏与模型配置面板 |
+| `Sources/StatusMenu.ps1` | Windows 的桌面面板（PowerShell + WPF），协议与 Swift 面板一致 |
 | `Sources/model-config.mjs` | 模型校验、配置读写与保存操作 |
 | `Resources/models.json` | 首次使用的默认模型配置 |
 | `Resources/Info.plist` | macOS 应用元数据 |
 | `Resources/AppIcon.png` | 应用图标，取自 ChatGPT 桌面端图标 |
 | `Resources/MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |
 | `Scripts/GPTSwitch` | `.app` 的启动入口，选择 Codex 内置 Node.js |
+| `Scripts/GPTSwitch.ps1` | Windows 启动入口：找 Node、后台起注入器、把已打开的面板叫回前台 |
 | `Scripts/build.sh` | 生成并临时签名 `.app` |
 | `Scripts/swiftc.sh` | Swift 编译入口，隔离旧工具链的重复模块定义 |
+| `Scripts/package-windows.sh` | 用 NSIS 打 Windows 安装包（载荷只有脚本和图标） |
+| `Scripts/windows-installer.nsi` | Windows 安装包定义：开始菜单快捷方式、卸载项、卸载前停插件 |
 | `Scripts/test.sh` | 源码和构建产物的静态检查 |
-| `.githooks/pre-push` | 推送版本标签时在本地打包并上传安装包 |
+| `.github/workflows/release.yml` | 推 `v*` tag 后在 CI 上打包 dmg 与 exe 并发布 Release |
 
 ## 兼容性说明
 

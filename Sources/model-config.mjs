@@ -104,18 +104,19 @@ export const writeCatalog = (catalogPath, catalog) => {
   atomicWrite(catalogPath, `${JSON.stringify(catalog)}\n`);
 };
 
-const CATALOG_POINTER = /^[ \t]*model_catalog_json[ \t]*=[ \t]*"([^"]+)"/m;
+/// TOML 里路径可能是基本字符串（"..."）或字面量字符串（'...'，Windows 路径用它避免反斜杠转义）。
+const CATALOG_POINTER = /^[ \t]*model_catalog_json[ \t]*=[ \t]*(?:"([^"]*)"|'([^']*)')/m;
 
 export const catalogPathFromToml = (text, home, codexHome) => {
   const match = text.match(CATALOG_POINTER);
   if (!match) return null;
-  const raw = match[1].replace(/^~(?=\/)/, home);
-  return path.isAbsolute(raw) ? raw : path.resolve(codexHome, raw);
+  const raw = (match[1] ?? match[2]).replace(/^~(?=[\\/])/, home);
+  return path.normalize(path.isAbsolute(raw) ? raw : path.resolve(codexHome, raw));
 };
 
 export const removeCatalogPointerLine = (text, catalogPath, home, codexHome) => {
   if (catalogPathFromToml(text, home, codexHome) !== catalogPath) return text;
-  return text.replace(/^[ \t]*model_catalog_json[ \t]*=[ \t]*"[^"]*"[ \t]*\r?\n?/m, "");
+  return text.replace(/^[ \t]*model_catalog_json[ \t]*=[ \t]*(?:"[^"]*"|'[^']*')[ \t]*\r?\n?/m, "");
 };
 
 export const catalogClearPlan = (record, catalogPath, defaultCatalogPath) => {

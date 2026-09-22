@@ -18,14 +18,21 @@ UninstallIcon "${ICON}"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\GPTSwitch"
+!define PS_EXE "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
 
 Section "安装" SecInstall
   SetOutPath "$INSTDIR"
   File /r "${PAYLOAD}\*.*"
+  ; 清掉 0.1.30 及更早版本留下的 node.exe 和控制台启动脚本。
+  Delete "$INSTDIR\node.exe"
+  Delete "$INSTDIR\GPT Switch.cmd"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
+  ; 快捷方式用隐藏窗口的 PowerShell 拉起启动器，避免出现控制台窗口。
   CreateDirectory "$SMPROGRAMS\GPT Switch"
-  CreateShortCut "$SMPROGRAMS\GPT Switch\GPT Switch.lnk" "$INSTDIR\GPT Switch.cmd"
+  CreateShortCut "$SMPROGRAMS\GPT Switch\GPT Switch.lnk" "${PS_EXE}" \
+    '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\GPT Switch.ps1"' \
+    "$INSTDIR\AppIcon.ico" 0
   CreateShortCut "$SMPROGRAMS\GPT Switch\卸载 GPT Switch.lnk" "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "Software\GPTSwitch" "InstallDir" "$INSTDIR"
@@ -39,6 +46,10 @@ Section "安装" SecInstall
 SectionEnd
 
 Section "Uninstall"
+  ; 先停掉正在运行的注入器和面板，再删文件；用户配置目录保留。
+  nsExec::ExecToLog '"${PS_EXE}" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\GPT Switch.ps1" -Stop'
+  Pop $0
+
   Delete "$SMPROGRAMS\GPT Switch\GPT Switch.lnk"
   Delete "$SMPROGRAMS\GPT Switch\卸载 GPT Switch.lnk"
   RMDir "$SMPROGRAMS\GPT Switch"
@@ -46,4 +57,3 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\GPTSwitch"
 SectionEnd
-
