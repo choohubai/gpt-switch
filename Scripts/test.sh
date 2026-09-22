@@ -38,7 +38,7 @@ for payload in "${WINDOWS_PAYLOADS[@]}"; do
 done
 
 # 面板显示的版本来自 injector.mjs，必须和 Info.plist 一致。
-INJECTOR_VERSION="$(sed -n 's/^const VERSION = "\(.*\)";$/\1/p' "$SOURCE_DIR/injector.mjs")"
+INJECTOR_VERSION="$(tr -d '\r' < "$SOURCE_DIR/injector.mjs" | sed -n 's/^const VERSION = "\(.*\)";$/\1/p')"
 PLIST_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$RESOURCE_DIR/Info.plist")"
 if [[ "$INJECTOR_VERSION" != "$PLIST_VERSION" ]]; then
   print -u2 -- "injector.mjs 版本 ${INJECTOR_VERSION} 与 Info.plist 版本 ${PLIST_VERSION} 不一致"

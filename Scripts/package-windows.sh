@@ -25,7 +25,7 @@ for command in makensis sips shasum; do
 done
 
 # 面板显示的版本来自 injector.mjs，必须和发布版本一致。
-INJECTOR_VERSION="$(sed -n 's/^const VERSION = "\(.*\)";$/\1/p' "$SOURCE_DIR/injector.mjs")"
+INJECTOR_VERSION="$(tr -d '\r' < "$SOURCE_DIR/injector.mjs" | sed -n 's/^const VERSION = "\(.*\)";$/\1/p')"
 [[ "$INJECTOR_VERSION" == "$VERSION" ]] || {
   print -u2 -- "injector.mjs 版本为 ${INJECTOR_VERSION}，传入版本为 $VERSION"
   exit 1
