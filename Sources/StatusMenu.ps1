@@ -20,6 +20,11 @@ Add-Type -Namespace GPTSwitch -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr handle);
 [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
 [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+[DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr owner);
+[DllImport("user32.dll")] public static extern bool CloseClipboard();
+[DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint format);
+[DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr handle);
+[DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr handle);
 '@
 
 try { [void][GPTSwitch.Native]::SetProcessDpiAwarenessContext([IntPtr](-4)) }
@@ -306,6 +311,68 @@ function Select-Row([int]$Index) {
   Update-Controls
 }
 
+# 面板进程里 WPF 自带的 Ctrl+V 没有反应，右键也没有默认菜单：直接读 Win32 剪贴板。
+function Get-ClipboardText {
+  # 别的进程会短暂占住剪贴板，打开失败就重试几次。
+  for ($attempt = 0; $attempt -lt 5; $attempt++) {
+    if ([GPTSwitch.Native]::OpenClipboard([IntPtr]::Zero)) {
+      try {
+        $handle = [GPTSwitch.Native]::GetClipboardData(13)
+        if ($handle -eq [IntPtr]::Zero) { return $null }
+        $pointer = [GPTSwitch.Native]::GlobalLock($handle)
+        if ($pointer -eq [IntPtr]::Zero) { return $null }
+        try { return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($pointer) }
+        finally { [void][GPTSwitch.Native]::GlobalUnlock($handle) }
+      } finally {
+        [void][GPTSwitch.Native]::CloseClipboard()
+      }
+    }
+    Start-Sleep -Milliseconds 30
+  }
+  return $null
+}
+
+function Paste-IntoCell($Box) {
+  $text = Get-ClipboardText
+  if ([string]::IsNullOrEmpty($text)) {
+    Set-Feedback "剪贴板里没有文本" $true
+    return
+  }
+  # 输入框是单行的，换行直接丢掉，避免粘出带换行的模型 ID。
+  $Box.SelectedText = $text -replace "\r?\n", ""
+}
+
+function Add-CellClipboard($Box) {
+  $copyItem = New-Object System.Windows.Controls.MenuItem
+  $copyItem.Header = "复制"
+  $copyItem.Add_Click({
+    param($sender, $eventArgs)
+    $target = $sender.Parent.PlacementTarget
+    if ($target -and $target.SelectedText) {
+      try { [System.Windows.Clipboard]::SetText($target.SelectedText) }
+      catch { Set-Feedback "写入剪贴板失败：$($_.Exception.Message)" $true }
+    }
+  })
+  $pasteItem = New-Object System.Windows.Controls.MenuItem
+  $pasteItem.Header = "粘贴"
+  $pasteItem.Add_Click({
+    param($sender, $eventArgs)
+    Paste-IntoCell $sender.Parent.PlacementTarget
+  })
+  $menu = New-Object System.Windows.Controls.ContextMenu
+  [void]$menu.Items.Add($copyItem)
+  [void]$menu.Items.Add($pasteItem)
+  $Box.ContextMenu = $menu
+
+  $Box.Add_PreviewKeyDown({
+    param($sender, $eventArgs)
+    if ($eventArgs.Key -ne [System.Windows.Input.Key]::V) { return }
+    if (-not ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) { return }
+    $eventArgs.Handled = $true
+    Paste-IntoCell $sender
+  })
+}
+
 function Rebuild-Rows {
   $script:rendering = $true
   $rowsPanel.Children.Clear()
@@ -344,6 +411,9 @@ function Rebuild-Rows {
     $contextBox.VerticalAlignment = "Center"
     $contextBox.Add_TextChanged({ param($sender, $eventArgs) Update-Model $sender "context" })
     $contextBox.Add_GotFocus({ param($sender, $eventArgs) Select-Row ([int]$sender.Tag) })
+
+    Add-CellClipboard $idBox
+    Add-CellClipboard $contextBox
 
     $converted = New-Object System.Windows.Controls.TextBlock
     $converted.Text = Convert-Context ([int]$model.context)

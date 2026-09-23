@@ -665,8 +665,22 @@ struct StatusMenuApp {
         }
         guard let parent = argument("--parent-pid").flatMap(Int32.init), parent > 1,
               let iconPath = argument("--icon-path") else { return }
+        // 面板没有菜单栏，但输入框的 ⌘X/⌘C/⌘V/⌘A 靠主菜单的快捷键派发，缺了它粘贴没反应。
+        func buildEditMenu() -> NSMenu {
+            let edit = NSMenu(title: "编辑")
+            edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+            edit.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+            edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+            edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+            let editItem = NSMenuItem()
+            editItem.submenu = edit
+            let main = NSMenu()
+            main.addItem(editItem)
+            return main
+        }
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
+        application.mainMenu = buildEditMenu()
         let controller = StatusMenuController(parentPID: parent, iconPath: iconPath)
         application.delegate = controller
         DispatchQueue.global(qos: .utility).async {
