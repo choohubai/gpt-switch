@@ -207,11 +207,19 @@ function Convert-Context([int]$k) {
         <RowDefinition Height="*"/>
         <RowDefinition Height="Auto"/>
       </Grid.RowDefinitions>
-      <StackPanel Grid.Row="0" Margin="0,0,0,12">
-        <TextBlock Text="渠道" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
-        <TextBlock Text="点「启用」立即写进 Codex 配置并重启；点右侧编辑图标改配置"
-                   FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
-      </StackPanel>
+      <Grid Grid.Row="0" Margin="0,0,0,12">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+          <TextBlock Text="渠道" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
+          <TextBlock Text="点「启用」立即写进 ChatGPT 配置并重启；点右侧编辑图标改配置"
+                     FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
+        </StackPanel>
+        <Button x:Name="ClearButton" Grid.Column="1" Style="{StaticResource Link}" Content="还原 ChatGPT 配置并重启"
+                VerticalAlignment="Top"/>
+      </Grid>
       <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
         <Grid>
         <Grid.RowDefinitions>
@@ -320,7 +328,6 @@ function Convert-Context([int]$k) {
       </Grid.ColumnDefinitions>
       <TextBlock x:Name="Feedback" Grid.Column="0" FontSize="13" Foreground="#656667"
                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,12,0"/>
-      <Button x:Name="ClearButton" Grid.Column="1" Style="{StaticResource Link}" Content="还原 Codex 配置并重启" Margin="0,0,8,0"/>
       <TextBlock x:Name="VersionLabel" Grid.Column="2" FontSize="12" Foreground="#88898A" VerticalAlignment="Center"/>
       <Button x:Name="UpdateButton" Grid.Column="3" Style="{StaticResource Link}" Content="检查更新" Margin="8,0,0,0"/>
     </Grid>
@@ -564,8 +571,6 @@ function Update-Controls {
     $field.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
-  # 还原入口只在渠道列表页出现，编辑页放的是保存。
-  $clearButton.Visibility = if ($listPage.Visibility -eq "Visible") { "Visible" } else { "Collapsed" }
   $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and (Compare-Channels $script:channels $script:savedChannels)
   $emptyState.Visibility = if ($script:loaded -and $models.Count -eq 0) { "Visible" } else { "Collapsed" }
 }
@@ -1020,7 +1025,7 @@ $deleteChannelButton.Add_Click({
   $label = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "未命名渠道" } else { [string]$channel.id }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "只删除面板里保存的这份配置，不会改动已经写进 Codex 的内容。",
+    "只删除面板里保存的这份配置，不会改动已经写进 ChatGPT 的内容。",
     "删除渠道「$label」？",
     "OKCancel", "Warning")
   if ($answer -ne "OK") { return }
@@ -1045,8 +1050,8 @@ $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "会还原插件写进 Codex 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。",
-    "还原 Codex 配置并重启 ChatGPT？",
+    "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。",
+    "还原 ChatGPT 配置并重启客户端？",
     "OKCancel", "Warning")
   if ($answer -ne "OK") { return }
   $script:busy = $true

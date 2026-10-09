@@ -862,11 +862,11 @@ const windowsCodexBinary = (appPath) => {
 const readBundledCatalog = (appPath) => {
   if (IS_WINDOWS) {
     const binary = windowsCodexBinary(appPath);
-    if (!binary) throw new Error("未找到 Codex 可执行文件，无法读取官方模型目录");
+    if (!binary) throw new Error("未找到 ChatGPT 自带的模型目录工具，无法读取官方模型目录");
     return readCodexCatalog(binary);
   }
   const binary = path.join(appPath, "Contents", "Resources", "codex");
-  if (!fs.existsSync(binary)) throw new Error("未找到 Codex 可执行文件，无法读取官方模型目录");
+  if (!fs.existsSync(binary)) throw new Error("未找到 ChatGPT 自带的模型目录工具，无法读取官方模型目录");
   return readCodexCatalog(binary);
 };
 

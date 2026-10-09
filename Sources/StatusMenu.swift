@@ -404,11 +404,11 @@ struct PanelView: View {
         .frame(minWidth: 680, minHeight: 520)
         // 标题栏透明后内容要填满整窗，不然红绿灯那块会露出灰底。
         .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
-        .confirmationDialog("还原 Codex 配置并重启 ChatGPT？", isPresented: $store.confirmingClear) {
+        .confirmationDialog("还原 ChatGPT 配置并重启客户端？", isPresented: $store.confirmingClear) {
             Button("还原并重启", role: .destructive) { store.clearAndRestart() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会还原插件写进 Codex 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
+            Text("会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
         }
         .confirmationDialog("放弃未保存的更改？", isPresented: $store.confirmingLeave) {
             Button("放弃更改", role: .destructive) { store.discardAndLeave() }
@@ -424,11 +424,19 @@ struct ChannelListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("渠道").font(.system(size: 20, weight: .semibold))
-                Text("点「启用」写进 Codex 配置并重启；点右侧铅笔改配置")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("渠道").font(.system(size: 20, weight: .semibold))
+                    Text("点「启用」写进 ChatGPT 配置并重启；点右侧铅笔改配置")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Button("还原 ChatGPT 配置并重启") { store.confirmingClear = true }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+                    .pointingHand()
+                    .disabled(!store.loaded || store.busy)
             }
             .padding(.horizontal, 24)
             .padding(.top, 22)
@@ -560,7 +568,7 @@ struct ChannelDetailView: View {
             Button("删除", role: .destructive) { store.deleteChannel(at: store.activeIndex) }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只删除面板里保存的这份配置，不会改动已经写进 Codex 的内容。")
+            Text("只删除面板里保存的这份配置，不会改动已经写进 ChatGPT 的内容。")
         }
     }
 
@@ -778,13 +786,6 @@ struct BottomBar: View {
                 .foregroundStyle(store.feedbackIsError ? Color.red : Color.secondary)
                 .lineLimit(1)
             Spacer(minLength: 12)
-            if store.editingIndex == nil {
-                Button("还原 Codex 配置并重启") { store.confirmingClear = true }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
-                    .pointingHand()
-                    .disabled(!store.loaded || store.busy)
-            }
             if !store.version.isEmpty {
                 Text("v\(store.version)")
                     .font(.system(size: 12))
