@@ -94,6 +94,28 @@ func contextConversionLabel(_ k: Int) -> String {
     return "\(k / 1000).\(frac)M"
 }
 
+/// 面板里认这条渠道用的名字：有显示名就「名字 (id)」，否则只给 id。
+func channelDisplayLabel(_ channel: ChannelRow) -> String {
+    let id = channel.id.trimmingCharacters(in: .whitespaces)
+    let name = channel.name.trimmingCharacters(in: .whitespaces)
+    if id.isEmpty { return name.isEmpty ? "未命名渠道" : name }
+    if name.isEmpty || name == id { return id }
+    return "\(name) (\(id))"
+}
+
+/// 删除统一走同一张确认卡片，这里只记「要删哪一条」。
+enum DeletePrompt: Equatable {
+    case channel(Int)
+    case model(Int)
+}
+
+/// 「获取可用模型」拿回来的行：id 一定有，显示名和窗口只在端点给出时才有。
+struct DiscoveredModel: Decodable {
+    let id: String
+    let displayName: String?
+    let context: Int?
+}
+
 func isVersion(_ candidate: String, newerThan base: String) -> Bool {
     func parts(_ value: String) -> [Int] {
         value.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 }
@@ -122,12 +144,18 @@ final class PanelStore: ObservableObject {
     @Published var version = ""
     @Published var updateTitle = "检查更新"
     @Published var updateEnabled = true
+    @Published var fetchingModels = false
+    @Published var discoveredModels: [DiscoveredModel] = []
+    @Published var discoveredSelection: Set<String> = []
+    @Published var discoveryFilter = ""
     @Published var confirmingClear = false
-    @Published var confirmingLeave = false
+    @Published var deletePrompt: DeletePrompt?
 
     var send: ([String: Any]) -> Void = { _ in }
     private var pendingUpdateURL: URL?
     private var checkingUpdate = false
+    /// 删除要落盘，存盘失败时把刚拿掉的那条放回去，别让面板和文件对不上。
+    private var pendingDelete: (restore: [ChannelRow], note: String)?
 
     var activeIndex: Int { editingIndex ?? 0 }
 
@@ -155,18 +183,14 @@ final class PanelStore: ObservableObject {
 
     func showList() {
         editingIndex = nil
-        confirmingLeave = false
+        deletePrompt = nil
+        cancelDiscovery()
         feedback = ""
         feedbackIsError = false
     }
 
-    /// 返回列表等于离开编辑页，未保存的改动必须当场了结，不能带到列表页。
+    /// 返回列表一律丢弃编辑页里没保存的改动，不再弹确认框。
     func requestLeaveEditor() {
-        guard !busy else { return }
-        if isDirty { confirmingLeave = true } else { showList() }
-    }
-
-    func discardAndLeave() {
         guard !busy else { return }
         channels = savedChannels
         showList()
@@ -177,6 +201,47 @@ final class PanelStore: ObservableObject {
         editingIndex = index
     }
 
+    /// 列表页和编辑页的垃圾桶都先问一句，删的动作还是走 deleteChannel。
+    func requestDelete(at index: Int) {
+        guard channels.indices.contains(index), !busy else { return }
+        deletePrompt = .channel(index)
+    }
+
+    func requestModelDelete(at index: Int) {
+        guard models.indices.contains(index), !busy else { return }
+        deletePrompt = .model(index)
+    }
+
+    func confirmDelete() {
+        let prompt = deletePrompt
+        deletePrompt = nil
+        switch prompt {
+        case .channel(let index): deleteChannel(at: index)
+        case .model(let index): removeModel(at: index)
+        case nil: break
+        }
+    }
+
+    func cancelDelete() {
+        deletePrompt = nil
+    }
+
+    /// 二次确认卡片的标题、正文和确认按钮文案。
+    var deletePromptText: (title: String, message: String, confirm: String)? {
+        switch deletePrompt {
+        case .channel(let index):
+            guard channels.indices.contains(index) else { return nil }
+            let label = channelDisplayLabel(channels[index])
+            return ("删除 \(label)?", "删除 \(label) 会移除其配置和存储的 API 密钥。", "删除 \(label)")
+        case .model(let index):
+            let id = models.indices.contains(index) ? models[index].id : ""
+            let label = id.isEmpty ? "未命名模型" : id
+            return ("删除模型「\(label)」？", "会从当前渠道的模型目录里移除它，保存后生效。", "删除")
+        case nil:
+            return nil
+        }
+    }
+
     func addChannel() {
         guard loaded, !busy, channels.count < 50 else { return }
         channels.append(ChannelRow())
@@ -185,11 +250,15 @@ final class PanelStore: ObservableObject {
         feedbackIsError = false
     }
 
+    /// 删除立刻落盘并回列表页：只从内存里拿掉、人还留在编辑页，等于没删成。
     func deleteChannel(at index: Int) {
         guard channels.indices.contains(index), !busy else { return }
+        let removed = channels[index]
+        let restore = channels
         channels.remove(at: index)
-        editingIndex = channels.isEmpty ? nil : min(index, channels.count - 1)
-        if channels.isEmpty { showList() }
+        pendingDelete = (restore, removed.id.isEmpty ? "已删除渠道" : "已删除渠道「\(removed.id)」")
+        showList()
+        submit(action: "save", currentID: currentChannelID ?? "", note: "正在删除渠道…")
     }
 
     // MARK: 模型编辑
@@ -233,10 +302,10 @@ final class PanelStore: ObservableObject {
         submit(action: "switch", currentID: channels[index].id)
     }
 
-    private func submit(action: String, currentID: String) {
+    private func submit(action: String, currentID: String, note: String? = nil) {
         guard loaded, !busy else { return }
         busy = true
-        feedback = action == "switch" ? "正在启用渠道并重启 ChatGPT…" : "正在保存…"
+        feedback = note ?? (action == "switch" ? "正在启用渠道并重启 ChatGPT…" : "正在保存…")
         feedbackIsError = false
         send([
             "action": action,
@@ -266,6 +335,28 @@ final class PanelStore: ObservableObject {
         send(["action": "check-update"])
     }
 
+    /// 填了地址才问得动端点，所以地址是空的就不给点。
+    var canFetchModels: Bool {
+        guard loaded, !busy, let channel = activeChannel else { return false }
+        return !channel.baseUrl.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// 问渠道端点要它公布的模型，拿回来填进这个渠道的模型目录。
+    func fetchModels() {
+        guard canFetchModels, let channel = activeChannel else { return }
+        fetchingModels = true
+        busy = true
+        feedback = "正在获取可用模型…"
+        feedbackIsError = false
+        send([
+            "action": "list-models",
+            "baseUrl": channel.baseUrl,
+            "apiKey": channel.apiKey,
+            "headerName": channel.headerName,
+            "headerValue": channel.headerValue,
+        ])
+    }
+
     // MARK: 响应
 
     func apply(_ response: [String: Any]) {
@@ -276,9 +367,15 @@ final class PanelStore: ObservableObject {
             finishUpdateCheck(response)
             return
         }
+        if fetchingModels {
+            finishModelFetch(response)
+            return
+        }
         busy = false
         let ok = response["ok"] as? Bool == true
         let cleared = response["cleared"] as? Bool == true
+        let pending = pendingDelete
+        pendingDelete = nil
         if ok || response["saved"] as? Bool == true || cleared {
             if let value = response["channels"],
                let data = try? JSONSerialization.data(withJSONObject: value),
@@ -296,6 +393,7 @@ final class PanelStore: ObservableObject {
             }
         }
         if !ok {
+            if let pending { channels = pending.restore }
             feedback = response["error"] as? String ?? "操作失败"
             feedbackIsError = true
         } else if cleared {
@@ -305,12 +403,61 @@ final class PanelStore: ObservableObject {
             feedback = "已启用渠道，ChatGPT 已重启"
             feedbackIsError = false
         } else if response["saved"] as? Bool == true {
-            feedback = "已保存，点列表里的「启用」才会生效"
+            feedback = pending?.note ?? "已保存，点列表里的「启用」才会生效"
             feedbackIsError = false
         } else {
             feedback = ""
             feedbackIsError = false
         }
+    }
+
+    /// 渠道端点公布的模型：id 一定有，显示名和窗口只在端点给出时才有。
+    private func finishModelFetch(_ response: [String: Any]) {
+        fetchingModels = false
+        busy = false
+        guard response["ok"] as? Bool == true,
+              let value = response["models"],
+              let data = try? JSONSerialization.data(withJSONObject: value),
+              let rows = try? JSONDecoder().decode([DiscoveredModel].self, from: data),
+              channels.indices.contains(activeIndex) else {
+            feedback = response["error"] as? String ?? "获取可用模型失败"
+            feedbackIsError = true
+            return
+        }
+        discoveredModels = rows
+        discoveredSelection = []
+        discoveryFilter = ""
+        feedback = "已获取 \(rows.count) 个可用模型，勾选后添加"
+        feedbackIsError = false
+    }
+
+    /// 清单只在面板里挑，没点「添加所选」之前不动模型目录。
+    var discovering: Bool { !discoveredModels.isEmpty }
+
+    func cancelDiscovery() {
+        guard discovering else { return }
+        discoveredModels = []
+        discoveredSelection = []
+        discoveryFilter = ""
+        feedback = isDirty ? "有未保存的更改" : ""
+        feedbackIsError = false
+    }
+
+    /// 勾上的补进当前渠道；已经在目录里的不重复加。
+    func addSelectedModels() {
+        guard channels.indices.contains(activeIndex) else { return }
+        let existing = Set(channels[activeIndex].models.map(\.id))
+        let picked = discoveredModels.filter { discoveredSelection.contains($0.id) && !existing.contains($0.id) }
+        channels[activeIndex].models.append(contentsOf: picked.map { row in
+            var model = ModelRow(id: row.id)
+            model.displayName = row.displayName ?? ""
+            if let context = row.context { model.context = context }
+            return model
+        })
+        let added = picked.count
+        cancelDiscovery()
+        feedback = added > 0 ? "已添加 \(added) 个模型，点「保存」后生效" : "勾选的模型都已经在目录里"
+        feedbackIsError = false
     }
 
     private func finishUpdateCheck(_ response: [String: Any]) {
@@ -401,20 +548,181 @@ struct PanelView: View {
             }
             BottomBar(store: store)
         }
+        // 卡片只挡鼠标挡不住键盘：不把底下的表单停下，打字还会进到被遮住的输入框。
+        .disabled(store.deletePromptText != nil || store.discovering)
         .frame(minWidth: 680, minHeight: 520)
         // 标题栏透明后内容要填满整窗，不然红绿灯那块会露出灰底。
         .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
+        .overlay { modalLayer }
         .confirmationDialog("还原 ChatGPT 配置并重启客户端？", isPresented: $store.confirmingClear) {
             Button("还原并重启", role: .destructive) { store.clearAndRestart() }
             Button("取消", role: .cancel) {}
         } message: {
             Text("会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
         }
-        .confirmationDialog("放弃未保存的更改？", isPresented: $store.confirmingLeave) {
-            Button("放弃更改", role: .destructive) { store.discardAndLeave() }
-            Button("继续编辑", role: .cancel) {}
-        } message: {
-            Text("返回列表会丢掉这次在编辑页里改过、但还没保存的内容。")
+    }
+
+    /// 列表和编辑页共用这一层：要么问一句删不删，要么让人挑要加哪些模型。
+    @ViewBuilder
+    private var modalLayer: some View {
+        if let prompt = store.deletePromptText {
+            DeleteConfirmCard(title: prompt.title, message: prompt.message, confirmTitle: prompt.confirm,
+                              onCancel: { store.cancelDelete() }, onConfirm: { store.confirmDelete() })
+        } else if store.discovering {
+            ModelPickerCard(store: store)
+        }
+    }
+}
+
+/// 端点公布的清单先在这里勾选，点「添加所选」才进模型目录。
+struct ModelPickerCard: View {
+    @ObservedObject var store: PanelStore
+
+    private var visible: [DiscoveredModel] {
+        let keyword = store.discoveryFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !keyword.isEmpty else { return store.discoveredModels }
+        return store.discoveredModels.filter { $0.id.lowercased().contains(keyword) }
+    }
+
+    private var listHeight: CGFloat {
+        min(max(CGFloat(visible.count) * 30 + 10, 64), 220)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.12)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text("选择要添加的模型").font(.system(size: 17, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Button { store.cancelDiscovery() } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .pointingHand()
+                }
+                Text("以下是模型提供商的可用模型，勾选要添加的模型。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    TextField("搜索模型", text: $store.discoveryFilter)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .fieldBox()
+                    Toggle("全选", isOn: allVisible)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 13))
+                        .pointingHand()
+                        .disabled(visible.isEmpty)
+                }
+                Divider()
+                OverlayScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(visible, id: \.id) { row in
+                            Toggle(isOn: selected(row.id)) {
+                                Text(row.id).font(.system(size: 14, design: .monospaced))
+                            }
+                            .toggleStyle(.checkbox)
+                            .pointingHand()
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(height: listHeight)
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    Button("取消") { store.cancelDiscovery() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .pointingHand()
+                    Button("添加所选") { store.addSelectedModels() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .pointingHand()
+                        .disabled(store.discoveredSelection.isEmpty)
+                }
+            }
+            .padding(24)
+            .frame(width: 460)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
+            .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
+        }
+    }
+
+    /// 「全选」按当前筛出来的那些算：筛过之后再全选，只全选看得见的。
+    private var allVisible: Binding<Bool> {
+        Binding(
+            get: { !visible.isEmpty && visible.allSatisfy { store.discoveredSelection.contains($0.id) } },
+            set: { on in
+                for row in visible {
+                    if on { store.discoveredSelection.insert(row.id) } else { store.discoveredSelection.remove(row.id) }
+                }
+            }
+        )
+    }
+
+    private func selected(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { store.discoveredSelection.contains(id) },
+            set: { on in
+                if on { store.discoveredSelection.insert(id) } else { store.discoveredSelection.remove(id) }
+            }
+        )
+    }
+}
+
+struct DeleteConfirmCard: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        ZStack {
+            // Color 自己吃点击，浮层挡住底下的按钮，不用再加手势。
+            Color.black.opacity(0.12)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(title).font(.system(size: 17, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .pointingHand()
+                }
+                Text(message)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    Button("取消", action: onCancel)
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .pointingHand()
+                    Button(confirmTitle, action: onConfirm)
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .foregroundStyle(Color.red)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7).fill(Color.red.opacity(0.08))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7).strokeBorder(Color.red.opacity(0.6))
+                        )
+                        .pointingHand()
+                }
+            }
+            .padding(24)
+            .frame(width: 460)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
+            .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
         }
     }
 }
@@ -498,6 +806,13 @@ struct ChannelCard: View {
             .foregroundStyle(.secondary)
             .pointingHand()
             .disabled(store.busy)
+            Button { store.requestDelete(at: index) } label: {
+                Image(systemName: "trash").font(.system(size: 14))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .pointingHand()
+            .disabled(store.busy)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -514,7 +829,6 @@ struct ChannelCard: View {
 
 struct ChannelDetailView: View {
     @ObservedObject var store: PanelStore
-    @State private var confirmingDelete = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -527,7 +841,7 @@ struct ChannelDetailView: View {
                 .disabled(store.busy)
                 Text(store.editingTitle).font(.system(size: 17, weight: .semibold))
                 Spacer()
-                Button("删除渠道", role: .destructive) { confirmingDelete = true }
+                Button("删除渠道", role: .destructive) { store.requestDelete(at: store.activeIndex) }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()
@@ -540,9 +854,17 @@ struct ChannelDetailView: View {
             OverlayScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     channelForm
-                    Text("模型目录")
-                        .font(.system(size: 13, weight: .semibold))
-                        .padding(.horizontal, 2)
+                    HStack(spacing: 12) {
+                        Text("模型目录")
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer(minLength: 12)
+                        Button(store.fetchingModels ? "获取中…" : "获取可用模型") { store.fetchModels() }
+                            .buttonStyle(.link)
+                            .font(.system(size: 12))
+                            .pointingHand()
+                            .disabled(!store.canFetchModels)
+                    }
+                    .padding(.horizontal, 2)
                     ForEach(Array(store.models.indices), id: \.self) { index in
                         ModelCard(store: store, index: index)
                     }
@@ -563,12 +885,6 @@ struct ChannelDetailView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 18)
-        }
-        .confirmationDialog("删除这个渠道？", isPresented: $confirmingDelete) {
-            Button("删除", role: .destructive) { store.deleteChannel(at: store.activeIndex) }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只删除面板里保存的这份配置，不会改动已经写进 ChatGPT 的内容。")
         }
     }
 
@@ -615,7 +931,7 @@ struct ModelCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Spacer()
-                Button { store.removeModel(at: index) } label: {
+                Button { store.requestModelDelete(at: index) } label: {
                     Image(systemName: "trash").font(.system(size: 14))
                 }
                 .buttonStyle(.borderless)

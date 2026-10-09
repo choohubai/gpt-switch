@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { atomicWrite, validateModels } from "./model-config.mjs";
+import { atomicWrite, MAX_LABEL_LENGTH, validateModels } from "./model-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
 /// 官方字段说明见 https://developers.openai.com/codex/config-reference
@@ -14,6 +14,11 @@ const TABLE_START = /^[ \t]*\[/m;
 const MODEL_PROVIDER_LINE = /^[ \t]*model_provider[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\r?\n?/m;
 const MODEL_PROVIDER_ANY_LINE = /^[ \t]*model_provider[ \t]*=[^\n]*\n?/m;
 const AUTH_KEY = "OPENAI_API_KEY";
+
+const MODEL_LIST_TIMEOUT_MS = 5_000;
+const MAX_LISTING_BYTES = 8 * 1024 * 1024;
+// shortcut: 只保留前 500 个模型，端点公布得更多时剩下的会被丢掉；真有人用到再分页或全量。
+const MAX_DISCOVERED_MODELS = 500;
 
 const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 
@@ -358,6 +363,114 @@ const keepCurrent = (channels, requested, previous) => {
   return null;
 };
 
+const positiveInt = (...candidates) => {
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate > 0) return candidate;
+  }
+  return undefined;
+};
+
+const firstText = (...candidates) => {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+};
+
+/// 只有对象才是模型条目：数组里的 null 和 models 对象里的裸属性都不是。
+const isListingEntry = (entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry);
+
+/// 端点公布的模型目录：标准 `data` 数组优先，部分网关改用富信息的 `models` 对象。
+/// 对象里属性名才是请求要用的路由名，嵌套 id 只作兜底；条目不能用的行直接跳过。
+const readModelListing = (body) => {
+  const listing = body ?? {};
+  let rows;
+  if (Array.isArray(listing.data)) {
+    rows = listing.data.filter(isListingEntry).map((entry) => ({ key: undefined, entry }));
+  } else if (listing.models && typeof listing.models === "object" && !Array.isArray(listing.models)) {
+    rows = Object.entries(listing.models)
+      .filter(([, entry]) => isListingEntry(entry))
+      .map(([key, entry]) => ({ key, entry }));
+  } else {
+    throw new Error("返回内容里既没有 data 数组也没有 models 对象");
+  }
+  const seen = new Set();
+  const models = [];
+  for (const { key, entry } of rows) {
+    if (models.length >= MAX_DISCOVERED_MODELS) break;
+    const id = firstText(key, entry.id);
+    if (!id || id.length > MAX_LABEL_LENGTH || hasControlChars(id) || seen.has(id)) continue;
+    seen.add(id);
+    // 面板按同一套规则校验显示名，先筛掉存不进去的值，别让保存时才报错。
+    const name = firstText(entry.name, entry.display_name, entry.displayName);
+    const displayName = name && name.length <= MAX_LABEL_LENGTH && !hasControlChars(name) ? name : undefined;
+    // 面板里的窗口单位是 k，端点给的是 token；1 到 10000k 之外的值按边界夹住。
+    const tokens = positiveInt(entry.contextWindow, entry.context_window, entry.context_length,
+      entry.max_input_tokens, entry.limit?.context);
+    models.push({
+      id,
+      ...(displayName && displayName !== id ? { displayName } : {}),
+      ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
+    });
+  }
+  return models;
+};
+
+/// 端点是自己填的地址：先看声明的长度，再按实际读到的字节数掐上限，别由着它把内存吃满。
+const readBoundedText = async (response, url) => {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_LISTING_BYTES) throw new Error(`${url} 返回的内容超过 8MB`);
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_LISTING_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`${url} 返回的内容超过 8MB`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+};
+
+/// 问渠道端点要它公布的模型：OpenAI 兼容的 `GET {地址}/models`，密钥走 Bearer。
+export const discoverChannelModels = async (request = {}) => {
+  const baseUrl = String(request.baseUrl ?? "").trim();
+  if (!baseUrl) throw new Error("请先填渠道地址，再获取可用模型");
+  if (!/^https?:\/\//i.test(baseUrl)) throw new Error("渠道地址必须以 http:// 或 https:// 开头");
+  const url = `${baseUrl.replace(/\/+$/, "")}/models`;
+  const headers = { accept: "application/json" };
+  const headerName = String(request.headerName ?? "").trim();
+  if (headerName) headers[headerName] = String(request.headerValue ?? "");
+  const apiKey = String(request.apiKey ?? "").trim();
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  let response;
+  try {
+    response = await fetch(url, { headers, signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) });
+  } catch {
+    throw new Error(`连不上 ${url}`);
+  }
+  if (!response.ok) {
+    const hint = response.status === 401 || response.status === 403 ? "，检查 API 密钥" : "";
+    throw new Error(`${url} 返回 ${response.status}${hint}`);
+  }
+  const text = await readBoundedText(response, url);
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`${url} 返回的不是 JSON`);
+  }
+  const models = readModelListing(body);
+  if (models.length === 0) throw new Error("端点没有公布任何模型，请手动添加");
+  return models;
+};
+
 /// 面板协议：load 读渠道，save 只落盘，switch 落盘后写 Codex 配置并重启，
 /// clear 把 Codex 侧还原（渠道列表保留）。
 export const handlePanelRequest = async (request, {
@@ -369,6 +482,9 @@ export const handlePanelRequest = async (request, {
   try {
     if (request?.action === "load") {
       return { ok: true, ...loadChannelState(configPath, importOptions) };
+    }
+    if (request?.action === "list-models") {
+      return { ok: true, models: await discoverChannelModels(request) };
     }
     if (request?.action === "clear") {
       if (restoreCodex) {

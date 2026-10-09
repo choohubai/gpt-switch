@@ -4,7 +4,7 @@ import path from "node:path";
 export const DEFAULT_CONTEXT_K = 272;
 const EFFECTIVE_CONTEXT_PERCENT = 95;
 const INPUT_MODALITIES = ["text", "image"];
-const MAX_LABEL_LENGTH = 160;
+export const MAX_LABEL_LENGTH = 160;
 
 const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 

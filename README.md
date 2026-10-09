@@ -61,6 +61,8 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 下面是这个渠道的模型列表，每个模型一张卡片：模型 ID、显示名称（留空就用模型 ID）、上下文窗口（k）和输入类型。不同渠道的模型列表互相独立，启用渠道时整份列表一起换，卡片右上角的垃圾桶删除该模型。
 
+“模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
+
 - “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置。
 - 「启用」：存盘后把该渠道写进 `~/.codex/config.toml` 和 `auth.json`，更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。
 - “还原 ChatGPT 配置并重启”（列表页右上角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
@@ -92,7 +94,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 | `Sources/StatusMenu.swift` | macOS 的 Swift 原生菜单栏与模型配置面板 |
 | `Sources/StatusMenu.ps1` | Windows 的桌面面板（PowerShell + WPF），协议与 Swift 面板一致 |
 | `Sources/model-config.mjs` | 模型校验、模型目录合并与 `model_catalog_json` 读写 |
-| `Sources/channel-config.mjs` | 渠道校验与存储、从现有 `~/.codex` 配置导入、启用/还原 `config.toml` 与 `auth.json` |
+| `Sources/channel-config.mjs` | 渠道校验与存储、从现有 `~/.codex` 配置导入、启用/还原 `config.toml` 与 `auth.json`、读取端点公布的模型列表 |
 | `Resources/Info.plist` | macOS 应用元数据 |
 | `Resources/AppIcon.png` | 应用图标，取自 ChatGPT 桌面端图标 |
 | `Resources/MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |

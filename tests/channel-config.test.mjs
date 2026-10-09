@@ -7,6 +7,7 @@ import {
   validateChannels, writeChannelState, readChannelState, loadChannelState,
   modelProviderFromToml, readProviderTable, upsertProviderTable, setModelProvider,
   applyChannelToCodex, restoreCodexConfig, importChannelsFromCodex, handlePanelRequest,
+  discoverChannelModels,
 } from "../Sources/channel-config.mjs";
 
 const CONFIG = [
@@ -283,4 +284,104 @@ test("panel clear restores codex config, keeps the channels and restarts empty",
   assert.equal(failed.ok, false);
   assert.equal(failed.cleared, true);
   assert.match(failed.error, /Codex 配置已还原，但清理或重启失败/);
+});
+
+/// /models 探针：临时顶掉全局 fetch，只检查请求和解析，不真的发网络。
+const withFetch = async (handler, run) => {
+  const original = globalThis.fetch;
+  globalThis.fetch = handler;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+};
+
+/// 断言失败信息里带着某段文字，省得为正则转义 URL 里的斜杠。
+const rejectsWith = (run, expected) =>
+  assert.rejects(run, (error) => error.message.includes(expected));
+
+/// 用真的 Response，让读取和解析走的是运行期那条路。
+const listing = (body, status = 200, headers = {}) =>
+  new Response(JSON.stringify(body), { status, headers });
+
+test("discoverChannelModels reads both listing shapes and normalizes rows", async () => {
+  const seen = [];
+  const models = await withFetch(async (url, init) => {
+    seen.push({ url, init });
+    return listing({ data: [
+      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", context_length: 128000 },
+      { id: "glm-5.3" },
+      { id: "  " },
+      { id: "deepseek-v4-pro" },
+      { name: "没有 id" },
+      null,
+      "裸字符串",
+      { id: "long-name", name: "x".repeat(200) },
+      { id: "control-name", name: "bad\nname" },
+    ], models: { ignored: {} } });
+  }, () => discoverChannelModels({
+    baseUrl: "https://choohub.net/v1/", apiKey: "sk-x", headerName: "x-actor", headerValue: "actor",
+  }));
+  assert.equal(seen[0].url, "https://choohub.net/v1/models", "去掉末尾斜杠、保留路径段");
+  assert.equal(seen[0].init.headers.authorization, "Bearer sk-x");
+  assert.equal(seen[0].init.headers["x-actor"], "actor");
+  assert.equal(seen[0].init.headers.accept, "application/json");
+  assert.deepEqual(models, [
+    { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128 },
+    { id: "glm-5.3" },
+    { id: "long-name" },
+    { id: "control-name" },
+  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；存不进去的显示名不要");
+
+  const mapped = await withFetch(async () => listing({
+    models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },
+  }), () => discoverChannelModels({ baseUrl: "https://relay.example" }));
+  assert.deepEqual(mapped, [
+    { id: "glm-5.3", displayName: "GLM 5.3" },
+    { id: "deepseek-v4-pro" },
+  ], "models 对象用属性名当 id，非对象条目忽略");
+});
+
+test("discoverChannelModels reports the failures the panel shows", async () => {
+  await rejectsWith(() => discoverChannelModels({ baseUrl: "" }), "请先填渠道地址");
+  await rejectsWith(() => discoverChannelModels({ baseUrl: "ftp://a.example" }), "http:// 或 https://");
+  await withFetch(async () => { throw new Error("offline"); }, async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+      "连不上 https://a.example/v1/models");
+  });
+  await withFetch(async () => listing({}, 401), async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "返回 401，检查 API 密钥");
+  });
+  await withFetch(async () => new Response("<html>", { status: 200 }), async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "返回的不是 JSON");
+  });
+  await withFetch(async () => listing({ nope: true }), async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+      "没有 data 数组也没有 models 对象");
+  });
+  await withFetch(async () => listing({ data: [] }), async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "没有公布任何模型");
+  });
+  // 端点自己报的体积过大就别去读了。
+  await withFetch(async () => listing({ data: [] }, 200, { "content-length": "9000000" }), async () => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "超过 8MB");
+  });
+  // 谎报长度的流也要按实际读到的字节数掐掉。
+  await withFetch(async () => new Response("x".repeat(9 * 1024 * 1024), { status: 200, headers: { "content-length": "10" } }),
+    async () => {
+      await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "超过 8MB");
+    });
+});
+
+test("panel list-models answers with the endpoint's models", async (context) => {
+  const paths = sandbox(context);
+  const { options } = panelOptions(paths);
+  const listed = await withFetch(async () => listing({ data: [{ id: "m-one" }] }),
+    () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
+  assert.deepEqual(listed, { ok: true, models: [{ id: "m-one" }] });
+
+  const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /请先填渠道地址/);
 });

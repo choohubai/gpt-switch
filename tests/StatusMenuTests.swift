@@ -100,7 +100,7 @@ struct StatusMenuTests {
         assert(store.feedback == "已保存，点列表里的「启用」才会生效")
         assert(!store.isDirty)
 
-        // 新增渠道进编辑页；删除后回列表。
+        // 新增渠道进编辑页；删除立刻落盘并回列表页。
         store.showList()
         store.addChannel()
         assert(store.channels.count == 3)
@@ -110,6 +110,13 @@ struct StatusMenuTests {
         assert(store.editingTitle == "编辑渠道")
         store.deleteChannel(at: 2)
         assert(store.channels.count == 2)
+        assert(store.editingIndex == nil, "删除后要回列表页")
+        assert(requests.last?["action"] as? String == "save", "删除要落盘")
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
+        ], "current": "relay"])
+        assert(store.feedback == "已删除渠道「gateway」")
 
         // 清空：不动面板里的渠道列表，只发 clear。
         store.clearAndRestart()
@@ -144,20 +151,17 @@ struct StatusMenuTests {
         store.apply(["ok": false, "error": "测试用失败"])
         assert(store.feedback == "测试用失败" && store.feedbackIsError && !store.busy)
 
-        // 返回列表必须了结未保存的改动：有改动先确认，放弃就回滚到已保存状态。
+        // 返回列表直接丢弃没保存的改动，不弹确认框。
         store.editChannel(at: 0)
         store.channels[0].baseUrl = "https://changed.example/v1"
         assert(store.isDirty)
         store.requestLeaveEditor()
-        assert(store.confirmingLeave, "有未保存改动时返回要先确认")
-        assert(store.editingIndex == 0, "确认前不能离开编辑页")
-        store.discardAndLeave()
-        assert(store.editingIndex == nil)
-        assert(!store.isDirty, "放弃更改后要回到已保存状态")
+        assert(store.editingIndex == nil, "返回列表不该停在编辑页")
+        assert(!store.isDirty, "未保存的改动要丢弃")
+        assert(store.channels == store.savedChannels, "丢弃后要回到已保存的内容")
         assert(store.feedback.isEmpty, "列表页不该挂着编辑页的未保存提示")
         store.editChannel(at: 0)
         store.requestLeaveEditor()
-        assert(!store.confirmingLeave, "没有改动时直接返回，不弹框")
         assert(store.editingIndex == nil)
 
         // 删模型/删渠道后 SwiftUI 会用旧下标再求一次 body，不能越界崩掉面板进程。
@@ -173,12 +177,117 @@ struct StatusMenuTests {
         store.addModel()
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.models.count == 1)
+        // 删除要立刻落盘、并且回到列表页，不能停在编辑页等用户再点一次返回。
         store.showList()
         store.editChannel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        let beforeDelete = store.channels[1].id
         store.deleteChannel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.channels.count == 1)
+        assert(store.editingIndex == nil, "删除后要回列表页")
+        assert(store.busy, "删除要发起存盘请求")
+        assert(requests.last?["action"] as? String == "save", "删除要落盘")
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+        ], "current": "relay"])
+        assert(store.feedback == "已删除渠道「\(beforeDelete)」", "删除成功要给出明确的反馈")
+        assert(!store.isDirty)
+
+        // 存盘失败时，刚删掉的那条要放回去，不能只在面板里消失。
+        store.deleteChannel(at: 0)
+        assert(store.channels.isEmpty)
+        store.apply(["ok": false, "error": "测试用失败"])
+        assert(store.channels.count == 1, "存盘失败要把渠道放回去")
+        assert(store.feedbackIsError)
+
+        // 列表页的垃圾桶：先弹确认卡片，取消不删，确认后走同一条删除 + 落盘。
+        store.requestDelete(at: 0)
+        assert(store.deletePrompt == .channel(0), "点垃圾桶要先确认")
+        assert(store.deletePromptText?.title == "删除 choohub?", "确认卡片要有标题")
+        assert(store.deletePromptText?.message == "删除 choohub 会移除其配置和存储的 API 密钥。")
+        store.cancelDelete()
+        assert(store.deletePrompt == nil && store.channels.count == 1, "取消不能删掉")
+        store.requestDelete(at: 0)
+        store.confirmDelete()
+        assert(store.deletePrompt == nil)
+        assert(store.channels.isEmpty, "确认后删掉")
+        assert(store.editingIndex == nil, "列表页删除后仍然停在列表页")
+        assert(requests.last?["action"] as? String == "save", "列表页删除也要落盘")
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
+        ], "current": "relay"])
+        assert(store.feedback == "已删除渠道「choohub」")
+
+        // 删模型也要先确认，取消不删。
+        store.editChannel(at: 0)
+        store.addModel()
+        store.requestModelDelete(at: 0)
+        assert(store.deletePrompt == .model(0), "模型垃圾桶要先确认")
+        store.cancelDelete()
+        assert(store.models.count == 1, "取消不能删掉模型")
+        store.requestModelDelete(at: 0)
+        store.confirmDelete()
+        assert(store.deletePrompt == nil && store.models.isEmpty, "确认后删掉模型")
+        store.showList()
+
+        // 获取可用模型：带上渠道地址、密钥和自定义请求头问端点，拿回来的清单填进模型目录。
+        store.editChannel(at: 0)
+        store.channels[0].apiKey = "sk-fetch"
+        store.channels[0].headerName = "x-actor"
+        store.channels[0].headerValue = "actor"
+        let beforeFetch = requests.count
+        store.channels[0].baseUrl = ""
+        assert(!store.canFetchModels, "没填地址不能获取模型")
+        store.fetchModels()
+        assert(requests.count == beforeFetch, "没填地址不该发请求")
+        store.channels[0].baseUrl = "https://choohub.net/api-proxy/v1"
+        assert(store.canFetchModels)
+        store.fetchModels()
+        assert(requests.last?["action"] as? String == "list-models")
+        assert(requests.last?["baseUrl"] as? String == "https://choohub.net/api-proxy/v1")
+        assert(requests.last?["apiKey"] as? String == "sk-fetch")
+        assert(requests.last?["headerName"] as? String == "x-actor")
+        assert(store.busy && store.fetchingModels, "获取期间要锁住面板")
+        store.channels[0].models = [ModelRow(id: "kept", displayName: "手动改的名字", context: 64)]
+        store.apply(["ok": true, "models": [
+            ["id": "kept", "context": 128],
+            ["id": "brand-new", "displayName": "Brand New"],
+        ]])
+        assert(!store.busy && !store.fetchingModels)
+        assert(store.discovering, "拿回来要先让人勾选，不能直接塞进目录")
+        assert(store.discoveredSelection.isEmpty, "默认一个都不勾")
+        assert(store.models.map(\.id) == ["kept"], "勾选之前目录不能动")
+
+        store.discoveredSelection = ["kept"]
+        store.addSelectedModels()
+        assert(!store.discovering)
+        assert(store.models.count == 1, "已经在目录里的不重复加")
+        assert(store.feedback == "勾选的模型都已经在目录里")
+
+        store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: nil)]
+        store.discoveredSelection = ["brand-new"]
+        store.cancelDiscovery()
+        assert(!store.discovering && store.models.count == 1, "取消不动目录")
+
+        store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: 128)]
+        store.discoveredSelection = ["brand-new"]
+        store.addSelectedModels()
+        assert(store.models.map(\.id) == ["kept", "brand-new"], "勾上的补进目录")
+        assert(store.models[1].displayName == "Brand New")
+        assert(store.models[1].context == 128)
+        assert(store.models[1].inputModalities == ["text", "image"], "新加进来的模型默认文本+图片")
+        assert(store.models[0].displayName == "手动改的名字", "已有的那条不动")
+        assert(store.feedback == "已添加 1 个模型，点「保存」后生效")
+        assert(store.isDirty, "加进来的模型要保存后才生效")
+
+        // 端点报错要落到反馈里并解除 busy。
+        store.busy = true
+        store.fetchingModels = true
+        store.apply(["ok": false, "error": "连不上 https://choohub.net/api-proxy/v1/models"])
+        assert(store.feedback == "连不上 https://choohub.net/api-proxy/v1/models")
+        assert(store.feedbackIsError && !store.busy && !store.fetchingModels)
 
         if CommandLine.arguments.count > 2 {
             try render(controller, store: store, directory: URL(fileURLWithPath: CommandLine.arguments[2]))
@@ -204,5 +313,18 @@ struct StatusMenuTests {
         store.editChannel(at: 0)
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         shoot("detail.png")
+        store.requestDelete(at: 0)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        shoot("confirm.png")
+        store.cancelDelete()
+        store.discoveredModels = [
+            DiscoveredModel(id: "deepseek-v4-flash-vision-exp", displayName: nil, context: nil),
+            DiscoveredModel(id: "deepseek-v4-pro", displayName: nil, context: nil),
+            DiscoveredModel(id: "glm-5.3", displayName: nil, context: nil),
+        ]
+        store.discoveredSelection = ["deepseek-v4-pro"]
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        shoot("picker.png")
+        store.cancelDiscovery()
     }
 }

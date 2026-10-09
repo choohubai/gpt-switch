@@ -50,6 +50,14 @@ $script:latestVersion = $null
 $script:releaseUrl = $null
 $script:checkingUpdate = $false
 $script:quitting = $false
+$script:pendingDeleteRestore = $null
+$script:pendingDeleteNote = ""
+$script:deleteKind = ""
+$script:deleteIndex = -1
+$script:fetchingModels = $false
+$script:discoveredModels = @()
+$script:discoveredSelection = @{}
+$script:discovering = $false
 
 function Send-Request([hashtable]$Request) {
   $stdout.WriteLine(($Request | ConvertTo-Json -Compress -Depth 6))
@@ -72,6 +80,7 @@ function Convert-Context([int]$k) {
     <Style x:Key="Pill" TargetType="Button">
       <Setter Property="Background" Value="#FFFFFF"/>
       <Setter Property="Foreground" Value="#212327"/>
+      <Setter Property="BorderBrush" Value="#E8E8EB"/>
       <Setter Property="BorderThickness" Value="0"/>
       <Setter Property="Padding" Value="18,0"/>
       <Setter Property="Height" Value="34"/>
@@ -80,7 +89,7 @@ function Convert-Context([int]$k) {
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="fill" Background="{TemplateBinding Background}" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="7">
+            <Border x:Name="fill" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="7">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -102,6 +111,14 @@ function Convert-Context([int]$k) {
     </Style>
     <Style x:Key="PillDanger" TargetType="Button" BasedOn="{StaticResource Pill}">
       <Setter Property="Foreground" Value="#D93025"/>
+    </Style>
+    <Style x:Key="DangerOutline" TargetType="Button" BasedOn="{StaticResource Pill}">
+      <Setter Property="Background" Value="#FDF2F2"/>
+      <Setter Property="BorderBrush" Value="#E79A94"/>
+      <Setter Property="Foreground" Value="#D93025"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Height" Value="38"/>
+      <Setter Property="Padding" Value="22,0"/>
     </Style>
     <Style x:Key="Dashed" TargetType="Button">
       <Setter Property="Background" Value="Transparent"/>
@@ -292,7 +309,12 @@ function Convert-Context([int]$k) {
         <TextBlock Text="需要自定义请求头的中转才填，留空则不加" FontSize="12" Foreground="#88898A" Margin="0,4,0,0"/>
       </StackPanel>
       <Grid Grid.Row="3" Margin="0,0,0,8">
-        <TextBlock Text="模型目录" FontSize="14" FontWeight="SemiBold" Foreground="#212327" VerticalAlignment="Center"/>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Text="模型目录" FontSize="14" FontWeight="SemiBold" Foreground="#212327" VerticalAlignment="Center"/>
+        <Button x:Name="FetchModelsButton" Grid.Column="1" Style="{StaticResource Link}" Content="获取可用模型" VerticalAlignment="Center"/>
       </Grid>
       <Border Grid.Row="4" Style="{StaticResource Card}">
         <Grid>
@@ -331,7 +353,82 @@ function Convert-Context([int]$k) {
       <TextBlock x:Name="VersionLabel" Grid.Column="2" FontSize="12" Foreground="#88898A" VerticalAlignment="Center"/>
       <Button x:Name="UpdateButton" Grid.Column="3" Style="{StaticResource Link}" Content="检查更新" Margin="8,0,0,0"/>
     </Grid>
+
+    <!-- 删除统一先走这张卡片：确认后才真正删。负边距把遮罩铺到窗口边缘。 -->
+    <Grid x:Name="ConfirmLayer" Grid.Row="0" Grid.RowSpan="2" Margin="-20,-18,-20,-18"
+          Background="#1F000000" Visibility="Collapsed">
+      <Border Width="460" HorizontalAlignment="Center" VerticalAlignment="Center"
+              Background="#FFFFFF" CornerRadius="14" Padding="24" BorderBrush="#22000000" BorderThickness="1">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="24" ShadowDepth="6" Direction="270" Opacity="0.18" Color="#000000"/>
+        </Border.Effect>
+        <StackPanel>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="ConfirmTitle" Grid.Column="0" FontSize="17" FontWeight="SemiBold"
+                       Foreground="#212327" TextWrapping="Wrap" VerticalAlignment="Center"/>
+            <Button x:Name="ConfirmClose" Grid.Column="1" Style="{StaticResource Link}" Content="✕" FontSize="13"
+                    VerticalAlignment="Top" Margin="8,0,0,0"/>
+          </Grid>
+          <TextBlock x:Name="ConfirmMessage" FontSize="14" Foreground="#656667" TextWrapping="Wrap" Margin="0,14,0,0"/>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
+            <Button x:Name="ConfirmCancel" Style="{StaticResource Pill}" Content="取消" Height="38" Padding="22,0"/>
+            <Button x:Name="ConfirmDelete" Style="{StaticResource DangerOutline}" Content="删除" Margin="10,0,0,0"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Grid>
+    <!-- 端点清单先在这里勾选，点「添加所选」才进模型目录。 -->
+    <Grid x:Name="DiscoverLayer" Grid.Row="0" Grid.RowSpan="2" Margin="-20,-18,-20,-18"
+          Background="#1F000000" Visibility="Collapsed">
+      <Border Width="460" HorizontalAlignment="Center" VerticalAlignment="Center"
+              Background="#FFFFFF" CornerRadius="14" Padding="24" BorderBrush="#22000000" BorderThickness="1">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="24" ShadowDepth="6" Direction="270" Opacity="0.18" Color="#000000"/>
+        </Border.Effect>
+        <StackPanel>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="选择要添加的模型" FontSize="17" FontWeight="SemiBold"
+                       Foreground="#212327" VerticalAlignment="Center"/>
+            <Button x:Name="DiscoverClose" Grid.Column="1" Style="{StaticResource Link}" Content="✕" FontSize="13"
+                    VerticalAlignment="Top" Margin="8,0,0,0"/>
+          </Grid>
+          <TextBlock Text="以下是模型提供商的可用模型，勾选要添加的模型。" FontSize="13" Foreground="#656667"
+                     TextWrapping="Wrap" Margin="0,12,0,0"/>
+          <Grid Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid Grid.Column="0">
+              <TextBox x:Name="DiscoverSearch" Style="{StaticResource Field}" Height="32"/>
+              <TextBlock x:Name="DiscoverHint" Text="搜索模型" FontSize="13" Foreground="#9A9B9D"
+                         VerticalAlignment="Center" Margin="13,0,0,0" IsHitTestVisible="False"/>
+            </Grid>
+            <CheckBox x:Name="DiscoverSelectAll" Grid.Column="1" Content="全选" FontSize="13" Margin="14,0,0,0"
+                      VerticalAlignment="Center"/>
+          </Grid>
+          <Border BorderBrush="#E8E8EB" BorderThickness="0,1,0,0" Margin="0,14,0,0"/>
+          <ScrollViewer Height="200" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+            <StackPanel x:Name="DiscoverList"/>
+          </ScrollViewer>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button x:Name="DiscoverCancel" Style="{StaticResource Pill}" Content="取消" Height="38" Padding="22,0"/>
+            <Button x:Name="DiscoverAdd" Style="{StaticResource Pill}" Content="添加所选" Height="38" Padding="22,0"
+                    Margin="10,0,0,0"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Grid>
   </Grid>
+
 </Window>
 "@
 
@@ -359,6 +456,21 @@ $channelBaseUrlField = $window.FindName("ChannelBaseUrlField")
 $channelApiKeyField = $window.FindName("ChannelApiKeyField")
 $channelHeaderNameField = $window.FindName("ChannelHeaderNameField")
 $channelHeaderValueField = $window.FindName("ChannelHeaderValueField")
+$confirmLayer = $window.FindName("ConfirmLayer")
+$confirmTitle = $window.FindName("ConfirmTitle")
+$confirmMessage = $window.FindName("ConfirmMessage")
+$confirmClose = $window.FindName("ConfirmClose")
+$confirmCancel = $window.FindName("ConfirmCancel")
+$confirmDelete = $window.FindName("ConfirmDelete")
+$fetchModelsButton = $window.FindName("FetchModelsButton")
+$discoverLayer = $window.FindName("DiscoverLayer")
+$discoverSearch = $window.FindName("DiscoverSearch")
+$discoverHint = $window.FindName("DiscoverHint")
+$discoverSelectAll = $window.FindName("DiscoverSelectAll")
+$discoverList = $window.FindName("DiscoverList")
+$discoverClose = $window.FindName("DiscoverClose")
+$discoverCancel = $window.FindName("DiscoverCancel")
+$discoverAdd = $window.FindName("DiscoverAdd")
 
 # 面板跑在 powershell.exe 里，不显式设置就会顶着 PowerShell 的图标。
 # sips 生成的 ico 是 PNG 压缩的，先走 WIC 解码，失败再退回 System.Drawing。
@@ -453,7 +565,7 @@ function Update-ChannelList {
       $border.Tag = $index
 
       $grid = New-Object System.Windows.Controls.Grid
-      foreach ($width in @("*", "Auto", "Auto")) {
+      foreach ($width in @("*", "Auto", "Auto", "Auto")) {
         $column = New-Object System.Windows.Controls.ColumnDefinition
         $column.Width = if ($width -eq "*") { [System.Windows.GridLength]::new(1, "Star") } else { [System.Windows.GridLength]::new(0, "Auto") }
         $grid.ColumnDefinitions.Add($column)
@@ -534,6 +646,23 @@ function Update-ChannelList {
       })
       [System.Windows.Controls.Grid]::SetColumn($editButton, 2)
       [void]$grid.Children.Add($editButton)
+
+      $deleteButton = New-Object System.Windows.Controls.Button
+      $deleteButton.Style = $window.FindResource("PillIcon")
+      # Segoe MDL2 的垃圾桶字形，和 macOS 侧的 trash 图标对齐。
+      $deleteButton.Content = [char]0xE74D
+      $deleteButton.FontFamily = "Segoe MDL2 Assets"
+      $deleteButton.FontSize = 14
+      $deleteButton.ToolTip = "删除渠道"
+      $deleteButton.Tag = $index
+      $deleteButton.Margin = "4,0,0,0"
+      $deleteButton.Add_Click({
+        param($sender, $eventArgs)
+        $eventArgs.Handled = $true
+        Request-Delete "channel" ([int]$sender.Tag)
+      })
+      [System.Windows.Controls.Grid]::SetColumn($deleteButton, 3)
+      [void]$grid.Children.Add($deleteButton)
       $border.Child = $grid
       [void]$channelPanel.Children.Add($border)
     }
@@ -572,6 +701,9 @@ function Update-Controls {
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
   $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and (Compare-Channels $script:channels $script:savedChannels)
+  # 没填地址就问不动端点，所以按钮跟着地址一起灰。
+  $fetchModelsButton.Content = if ($script:fetchingModels) { "获取中…" } else { "获取可用模型" }
+  $fetchModelsButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel -and -not [string]::IsNullOrWhiteSpace([string](Get-ActiveChannel).baseUrl)
   $emptyState.Visibility = if ($script:loaded -and $models.Count -eq 0) { "Visible" } else { "Collapsed" }
 }
 
@@ -597,6 +729,22 @@ function Compare-Models($Left, $Right) {
     if ($leftModalities -ne $rightModalities) { return $true }
   }
   return $false
+}
+
+# 渠道是哈希表，直接赋值会共用同一份对象，改动会串到另一份上；这里逐层复制。
+function Copy-Channels($Source) {
+  return @($Source | ForEach-Object {
+    @{
+      id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
+      headerName = $_.headerName; headerValue = $_.headerValue
+      models = @($_.models | ForEach-Object {
+        @{
+          id = $_.id; displayName = $_.displayName
+          context = $_.context; inputModalities = @($_.inputModalities)
+        }
+      })
+    }
+  })
 }
 
 # 面板进程里 WPF 自带的 Ctrl+V 没有反应，右键也没有默认菜单：直接读 Win32 剪贴板。
@@ -718,7 +866,7 @@ function Rebuild-Rows {
     $trash.ToolTip = "删除模型"
     $trash.Tag = $index
     $trash.IsEnabled = $enabled
-    $trash.Add_Click({ param($sender, $eventArgs) Remove-Model ([int]$sender.Tag) })
+    $trash.Add_Click({ param($sender, $eventArgs) Request-Delete "model" ([int]$sender.Tag) })
     [void]$trashRow.Children.Add($trash)
     [void]$content.Children.Add($trashRow)
 
@@ -818,6 +966,154 @@ function Toggle-Modality($Sender) {
   Update-Controls
 }
 
+# 面板里认这条渠道用的名字：有显示名就「名字 (id)」，否则只给 id。
+function Get-ChannelLabel($Channel) {
+  $id = ([string]$Channel.id).Trim()
+  $name = ([string]$Channel.name).Trim()
+  if ([string]::IsNullOrWhiteSpace($id)) {
+    if ([string]::IsNullOrWhiteSpace($name)) { return "未命名渠道" }
+    return $name
+  }
+  if ([string]::IsNullOrWhiteSpace($name) -or $name -eq $id) { return $id }
+  return "$name ($id)"
+}
+
+# 列表页、编辑页和模型卡片的删除都先弹这张卡片，确认后才真正删。
+function Request-Delete([string]$Kind, [int]$Index) {
+  if ($script:busy) { return }
+  if ($Kind -eq "channel") {
+    if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
+    $label = Get-ChannelLabel $script:channels[$Index]
+    $confirmTitle.Text = "删除 $label?"
+    $confirmMessage.Text = "删除 $label 会移除其配置和存储的 API 密钥。"
+    $confirmDelete.Content = "删除 $label"
+  } else {
+    $channel = Get-ActiveChannel
+    if (-not $channel) { return }
+    if ($Index -lt 0 -or $Index -ge $channel.models.Count) { return }
+    $modelId = [string]$channel.models[$Index].id
+    $label = if ([string]::IsNullOrWhiteSpace($modelId)) { "未命名模型" } else { $modelId }
+    $confirmTitle.Text = "删除模型「$label」？"
+    $confirmMessage.Text = "会从当前渠道的模型目录里移除它，保存后生效。"
+    $confirmDelete.Content = "删除"
+  }
+  $script:deleteKind = $Kind
+  $script:deleteIndex = $Index
+  $confirmLayer.Visibility = "Visible"
+}
+
+function Hide-DeleteConfirm {
+  $script:deleteKind = ""
+  $script:deleteIndex = -1
+  $confirmLayer.Visibility = "Collapsed"
+}
+
+# 问渠道端点要它公布的模型；拿回来的清单先在卡片里勾选，不直接进目录。
+function Fetch-Models {
+  if ($script:busy -or -not $script:loaded) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel -or [string]::IsNullOrWhiteSpace([string]$channel.baseUrl)) { return }
+  $script:busy = $true
+  $script:fetchingModels = $true
+  Set-Feedback "正在获取可用模型…"
+  Update-Controls
+  Send-Request @{
+    action = "list-models"
+    baseUrl = [string]$channel.baseUrl
+    apiKey = [string]$channel.apiKey
+    headerName = [string]$channel.headerName
+    headerValue = [string]$channel.headerValue
+  }
+}
+
+# 端点清单先弹卡片勾选，点「添加所选」才进模型目录。
+function Show-ModelPicker($Models) {
+  $script:discoveredModels = @($Models)
+  $script:discoveredSelection = @{}
+  $script:rendering = $true
+  try {
+    $discoverSearch.Text = ""
+    $discoverHint.Visibility = "Visible"
+  } finally {
+    $script:rendering = $false
+  }
+  $script:discovering = $true
+  Update-DiscoveryList
+  $discoverLayer.Visibility = "Visible"
+  # 打开就把焦点放进搜索框，别让键盘还留在被遮住的表单上。
+  $discoverSearch.Focus() | Out-Null
+}
+
+function Hide-ModelPicker {
+  $script:discovering = $false
+  $script:discoveredModels = @()
+  $script:discoveredSelection = @{}
+  $discoverList.Children.Clear()
+  $discoverLayer.Visibility = "Collapsed"
+}
+
+# 按搜索框筛出来的行重建勾选列表。
+function Update-DiscoveryList {
+  $discoverList.Children.Clear()
+  $keyword = $discoverSearch.Text.Trim().ToLower()
+  foreach ($row in $script:discoveredModels) {
+    $id = [string]$row.id
+    if ($keyword -and -not $id.ToLower().Contains($keyword)) { continue }
+    $check = New-Object System.Windows.Controls.CheckBox
+    $check.Content = $id
+    $check.FontFamily = "Consolas"
+    $check.FontSize = 14
+    $check.Margin = "0,0,0,8"
+    $check.Tag = $id
+    $check.IsChecked = $script:discoveredSelection.ContainsKey($id)
+    $check.Add_Click({ param($sender, $eventArgs) Toggle-Discovered $sender })
+    [void]$discoverList.Children.Add($check)
+  }
+  Refresh-DiscoverySelection
+}
+
+# 只刷「全选」和「添加所选」的状态，不重建列表，免得勾一下就丢焦点。
+function Refresh-DiscoverySelection {
+  $all = $discoverList.Children.Count -gt 0
+  foreach ($check in $discoverList.Children) {
+    if ($check.IsChecked -ne $true) { $all = $false; break }
+  }
+  $discoverSelectAll.IsChecked = $all
+  $discoverAdd.IsEnabled = $script:discoveredSelection.Count -gt 0
+}
+
+function Toggle-Discovered($Sender) {
+  $id = [string]$Sender.Tag
+  if ($Sender.IsChecked -eq $true) { $script:discoveredSelection[$id] = $true }
+  else { [void]$script:discoveredSelection.Remove($id) }
+  Refresh-DiscoverySelection
+}
+
+# 勾上的补进当前渠道；已经在目录里的不重复加。
+function Add-SelectedModels {
+  $channel = Get-ActiveChannel
+  if (-not $channel) { Hide-ModelPicker; Update-Controls; return }
+  $existing = @{}
+  foreach ($model in @($channel.models)) { $existing[[string]$model.id] = $true }
+  $added = 0
+  foreach ($row in $script:discoveredModels) {
+    $id = [string]$row.id
+    if (-not $script:discoveredSelection.ContainsKey($id) -or $existing.ContainsKey($id)) { continue }
+    $channel.models = @($channel.models) + @{
+      id = $id
+      displayName = [string]$row.displayName
+      context = $(if ($null -ne $row.context) { [int]$row.context } else { 272 })
+      inputModalities = @("text", "image")
+    }
+    $existing[$id] = $true
+    $added += 1
+  }
+  Hide-ModelPicker
+  Rebuild-Rows
+  Set-Feedback $(if ($added -gt 0) { "已添加 $added 个模型，点「保存」后生效" } else { "勾选的模型都已经在目录里" })
+  Update-Controls
+}
+
 function Remove-Model([int]$Index) {
   if ($script:busy) { return }
   $channel = Get-ActiveChannel
@@ -831,6 +1127,23 @@ function Remove-Model([int]$Index) {
   Rebuild-Rows
   Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
+}
+
+# 列表页的垃圾桶和编辑页的「删除渠道」共用这一份：删完立刻落盘并回列表页。
+function Remove-Channel([int]$Index) {
+  if ($script:busy) { return }
+  if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
+  $channel = $script:channels[$Index]
+  $script:pendingDeleteRestore = Copy-Channels $script:channels
+  $script:pendingDeleteNote = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "已删除渠道" } else { "已删除渠道「$($channel.id)」" }
+  $remaining = @()
+  for ($position = 0; $position -lt $script:channels.Count; $position++) {
+    if ($position -ne $Index) { $remaining += $script:channels[$position] }
+  }
+  $script:channels = $remaining
+  $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($Index, $script:channels.Count - 1) }
+  Show-List-Page
+  Submit "save" "正在删除渠道…"
 }
 
 function Update-ChannelField([string]$Field, [string]$Value) {
@@ -852,6 +1165,19 @@ function Receive-Response($Response) {
   }
   if ($script:checkingUpdate) {
     Finish-UpdateCheck $Response
+    return
+  }
+  if ($script:fetchingModels) {
+    $script:fetchingModels = $false
+    $script:busy = $false
+    $channel = Get-ActiveChannel
+    if ($Response.ok -eq $true -and $null -ne $Response.models -and $channel) {
+      Show-ModelPicker $Response.models
+      Set-Feedback "已获取 $(@($Response.models).Count) 个可用模型，勾选后添加"
+    } else {
+      Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "获取可用模型失败" }) $true
+    }
+    Update-Controls
     return
   }
   $script:busy = $false
@@ -878,18 +1204,7 @@ function Receive-Response($Response) {
           })
         }
       })
-      $script:savedChannels = @($script:channels | ForEach-Object {
-        @{
-          id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
-          headerName = $_.headerName; headerValue = $_.headerValue
-          models = @($_.models | ForEach-Object {
-            @{
-              id = $_.id; displayName = $_.displayName
-              context = $_.context; inputModalities = @($_.inputModalities)
-            }
-          })
-        }
-      })
+      $script:savedChannels = Copy-Channels $script:channels
       $script:currentChannelId = [string]$Response.current
       $script:loaded = $true
       $wanted = 0
@@ -909,16 +1224,24 @@ function Receive-Response($Response) {
     }
   }
   if (-not $ok) {
+    # 删除没能存盘就把刚拿掉的那条放回去，别让面板和文件对不上。
+    if ($script:pendingDeleteRestore) {
+      $script:channels = $script:pendingDeleteRestore
+      $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($script:channelIndex, $script:channels.Count - 1) }
+      Update-ChannelList
+    }
     Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "操作失败" }) $true
   } elseif ($cleared) {
     Set-Feedback "已清空并重启 ChatGPT"
   } elseif ($Response.restarted -eq $true) {
     Set-Feedback "已启用渠道，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
-    Set-Feedback "已保存，点列表里的「启用」才会生效"
+    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点列表里的「启用」才会生效" })
   } else {
     Set-Feedback ""
   }
+  $script:pendingDeleteRestore = $null
+  $script:pendingDeleteNote = ""
   Update-Controls
 }
 
@@ -961,12 +1284,13 @@ function Finish-UpdateCheck($Response) {
   $updateButton.IsEnabled = $true
 }
 
-function Submit([string]$Action) {
+function Submit([string]$Action, [string]$Note = "") {
   if (-not $script:loaded -or $script:busy) { return }
   $channel = Get-ActiveChannel
-  if (-not $channel) { return }
+  # 保存整份列表不需要当前渠道（删掉最后一个之后也要能存），只有切换渠道才必须有。
+  if ($Action -eq "switch" -and -not $channel) { return }
   $script:busy = $true
-  Set-Feedback $(if ($Action -eq "switch") { "正在启用渠道并重启 ChatGPT…" } else { "正在保存…" })
+  Set-Feedback $(if ($Note) { $Note } elseif ($Action -eq "switch") { "正在启用渠道并重启 ChatGPT…" } else { "正在保存…" })
   Rebuild-Rows
   Update-Controls
   Send-Request @{
@@ -1004,6 +1328,30 @@ $addButton.Add_Click({
 
 $saveButton.Add_Click({ Submit "save" })
 
+$fetchModelsButton.Add_Click({ Fetch-Models })
+
+$closeDiscovery = {
+  Hide-ModelPicker
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
+}
+$discoverClose.Add_Click($closeDiscovery)
+$discoverCancel.Add_Click($closeDiscovery)
+$discoverAdd.Add_Click({ Add-SelectedModels })
+$discoverSelectAll.Add_Click({
+  $on = $discoverSelectAll.IsChecked -eq $true
+  foreach ($check in $discoverList.Children) {
+    $check.IsChecked = $on
+    $id = [string]$check.Tag
+    if ($on) { $script:discoveredSelection[$id] = $true }
+    else { [void]$script:discoveredSelection.Remove($id) }
+  }
+  Refresh-DiscoverySelection
+})
+$discoverSearch.Add_TextChanged({
+  $discoverHint.Visibility = if ([string]::IsNullOrEmpty($discoverSearch.Text)) { "Visible" } else { "Collapsed" }
+  if ($script:discovering) { Update-DiscoveryList }
+})
+
 $addChannelButton.Add_Click({
   if (-not $script:loaded -or $script:busy -or $script:channels.Count -ge 50) { return }
   $script:channels = @($script:channels) + @{
@@ -1016,28 +1364,26 @@ $addChannelButton.Add_Click({
   $channelIdField.Focus() | Out-Null
 })
 
-$backButton.Add_Click({ Show-List-Page })
+# 返回列表＝丢弃编辑页里没保存的改动，不弹确认框。
+$backButton.Add_Click({
+  if ($script:busy) { return }
+  $script:channels = Copy-Channels $script:savedChannels
+  Show-List-Page
+})
 
 $deleteChannelButton.Add_Click({
   if ($script:busy) { return }
-  $channel = Get-ActiveChannel
-  if (-not $channel) { return }
-  $label = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "未命名渠道" } else { [string]$channel.id }
-  $answer = [System.Windows.MessageBox]::Show(
-    $window,
-    "只删除面板里保存的这份配置，不会改动已经写进 ChatGPT 的内容。",
-    "删除渠道「$label」？",
-    "OKCancel", "Warning")
-  if ($answer -ne "OK") { return }
-  $remaining = @()
-  for ($index = 0; $index -lt $script:channels.Count; $index++) {
-    if ($index -ne $script:channelIndex) { $remaining += $script:channels[$index] }
-  }
-  $script:channels = $remaining
-  $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($script:channelIndex, $script:channels.Count - 1) }
-  if ($script:channels.Count -eq 0) { Show-List-Page } else { Show-Detail-Page }
-  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
-  Update-Controls
+  Request-Delete "channel" $script:channelIndex
+})
+
+$confirmClose.Add_Click({ Hide-DeleteConfirm })
+$confirmCancel.Add_Click({ Hide-DeleteConfirm })
+$confirmDelete.Add_Click({
+  $kind = $script:deleteKind
+  $index = $script:deleteIndex
+  Hide-DeleteConfirm
+  if ($kind -eq "channel") { Remove-Channel $index }
+  elseif ($kind -eq "model") { Remove-Model $index }
 })
 
 $channelIdField.Add_TextChanged({ Update-ChannelField "id" $channelIdField.Text })
