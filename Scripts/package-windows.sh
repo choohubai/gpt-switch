@@ -37,9 +37,8 @@ PAYLOAD="$WORK_DIR/payload"
 mkdir -p "$PAYLOAD" "$OUTPUT_DIR"
 
 cp "$SOURCE_DIR/injector.mjs" "$SOURCE_DIR/injection.js" "$SOURCE_DIR/model-config.mjs" \
-   "$SOURCE_DIR/StatusMenu.ps1" "$PAYLOAD/"
+   "$SOURCE_DIR/channel-config.mjs" "$SOURCE_DIR/StatusMenu.ps1" "$PAYLOAD/"
 cp "$SCRIPT_DIR/GPTSwitch.ps1" "$PAYLOAD/GPT Switch.ps1"
-cp "$RESOURCE_DIR/models.json" "$PAYLOAD/"
 
 ICON="$WORK_DIR/AppIcon.ico"
 # sips 写 ico 要求先降到 256，直接转 1024 的图会报 Error 13。

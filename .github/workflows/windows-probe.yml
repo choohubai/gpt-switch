@@ -9,6 +9,10 @@ on:
       - ".github/workflows/windows-probe.yml"
       - "Scripts/cdp-probe.mjs"
       - "Sources/injection.js"
+      - "Sources/StatusMenu.ps1"
+      - "Sources/injector.mjs"
+      - "Sources/channel-config.mjs"
+      - "Sources/model-config.mjs"
 
 jobs:
   probe:
@@ -19,6 +23,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      # 面板只能在 Windows 上跑，用 runner 自带的 PowerShell 和 WPF 先验证脚本和界面定义没写坏。
+      - name: 检查面板脚本与 XAML
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("Sources/StatusMenu.ps1", [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "line $($_.Extent.StartLineNumber): $($_.Message)" }
+            throw "StatusMenu.ps1 解析失败"
+          }
+          Add-Type -AssemblyName PresentationFramework
+          $match = [regex]::Match((Get-Content Sources/StatusMenu.ps1 -Raw), '(?s)\[xml\][$]xaml = @"(.*?)"@')
+          if (-not $match.Success) { throw "找不到 StatusMenu.ps1 里的 XAML" }
+          $reader = New-Object System.Xml.XmlNodeReader ([xml]$match.Groups[1].Value)
+          $window = [System.Windows.Markup.XamlReader]::Load($reader)
+          Write-Host "面板脚本解析通过，WPF 界面加载成功：$($window.Title)"
 
       - name: 启动带调试端口的 Chromium
         shell: pwsh
@@ -53,4 +74,3 @@ jobs:
         run: |
           node Scripts/cdp-probe.mjs --port 9222 --models grok-4.6
           if ($LASTEXITCODE -ne 0) { throw "cdp-probe 退出码 $LASTEXITCODE" }
-

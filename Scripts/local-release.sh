@@ -91,17 +91,6 @@ run_release_gate() {
   /usr/bin/plutil -lint "$INFO_PLIST"
   "$SCRIPT_DIR/test.sh"
   git -C "$ROOT_DIR" diff --check
-  node -e '
-    const fs = require("fs");
-    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const models = Array.isArray(value) ? value : value.models;
-    if (!Array.isArray(models)) throw new Error("models.json 缺少模型列表");
-    for (const model of models) {
-      if (!model || typeof model.id !== "string" || !model.id.trim()) {
-        throw new Error("models.json 中存在无效模型 ID");
-      }
-    }
-  ' "$ROOT_DIR/Resources/models.json"
 }
 
 artifact_name() {

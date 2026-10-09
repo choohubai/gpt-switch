@@ -3,6 +3,10 @@ import path from "node:path";
 
 export const DEFAULT_CONTEXT_K = 272;
 const EFFECTIVE_CONTEXT_PERCENT = 95;
+const INPUT_MODALITIES = ["text", "image"];
+const MAX_LABEL_LENGTH = 160;
+
+const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 
 const parseContextK = (value, index) => {
   if (value == null || value === "") return DEFAULT_CONTEXT_K;
@@ -13,29 +17,49 @@ const parseContextK = (value, index) => {
   return number;
 };
 
+const parseDisplayName = (value, index) => {
+  if (value == null) return "";
+  if (typeof value !== "string") throw new Error(`第 ${index + 1} 行显示名称必须是文本`);
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_LABEL_LENGTH || hasControlChars(trimmed)) {
+    throw new Error(`第 ${index + 1} 行显示名称不能包含控制字符或超过 160 个字符`);
+  }
+  return trimmed;
+};
+
+/// Codex catalog 只认 text/image；不填时按 codex 自带模型的默认值给两者。
+const parseModalities = (value, index) => {
+  if (value == null) return [...INPUT_MODALITIES];
+  if (!Array.isArray(value)) throw new Error(`第 ${index + 1} 行输入类型必须是列表`);
+  const modalities = [...new Set(value.map((item) => (typeof item === "string" ? item.trim() : "")))];
+  if (modalities.some((item) => !INPUT_MODALITIES.includes(item))) {
+    throw new Error(`第 ${index + 1} 行输入类型只支持 text 和 image`);
+  }
+  return modalities;
+};
+
 export const validateModels = (models) => {
   if (!Array.isArray(models)) throw new Error("模型配置必须是列表");
   const ids = new Set();
   return models.map((model, index) => {
     const value = model?.id;
-    if (typeof value !== "string" || !value.trim() || value.trim().length > 160
-        || /[\u0000-\u001f\u007f]/.test(value)) {
+    if (typeof value !== "string" || !value.trim() || value.trim().length > MAX_LABEL_LENGTH
+        || hasControlChars(value)) {
       throw new Error(`第 ${index + 1} 行模型 ID 不能为空、包含控制字符或超过 160 个字符`);
     }
     const id = value.trim();
     if (ids.has(id)) throw new Error(`第 ${index + 1} 行模型 ID 重复：${id}`);
     ids.add(id);
-    return { id, context: parseContextK(model.context, index) };
+    return {
+      id,
+      displayName: parseDisplayName(model.displayName, index),
+      context: parseContextK(model.context, index),
+      inputModalities: parseModalities(model.inputModalities, index),
+    };
   });
 };
 
-export const loadModels = (configPath, defaultPath) => {
-  const source = fs.existsSync(configPath) ? configPath : defaultPath;
-  const config = JSON.parse(fs.readFileSync(source, "utf8"));
-  return validateModels(config.models);
-};
-
-const atomicWrite = (filePath, contents) => {
+export const atomicWrite = (filePath, contents) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = `${filePath}.${process.pid}.tmp`;
   try {
@@ -44,12 +68,6 @@ const atomicWrite = (filePath, contents) => {
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-};
-
-export const saveModels = (configPath, models) => {
-  const validated = validateModels(models);
-  atomicWrite(configPath, `${JSON.stringify({ models: validated }, null, 2)}\n`);
-  return validated;
 };
 
 const MINIMAL_MODEL = {
@@ -77,17 +95,23 @@ export const buildCatalog = (bundled, models) => {
   const bySlug = new Map(base.map((entry) => [entry.slug, entry]));
   for (const model of models) {
     const tokens = model.context * 1000;
+    // 直接调 buildCatalog 的老调用点可能只给了 id/context，这里补默认值。
+    const modalities = Array.isArray(model.inputModalities) ? [...model.inputModalities] : [...INPUT_MODALITIES];
     const existing = bySlug.get(model.id);
     if (existing) {
       applyWindow(existing, tokens);
+      if (model.displayName) existing.display_name = model.displayName;
+      existing.input_modalities = modalities;
       existing.visibility = "list";
       continue;
     }
+    const displayName = model.displayName || model.id;
     const entry = {
       ...JSON.parse(JSON.stringify(template)),
       slug: model.id,
-      display_name: model.id,
-      description: model.id,
+      display_name: displayName,
+      description: displayName,
+      input_modalities: modalities,
       visibility: "list",
       auto_compact_token_limit: null,
       availability_nux: null,
@@ -170,37 +194,4 @@ export const clearCatalogFiles = ({
   }
   fs.rmSync(recordPath, { force: true });
   return plan;
-};
-
-export const handlePanelRequest = async (request, { configPath, defaultPath, restart, applyCatalog, clearCatalog }) => {
-  let savedModels;
-  let cleared = false;
-  try {
-    if (request.action === "load") {
-      return { ok: true, models: loadModels(configPath, defaultPath) };
-    }
-    if (request.action === "clear") {
-      await clearCatalog();
-      fs.rmSync(configPath, { force: true });
-      cleared = true;
-      await restart([]);
-      return { ok: true, cleared: true, restarted: true, models: [] };
-    }
-    if (request.action !== "save" || typeof request.restart !== "boolean") {
-      throw new Error("无效的面板操作");
-    }
-    savedModels = saveModels(configPath, request.models);
-    if (applyCatalog) await applyCatalog(savedModels);
-    if (request.restart) await restart(savedModels);
-    return { ok: true, saved: true, restarted: request.restart, models: savedModels };
-  } catch (error) {
-    const prefix = cleared ? "配置已清空，但重启失败：" : savedModels === undefined ? "" : "配置已保存，但未能生效：";
-    return {
-      ok: false,
-      saved: savedModels !== undefined,
-      ...(cleared ? { cleared: true, models: [] } : {}),
-      ...(savedModels === undefined ? {} : { models: savedModels }),
-      error: `${prefix}${error.message}`,
-    };
-  }
 };

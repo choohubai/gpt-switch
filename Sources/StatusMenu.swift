@@ -1,104 +1,87 @@
 import AppKit
+import SwiftUI
 
-/// Colors and type scale sampled from the Codex desktop UI. The light values are measured
-/// from a live window; the dark values keep the same surface hierarchy.
-enum CodexTheme {
-    static let surface = dynamic(light: 0xFDFDFD, dark: 0x1B1B1D)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x232326)
-    static let subtle = dynamic(light: 0xEDEDEE, dark: 0x333336)
-    static let border = dynamic(light: 0xEDEDEE, dark: 0x3A3A3D)
-    static let text = dynamic(light: 0x212327, dark: 0xF2F2F4)
-    static let secondaryText = dynamic(light: 0x656667, dark: 0xA6A6AA)
-    static let tertiaryText = dynamic(light: 0x88898A, dark: 0x8E8E93)
-    static let primaryButton = dynamic(light: 0x212327, dark: 0xF2F2F4)
-    static let primaryButtonText = dynamic(light: 0xFFFFFF, dark: 0x1B1B1D)
-
-    private static func dynamic(light: UInt32, dark: UInt32) -> NSColor {
-        NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            return NSColor(hex: isDark ? dark : light)
-        }
-    }
-}
-
-private extension NSColor {
-    convenience init(hex: UInt32) {
-        self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
-                  green: CGFloat((hex >> 8) & 0xFF) / 255,
-                  blue: CGFloat(hex & 0xFF) / 255,
-                  alpha: 1)
-    }
-}
-
-/// Flat pill button matching the Codex action buttons: gray for secondary actions,
-/// near-black for the primary action.
-final class CodexPillButton: NSButton {
-    private let fill: NSColor
-    private let foreground: NSColor
-    private let label: String
-
-    init(title: String, primary: Bool) {
-        label = title
-        fill = primary ? CodexTheme.primaryButton : CodexTheme.subtle
-        foreground = primary ? CodexTheme.primaryButtonText : CodexTheme.text
-        super.init(frame: .zero)
-        self.title = title
-        isBordered = false
-        bezelStyle = .regularSquare
-        setButtonType(.momentaryPushIn)
-        wantsLayer = true
-        layer?.cornerRadius = 7
-        layer?.masksToBounds = true
-        font = .systemFont(ofSize: 12, weight: primary ? .semibold : .regular)
-        let titleWidth = (title as NSString).size(withAttributes: [.font: font as Any]).width
-        widthAnchor.constraint(equalToConstant: (titleWidth + 24).rounded(.up)).isActive = true
-        heightAnchor.constraint(equalToConstant: 28).isActive = true
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-        applyTheme()
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override var isEnabled: Bool { didSet { applyTheme() } }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyTheme()
-    }
-
-    override func highlight(_ flag: Bool) {
-        super.highlight(flag)
-        layer?.opacity = flag ? 0.75 : 1
-    }
-
-    private func applyTheme() {
-        setAccessibilityLabel(label)
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            let resolvedFill = fill.usingColorSpace(.sRGB) ?? fill
-            let resolvedForeground = foreground.usingColorSpace(.sRGB) ?? foreground
-            layer?.backgroundColor = (isEnabled ? resolvedFill : resolvedFill.withAlphaComponent(0.4)).cgColor
-            attributedTitle = NSAttributedString(string: label, attributes: [
-                .font: font ?? NSFont.systemFont(ofSize: 12),
-                .foregroundColor: isEnabled ? resolvedForeground : resolvedForeground.withAlphaComponent(0.45),
-            ])
-        }
-    }
-}
+// MARK: - 数据模型
 
 struct ModelRow: Codable, Equatable {
     var id: String
+    var displayName: String
     var context: Int
+    var inputModalities: [String]
 
-    init(id: String, context: Int = 272) {
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, context, inputModalities
+    }
+
+    init(id: String = "", displayName: String = "", context: Int = 272,
+         inputModalities: [String] = ["text", "image"]) {
         self.id = id
+        self.displayName = displayName
         self.context = context
+        self.inputModalities = inputModalities
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
         context = try container.decodeIfPresent(Int.self, forKey: .context) ?? 272
+        inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities)
+            ?? ["text", "image"]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(context, forKey: .context)
+        try container.encode(inputModalities, forKey: .inputModalities)
+    }
+
+    var payload: [String: Any] {
+        ["id": id, "displayName": displayName, "context": context, "inputModalities": inputModalities]
+    }
+}
+
+struct ChannelRow: Codable, Equatable {
+    var id: String
+    var name: String
+    var baseUrl: String
+    var apiKey: String
+    var headerName: String
+    var headerValue: String
+    var models: [ModelRow]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, baseUrl, apiKey, headerName, headerValue, models
+    }
+
+    init(id: String = "", name: String = "", baseUrl: String = "", apiKey: String = "",
+         headerName: String = "", headerValue: String = "", models: [ModelRow] = []) {
+        self.id = id
+        self.name = name
+        self.baseUrl = baseUrl
+        self.apiKey = apiKey
+        self.headerName = headerName
+        self.headerValue = headerValue
+        self.models = models
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        baseUrl = try container.decodeIfPresent(String.self, forKey: .baseUrl) ?? ""
+        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        headerName = try container.decodeIfPresent(String.self, forKey: .headerName) ?? ""
+        headerValue = try container.decodeIfPresent(String.self, forKey: .headerValue) ?? ""
+        models = try container.decodeIfPresent([ModelRow].self, forKey: .models) ?? []
+    }
+
+    var payload: [String: Any] {
+        ["id": id, "name": name, "baseUrl": baseUrl, "apiKey": apiKey,
+         "headerName": headerName, "headerValue": headerValue,
+         "models": models.map(\.payload)]
     }
 }
 
@@ -111,35 +94,726 @@ func contextConversionLabel(_ k: Int) -> String {
     return "\(k / 1000).\(frac)M"
 }
 
-final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDelegate,
-    NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+func isVersion(_ candidate: String, newerThan base: String) -> Bool {
+    func parts(_ value: String) -> [Int] {
+        value.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 }
+    }
+    let left = parts(candidate)
+    let right = parts(base)
+    for index in 0..<max(left.count, right.count) {
+        let leftPart = index < left.count ? left[index] : 0
+        let rightPart = index < right.count ? right[index] : 0
+        if leftPart != rightPart { return leftPart > rightPart }
+    }
+    return false
+}
+
+// MARK: - 面板状态
+
+final class PanelStore: ObservableObject {
+    @Published var channels: [ChannelRow] = []
+    @Published var savedChannels: [ChannelRow] = []
+    @Published var currentChannelID: String?
+    @Published var editingIndex: Int?
+    @Published var loaded = false
+    @Published var busy = false
+    @Published var feedback = ""
+    @Published var feedbackIsError = false
+    @Published var version = ""
+    @Published var updateTitle = "检查更新"
+    @Published var updateEnabled = true
+    @Published var confirmingClear = false
+    @Published var confirmingLeave = false
+
+    var send: ([String: Any]) -> Void = { _ in }
+    private var pendingUpdateURL: URL?
+    private var checkingUpdate = false
+
+    var activeIndex: Int { editingIndex ?? 0 }
+
+    var activeChannel: ChannelRow? {
+        channels.indices.contains(activeIndex) ? channels[activeIndex] : nil
+    }
+
+    var hasChannel: Bool { activeChannel != nil }
+    var isDirty: Bool { channels != savedChannels }
+
+    var editingTitle: String {
+        guard let channel = activeChannel, !channel.id.isEmpty else { return "添加渠道" }
+        return "编辑渠道"
+    }
+
+    var models: [ModelRow] {
+        get { activeChannel?.models ?? [] }
+        set {
+            guard channels.indices.contains(activeIndex) else { return }
+            channels[activeIndex].models = newValue
+        }
+    }
+
+    // MARK: 页面切换
+
+    func showList() {
+        editingIndex = nil
+        confirmingLeave = false
+        feedback = ""
+        feedbackIsError = false
+    }
+
+    /// 返回列表等于离开编辑页，未保存的改动必须当场了结，不能带到列表页。
+    func requestLeaveEditor() {
+        guard !busy else { return }
+        if isDirty { confirmingLeave = true } else { showList() }
+    }
+
+    func discardAndLeave() {
+        guard !busy else { return }
+        channels = savedChannels
+        showList()
+    }
+
+    func editChannel(at index: Int) {
+        guard channels.indices.contains(index) else { return }
+        editingIndex = index
+    }
+
+    func addChannel() {
+        guard loaded, !busy, channels.count < 50 else { return }
+        channels.append(ChannelRow())
+        editingIndex = channels.count - 1
+        feedback = "有未保存的更改"
+        feedbackIsError = false
+    }
+
+    func deleteChannel(at index: Int) {
+        guard channels.indices.contains(index), !busy else { return }
+        channels.remove(at: index)
+        editingIndex = channels.isEmpty ? nil : min(index, channels.count - 1)
+        if channels.isEmpty { showList() }
+    }
+
+    // MARK: 模型编辑
+
+    func addModel() {
+        guard loaded, !busy, hasChannel else { return }
+        models.append(ModelRow())
+        feedback = "有未保存的更改"
+        feedbackIsError = false
+    }
+
+    func removeModel(at index: Int) {
+        guard !busy, models.indices.contains(index) else { return }
+        models.remove(at: index)
+    }
+
+    /// 关掉唯一的输入类型会让配置不可用，所以最后一个勾不能取消。
+    func toggleModality(at index: Int, modality: String, on: Bool) {
+        guard channels.indices.contains(activeIndex),
+              channels[activeIndex].models.indices.contains(index) else { return }
+        var next = channels[activeIndex].models[index].inputModalities
+        if on {
+            if !next.contains(modality) { next.append(modality) }
+        } else {
+            let remaining = next.filter { $0 != modality }
+            if remaining.isEmpty {
+                NSSound.beep()
+                return
+            }
+            next = remaining
+        }
+        channels[activeIndex].models[index].inputModalities = next
+    }
+
+    // MARK: 请求
+
+    func save() { submit(action: "save", currentID: currentChannelID ?? "") }
+
+    func enableChannel(at index: Int) {
+        guard channels.indices.contains(index), loaded, !busy else { return }
+        submit(action: "switch", currentID: channels[index].id)
+    }
+
+    private func submit(action: String, currentID: String) {
+        guard loaded, !busy else { return }
+        busy = true
+        feedback = action == "switch" ? "正在启用渠道并重启 ChatGPT…" : "正在保存…"
+        feedbackIsError = false
+        send([
+            "action": action,
+            "restart": action == "switch",
+            "current": currentID,
+            "channels": channels.map(\.payload),
+        ])
+    }
+
+    func clearAndRestart() {
+        guard loaded, !busy else { return }
+        busy = true
+        feedback = "正在清空并重启 ChatGPT…"
+        feedbackIsError = false
+        send(["action": "clear"])
+    }
+
+    func checkForUpdates() {
+        if let pendingUpdateURL {
+            NSWorkspace.shared.open(pendingUpdateURL)
+            return
+        }
+        guard !checkingUpdate else { return }
+        checkingUpdate = true
+        updateTitle = "检查中…"
+        updateEnabled = false
+        send(["action": "check-update"])
+    }
+
+    // MARK: 响应
+
+    func apply(_ response: [String: Any]) {
+        if let value = response["version"] as? String, !value.isEmpty, value != version {
+            version = value
+        }
+        if checkingUpdate {
+            finishUpdateCheck(response)
+            return
+        }
+        busy = false
+        let ok = response["ok"] as? Bool == true
+        let cleared = response["cleared"] as? Bool == true
+        if ok || response["saved"] as? Bool == true || cleared {
+            if let value = response["channels"],
+               let data = try? JSONSerialization.data(withJSONObject: value),
+               let rows = try? JSONDecoder().decode([ChannelRow].self, from: data) {
+                // 只有停在编辑页时才按渠道 ID 找回来；列表页没有当前渠道，别拿 0 号顶上。
+                let editingChannelID = editingIndex.flatMap { channels.indices.contains($0) ? channels[$0].id : nil }
+                channels = rows
+                savedChannels = rows
+                currentChannelID = response["current"] as? String
+                loaded = true
+                if let editingChannelID, let index = rows.firstIndex(where: { $0.id == editingChannelID }) {
+                    editingIndex = index
+                }
+                if let index = editingIndex, !rows.indices.contains(index) { editingIndex = nil }
+            }
+        }
+        if !ok {
+            feedback = response["error"] as? String ?? "操作失败"
+            feedbackIsError = true
+        } else if cleared {
+            feedback = "已清空并重启 ChatGPT"
+            feedbackIsError = false
+        } else if response["restarted"] as? Bool == true {
+            feedback = "已启用渠道，ChatGPT 已重启"
+            feedbackIsError = false
+        } else if response["saved"] as? Bool == true {
+            feedback = "已保存，点列表里的「启用」才会生效"
+            feedbackIsError = false
+        } else {
+            feedback = ""
+            feedbackIsError = false
+        }
+    }
+
+    private func finishUpdateCheck(_ response: [String: Any]) {
+        checkingUpdate = false
+        guard response["ok"] as? Bool == true, let latest = response["latest"] as? String else {
+            updateTitle = "重试"
+            updateEnabled = true
+            return
+        }
+        if isVersion(latest, newerThan: version) {
+            pendingUpdateURL = (response["url"] as? String).flatMap(URL.init(string:))
+            updateTitle = "去下载 v\(latest)"
+        } else {
+            pendingUpdateURL = nil
+            updateTitle = "已是最新"
+        }
+        updateEnabled = true
+    }
+}
+
+// MARK: - 界面
+
+/// SwiftUI 的 ScrollView 底下还是 NSScrollView，系统设置成「始终显示滚动条」时
+/// 会被强制画成传统样式。这里关掉系统指示条，自己画一条细圆角条。
+private struct ScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var contentHeight: CGFloat = 0
+}
+
+private struct ScrollMetricsKey: PreferenceKey {
+    static var defaultValue = ScrollMetrics()
+    static func reduce(value: inout ScrollMetrics, nextValue: () -> ScrollMetrics) {
+        // 没挂 preference 的兄弟节点会送来默认值，别让它把真实测量覆盖掉。
+        let next = nextValue()
+        if next.contentHeight > 0 { value = next }
+    }
+}
+
+struct OverlayScrollView<Content: View>: View {
+    @ViewBuilder var content: Content
+    @State private var metrics = ScrollMetrics()
+
+    private let coordinateSpace = "gpt-switch-scroll"
+
+    var body: some View {
+        GeometryReader { outer in
+            ScrollView(.vertical, showsIndicators: false) {
+                content.background(
+                    GeometryReader { inner in
+                        Color.clear.preference(key: ScrollMetricsKey.self, value: ScrollMetrics(
+                            offset: -inner.frame(in: .named(coordinateSpace)).minY,
+                            contentHeight: inner.size.height))
+                    }
+                )
+            }
+            .coordinateSpace(name: coordinateSpace)
+            .onPreferenceChange(ScrollMetricsKey.self) { metrics = $0 }
+            .overlay(alignment: .topTrailing) { indicator(viewport: outer.size.height) }
+        }
+    }
+
+    @ViewBuilder
+    private func indicator(viewport: CGFloat) -> some View {
+        let scrollable = max(metrics.contentHeight - viewport, 0)
+        if scrollable > 1 {
+            let track = max(viewport - 16, 0)
+            let thumb = max(track * min(viewport / metrics.contentHeight, 1), 36)
+            let progress = min(max(metrics.offset / scrollable, 0), 1)
+            Capsule()
+                .fill(Color.primary.opacity(0.22))
+                .frame(width: 5, height: thumb)
+                .offset(y: 8 + (track - thumb) * progress)
+                .padding(.trailing, 5)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+struct PanelView: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if store.editingIndex == nil {
+                ChannelListView(store: store)
+            } else {
+                ChannelDetailView(store: store)
+            }
+            BottomBar(store: store)
+        }
+        .frame(minWidth: 680, minHeight: 520)
+        // 标题栏透明后内容要填满整窗，不然红绿灯那块会露出灰底。
+        .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
+        .confirmationDialog("还原 Codex 配置并重启 ChatGPT？", isPresented: $store.confirmingClear) {
+            Button("还原并重启", role: .destructive) { store.clearAndRestart() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会还原插件写进 Codex 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
+        }
+        .confirmationDialog("放弃未保存的更改？", isPresented: $store.confirmingLeave) {
+            Button("放弃更改", role: .destructive) { store.discardAndLeave() }
+            Button("继续编辑", role: .cancel) {}
+        } message: {
+            Text("返回列表会丢掉这次在编辑页里改过、但还没保存的内容。")
+        }
+    }
+}
+
+struct ChannelListView: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("渠道").font(.system(size: 20, weight: .semibold))
+                Text("点「启用」写进 Codex 配置并重启；点右侧铅笔改配置")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            OverlayScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(Array(store.channels.indices), id: \.self) { index in
+                        ChannelCard(store: store, index: index)
+                    }
+                    DashedRowButton(title: "添加渠道", systemImage: "plus") { store.addChannel() }
+                        .disabled(!store.loaded || store.busy || store.channels.count >= 50)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+        }
+    }
+}
+
+struct ChannelCard: View {
+    @ObservedObject var store: PanelStore
+    let index: Int
+
+    /// 删渠道后 SwiftUI 也会用旧下标再求一次 body，越界会崩掉面板进程。
+    private var channel: ChannelRow {
+        store.channels.indices.contains(index) ? store.channels[index] : ChannelRow()
+    }
+    private var isCurrent: Bool { !channel.id.isEmpty && channel.id == store.currentChannelID }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(channel.id.isEmpty ? "未填渠道 ID" : channel.id)
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                Text(channel.baseUrl.isEmpty ? "还没填地址" : channel.baseUrl)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if isCurrent {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                    Text("使用中").font(.system(size: 13, weight: .medium))
+                }
+            } else {
+                Button("启用") { store.enableChannel(at: index) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .pointingHand()
+                    .disabled(store.busy)
+            }
+            Button { store.editChannel(at: index) } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 15))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .pointingHand()
+            .disabled(store.busy)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(isCurrent ? Color.accentColor.opacity(0.09) : Color(nsColor: .textBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(isCurrent ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.09))
+        )
+    }
+}
+
+struct ChannelDetailView: View {
+    @ObservedObject var store: PanelStore
+    @State private var confirmingDelete = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button { store.requestLeaveEditor() } label: {
+                    Label("返回", systemImage: "chevron.left").font(.system(size: 13))
+                }
+                .buttonStyle(.borderless)
+                .pointingHand()
+                .disabled(store.busy)
+                Text(store.editingTitle).font(.system(size: 17, weight: .semibold))
+                Spacer()
+                Button("删除渠道", role: .destructive) { confirmingDelete = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .pointingHand()
+                    .disabled(!store.hasChannel || store.busy)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 16)
+
+            OverlayScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    channelForm
+                    Text("模型目录")
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 2)
+                    ForEach(Array(store.models.indices), id: \.self) { index in
+                        ModelCard(store: store, index: index)
+                    }
+                    DashedRowButton(title: "添加模型", systemImage: "plus") { store.addModel() }
+                        .disabled(!store.hasChannel || store.busy)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("保存") { store.save() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .pointingHand()
+                    .disabled(!store.isDirty || store.busy || !store.hasChannel)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 18)
+        }
+        .confirmationDialog("删除这个渠道？", isPresented: $confirmingDelete) {
+            Button("删除", role: .destructive) { store.deleteChannel(at: store.activeIndex) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除面板里保存的这份配置，不会改动已经写进 Codex 的内容。")
+        }
+    }
+
+    @ViewBuilder
+    private var channelForm: some View {
+        if store.hasChannel {
+            VStack(alignment: .leading, spacing: 14) {
+                LabeledField(title: "渠道 ID", placeholder: "输入渠道 ID",
+                             text: $store.channels[store.activeIndex].id)
+                LabeledField(title: "API 密钥", placeholder: "输入 API 密钥",
+                             text: $store.channels[store.activeIndex].apiKey)
+                LabeledField(title: "API 地址", placeholder: "https://gateway.example/v1",
+                             text: $store.channels[store.activeIndex].baseUrl)
+                LabeledField(title: "请求头名（可选）", placeholder: "Authorization",
+                             text: $store.channels[store.activeIndex].headerName)
+                LabeledField(title: "请求头值", placeholder: "值",
+                             text: $store.channels[store.activeIndex].headerValue)
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.08)))
+        }
+    }
+}
+
+struct ModelCard: View {
+    @ObservedObject var store: PanelStore
+    let index: Int
+
+    private var model: Binding<ModelRow> {
+        // 删除后 SwiftUI 还会拿旧下标求一次值，直接下标会越界崩掉面板进程。
+        Binding(
+            get: { store.models.indices.contains(index) ? store.models[index] : ModelRow() },
+            set: { newValue in
+                guard store.channels.indices.contains(store.activeIndex),
+                      store.channels[store.activeIndex].models.indices.contains(index) else { return }
+                store.channels[store.activeIndex].models[index] = newValue
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Spacer()
+                Button { store.removeModel(at: index) } label: {
+                    Image(systemName: "trash").font(.system(size: 14))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .pointingHand()
+                .disabled(store.busy)
+            }
+            LabeledField(title: "模型 ID", placeholder: "gpt-6-astra", text: model.id)
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("上下文窗口（k）")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    TextField("272", text: contextText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .fieldBox()
+                        .frame(width: 180)
+                }
+                Text("约 \(contextConversionLabel(model.wrappedValue.context))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .padding(.bottom, 6)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("输入类型")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Toggle("文本", isOn: modality("text"))
+                    Toggle("图片", isOn: modality("image"))
+                }
+                .toggleStyle(.checkbox)
+                .font(.system(size: 14))
+            }
+        }
+        .padding(20)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.08)))
+    }
+
+    private func modality(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: { model.wrappedValue.inputModalities.contains(name) },
+            set: { store.toggleModality(at: index, modality: name, on: $0) }
+        )
+    }
+
+    /// 窗口是 k 数，只收数字，别让系统加上千分位。
+    private var contextText: Binding<String> {
+        Binding(
+            get: { String(model.wrappedValue.context) },
+            set: { value in
+                let digits = value.filter(\.isNumber)
+                if let parsed = Int(digits), parsed >= 1 { model.wrappedValue.context = parsed }
+            }
+        )
+    }
+}
+
+struct LabeledField: View {
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+    var width: CGFloat?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14))
+                .fieldBox()
+                .frame(width: width)
+        }
+    }
+}
+
+/// 系统 roundedBorder 会画一圈很重的聚焦蓝框，跟参考图那种浅灰输入框不一样。
+private struct FieldBox: ViewModifier {
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($focused)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.14))
+            )
+    }
+}
+
+extension View {
+    func fieldBox() -> some View { modifier(FieldBox()) }
+}
+
+/// SwiftUI 的按钮在 macOS 上默认不换成手型光标，得自己推栈。
+private struct PointingHand: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                guard isEnabled else { return }
+                if inside, !hovering {
+                    hovering = true
+                    NSCursor.pointingHand.push()
+                } else if !inside, hovering {
+                    hovering = false
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if hovering {
+                    hovering = false
+                    NSCursor.pop()
+                }
+            }
+    }
+}
+
+extension View {
+    func pointingHand() -> some View { modifier(PointingHand()) }
+}
+
+struct DashedRowButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .pointingHand()
+        .opacity(isEnabled ? 1 : 0.45)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(Color(nsColor: .separatorColor))
+        )
+    }
+}
+
+struct BottomBar: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Text(store.feedback)
+                .font(.system(size: 13))
+                .foregroundStyle(store.feedbackIsError ? Color.red : Color.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            if store.editingIndex == nil {
+                Button("还原 Codex 配置并重启") { store.confirmingClear = true }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+                    .pointingHand()
+                    .disabled(!store.loaded || store.busy)
+            }
+            if !store.version.isEmpty {
+                Text("v\(store.version)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            }
+            Button(store.updateTitle) { store.checkForUpdates() }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                .pointingHand()
+                .disabled(!store.updateEnabled)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+    }
+}
+
+// MARK: - 控制器
+
+final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let parentPID: pid_t
     let iconPath: String
     var statusItem: NSStatusItem?
     var parentMonitor: Timer?
     var window: NSWindow?
-    let table = NSTableView()
-    let idColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("id"))
-    let contextColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("context"))
-    let convertedColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("converted"))
-    let feedback = NSTextField(wrappingLabelWithString: "")
-    let emptyLabel = NSTextField(labelWithString: "暂无自定义模型")
-    let emptyState = NSStackView()
-    let versionLabel = NSTextField(labelWithString: "")
-    let updateButton = NSButton(title: "检查更新", target: nil, action: nil)
-    let addButton = NSButton()
-    let removeButton = NSButton()
-    let saveButton = CodexPillButton(title: "保存", primary: false)
-    let restartButton = CodexPillButton(title: "保存并重启 ChatGPT", primary: true)
-    let clearButton = CodexPillButton(title: "清空并重启", primary: false)
-    var models: [ModelRow] = []
-    var savedModels: [ModelRow] = []
-    var loaded = false
-    var busy = false
-    var currentVersion = ""
-    var latestVersion: String?
-    var releaseURL: String?
-    var checkingUpdate = false
+    var store: PanelStore?
+    /// 自己主动退出时置位；否则终止请求（程序坞的「退出」、⌘Q）只当作关窗口，
+    /// 免得菜单栏图标跟着进程一起没掉，又没人把它拉回来。
+    var quitRequested = false
+
     var sendRequest: ([String: Any]) -> Void = { message in
         guard var data = try? JSONSerialization.data(withJSONObject: message) else { return }
         data.append(0x0a)
@@ -170,9 +844,23 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         statusItem?.menu = menu
         parentMonitor = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             if self.parentPID > 1 && kill(self.parentPID, 0) != 0 && errno == ESRCH {
+                self.quitRequested = true
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// 点程序坞图标（或窗口已关掉时再次打开 App）要把面板叫回来。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openPanel()
+        return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !quitRequested else { return .terminateNow }
+        guard canDiscardChanges() else { return .terminateCancel }
+        window?.close()
+        return .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -180,475 +868,66 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
     }
 
+    /// 关窗口只是缩回菜单栏，程序坞图标跟着窗口一起收起来。
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     @objc func openPanel() {
+        NSApp.setActivationPolicy(.regular)
         if window == nil { buildPanel() }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        if !busy && models == savedModels {
-            busy = true
-            setFeedback("正在读取配置…")
-            updateControls()
+        if let store, !store.busy, !store.isDirty {
+            store.busy = true
+            store.feedback = "正在读取配置…"
             sendRequest(["action": "load"])
         }
     }
 
     func buildPanel() {
-        let defaultContentWidth: CGFloat = 720
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: defaultContentWidth, height: 460),
-                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        let store = PanelStore()
+        store.send = { [weak self] message in self?.sendRequest(message) }
+        self.store = store
+        let hosting = NSHostingView(rootView: PanelView(store: store))
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                              backing: .buffered, defer: false)
         panel.title = "GPT Switch"
-        panel.minSize = NSSize(width: 640, height: 420)
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.contentView = hosting
+        panel.minSize = NSSize(width: 680, height: 520)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.backgroundColor = CodexTheme.surface
         panel.center()
         window = panel
-        guard let content = panel.contentView else { return }
-
-        let heading = NSTextField(labelWithString: "模型配置")
-        heading.font = .systemFont(ofSize: 15, weight: .semibold)
-        heading.textColor = CodexTheme.text
-        let subtitle = NSTextField(labelWithString: "自定义模型 ID 与上下文窗口，保存并重启后在新任务中生效")
-        subtitle.font = .systemFont(ofSize: 12)
-        subtitle.textColor = CodexTheme.secondaryText
-        let titles = NSStackView(views: [heading, subtitle])
-        titles.orientation = .vertical
-        titles.alignment = .leading
-        titles.spacing = 3
-        titles.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        configureIconButton(addButton, symbol: "plus", label: "添加模型", action: #selector(addModel))
-        configureIconButton(removeButton, symbol: "minus", label: "删除选中模型", action: #selector(removeModel))
-        let headerActions = NSStackView(views: [addButton, removeButton])
-        headerActions.spacing = 6
-        let headerSpacer = NSView()
-        headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        headerSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let header = NSStackView(views: [titles, headerSpacer, headerActions])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 12
-        header.distribution = .fill
-
-        idColumn.title = "模型 ID"
-        idColumn.minWidth = 200
-        contextColumn.title = "上下文窗口"
-        contextColumn.width = 128
-        contextColumn.minWidth = 120
-        contextColumn.maxWidth = 160
-        convertedColumn.title = "会话大小"
-        convertedColumn.width = 96
-        convertedColumn.minWidth = 88
-        convertedColumn.maxWidth = 120
-        table.addTableColumn(idColumn)
-        table.addTableColumn(contextColumn)
-        table.addTableColumn(convertedColumn)
-        table.delegate = self
-        table.dataSource = self
-        table.rowHeight = 40
-        table.usesAlternatingRowBackgroundColors = false
-        table.backgroundColor = .clear
-        table.selectionHighlightStyle = .regular
-        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        table.allowsColumnReordering = false
-        table.allowsEmptySelection = true
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.borderType = .noBorder
-        scroll.automaticallyAdjustsContentInsets = false
-
-        let card = NSBox()
-        card.boxType = .custom
-        card.titlePosition = .noTitle
-        card.cornerRadius = 12
-        card.borderWidth = 1
-        card.borderColor = CodexTheme.border
-        card.fillColor = CodexTheme.card
-        card.contentViewMargins = NSSize(width: 0, height: 0)
-        card.contentView = scroll
-
-        let emptyIcon = NSImageView()
-        emptyIcon.image = NSImage(systemSymbolName: "square.stack.3d.up",
-                                  accessibilityDescription: "暂无自定义模型")
-        emptyIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 26, weight: .regular)
-        emptyIcon.contentTintColor = CodexTheme.tertiaryText
-        emptyLabel.textColor = CodexTheme.text
-        let emptyHint = NSTextField(labelWithString: "点击右上角 + 添加模型，例如 gpt-6-astra")
-        emptyHint.font = .systemFont(ofSize: 11)
-        emptyHint.textColor = CodexTheme.tertiaryText
-        emptyState.setViews([emptyIcon, emptyLabel, emptyHint], in: .top)
-        emptyState.orientation = .vertical
-        emptyState.alignment = .centerX
-        emptyState.spacing = 8
-
-        let hint = NSTextField(labelWithString: "窗口单位 k：1000k = 1M，保存后需重启 ChatGPT/Codex 才生效")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = CodexTheme.tertiaryText
-        versionLabel.font = .systemFont(ofSize: 11)
-        versionLabel.textColor = CodexTheme.tertiaryText
-        updateButton.isBordered = false
-        updateButton.target = self
-        updateButton.action = #selector(checkForUpdates)
-        updateButton.setContentHuggingPriority(.required, for: .horizontal)
-        updateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        setUpdateButtonTitle("检查更新", enabled: true)
-        let metaSpacer = NSView()
-        metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        metaSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let meta = NSStackView(views: [hint, metaSpacer, versionLabel, updateButton])
-        meta.orientation = .horizontal
-        meta.alignment = .centerY
-        meta.spacing = 8
-
-        saveButton.target = self
-        saveButton.action = #selector(save)
-        restartButton.target = self
-        restartButton.action = #selector(saveAndRestart)
-        clearButton.target = self
-        clearButton.action = #selector(clearAndRestart)
-        let buttons = NSStackView(views: [clearButton, saveButton, restartButton])
-        buttons.spacing = 8
-        feedback.font = .systemFont(ofSize: 12)
-        feedback.textColor = CodexTheme.secondaryText
-        feedback.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        feedback.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        feedback.lineBreakMode = .byTruncatingTail
-        let footerSpacer = NSView()
-        footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        footerSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let footer = NSStackView(views: [feedback, footerSpacer, buttons])
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 12
-        footer.distribution = .fill
-
-        for view in [header, card, meta, footer, emptyState] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(view)
-        }
-        NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            header.heightAnchor.constraint(greaterThanOrEqualToConstant: 34),
-            card.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
-            card.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            card.bottomAnchor.constraint(equalTo: meta.topAnchor, constant: -10),
-            meta.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            meta.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            meta.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
-            footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
-            footer.heightAnchor.constraint(equalToConstant: 32),
-            emptyState.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            emptyState.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            emptyState.leadingAnchor.constraint(greaterThanOrEqualTo: card.leadingAnchor, constant: 16),
-            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -16),
-        ])
-        updateControls()
-        content.layoutSubtreeIfNeeded()
-        fitTableColumns()
-    }
-
-    /// Size the flexible model-id column from the real list width so all three columns
-    /// stay visible at any window size.
-    func fitTableColumns() {
-        guard let scroll = table.enclosingScrollView else { return }
-        let available = scroll.contentSize.width
-        guard available > 0, let lastIndex = table.tableColumns.indices.last else { return }
-        idColumn.width = max(idColumn.minWidth,
-                             available - contextColumn.width - convertedColumn.width)
-        // The table adds header padding around every column, so shrink the flexible
-        // column by the measured overflow until the last column fits the visible width.
-        for _ in 0..<4 {
-            let overflow = table.rect(ofColumn: lastIndex).maxX - available
-            if overflow <= 0.5 { break }
-            let next = idColumn.width - overflow
-            if next < idColumn.minWidth {
-                idColumn.width = idColumn.minWidth
-                break
-            }
-            idColumn.width = next
-        }
-        var frame = table.frame
-        frame.size.width = max(available, table.rect(ofColumn: lastIndex).maxX)
-        table.frame = frame
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        fitTableColumns()
-    }
-
-    func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector) {
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        button.imagePosition = .imageOnly
-        button.toolTip = label
-        button.setAccessibilityLabel(label)
-        button.bezelStyle = .accessoryBarAction
-        button.target = self
-        button.action = action
-        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
-    }
-
-    func numberOfRows(in tableView: NSTableView) -> Int { models.count }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let tableColumn else { return nil }
-        let cell = NSTableCellView()
-        let kind = tableColumn.identifier.rawValue
-        let isContext = kind == "context"
-        let isConverted = kind == "converted"
-        let value = isConverted ? contextConversionLabel(models[row].context)
-            : isContext ? String(models[row].context) : models[row].id
-        let field = isConverted ? NSTextField(labelWithString: value) : NSTextField(string: value)
-        field.identifier = tableColumn.identifier
-        field.tag = row
-        if !isConverted {
-            field.delegate = self
-            field.isEditable = !busy && loaded
-        }
-        field.isBordered = false
-        field.drawsBackground = false
-        field.alignment = (isContext || isConverted) ? .right : .natural
-        if isContext || isConverted {
-            field.font = .monospacedDigitSystemFont(ofSize: isConverted ? 12 : 13, weight: .regular)
-        } else {
-            field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        }
-        field.textColor = isConverted ? CodexTheme.secondaryText : CodexTheme.text
-        field.setAccessibilityLabel("第 \(row + 1) 行\(tableColumn.title)")
-        field.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(field)
-        cell.textField = field
-        NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -12),
-            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField, !busy else { return }
-        let row = field.tag
-        guard models.indices.contains(row) else { return }
-        if field.identifier?.rawValue == "context" {
-            if let value = Int(field.stringValue.trimmingCharacters(in: .whitespaces)), value >= 1 {
-                models[row].context = value
-                let convertedIndex = table.column(withIdentifier: NSUserInterfaceItemIdentifier("converted"))
-                if convertedIndex >= 0,
-                   let cell = table.view(atColumn: convertedIndex, row: row, makeIfNecessary: false) as? NSTableCellView {
-                    cell.textField?.stringValue = contextConversionLabel(value)
-                }
-            }
-        } else {
-            models[row].id = field.stringValue
-        }
-        setFeedback(models == savedModels ? "" : "有未保存的更改")
-        updateControls()
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) { updateControls() }
-
-    @objc func addModel() {
-        guard loaded && !busy else { return }
-        window?.makeFirstResponder(nil)
-        models.append(ModelRow(id: "", context: 272))
-        table.reloadData()
-        let row = models.count - 1
-        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        table.scrollRowToVisible(row)
-        if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView {
-            window?.makeFirstResponder(cell.textField)
-        }
-        setFeedback("有未保存的更改")
-        updateControls()
-    }
-
-    @objc func removeModel() {
-        guard !busy && models.indices.contains(table.selectedRow) else { return }
-        window?.makeFirstResponder(nil)
-        models.remove(at: table.selectedRow)
-        table.reloadData()
-        setFeedback(models == savedModels ? "" : "有未保存的更改")
-        updateControls()
-    }
-
-    @objc func save() { submit(restart: false) }
-    @objc func saveAndRestart() { submit(restart: true) }
-
-    @objc func clearAndRestart() {
-        guard loaded, !busy, let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "清空自定义模型并重启 ChatGPT？"
-        alert.informativeText = "将删除插件保存的模型配置，并清理写入 Codex 的模型目录和 model_catalog_json 配置。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "清空并重启")
-        alert.addButton(withTitle: "取消")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.submitClear()
-        }
-    }
-
-    func submitClear() {
-        guard loaded && !busy else { return }
-        window?.makeFirstResponder(nil)
-        busy = true
-        setFeedback("正在清空并重启 ChatGPT…")
-        table.reloadData()
-        updateControls()
-        sendRequest(["action": "clear"])
-    }
-
-    func submit(restart: Bool) {
-        guard loaded && !busy else { return }
-        window?.makeFirstResponder(nil)
-        busy = true
-        setFeedback(restart ? "正在保存并重启 ChatGPT…" : "正在保存…")
-        table.reloadData()
-        updateControls()
-        sendRequest(["action": "save", "restart": restart,
-                     "models": models.map { ["id": $0.id, "context": $0.context] }])
     }
 
     func receive(_ response: [String: Any]) {
-        if let version = response["version"] as? String, !version.isEmpty, version != currentVersion {
-            currentVersion = version
-            refreshVersionLabel()
-        }
-        if checkingUpdate {
-            finishUpdateCheck(response)
-            return
-        }
-        busy = false
-        let ok = response["ok"] as? Bool == true
-        let cleared = response["cleared"] as? Bool == true
-        if ok || response["saved"] as? Bool == true || cleared {
-            if let value = response["models"],
-               let data = try? JSONSerialization.data(withJSONObject: value),
-               let rows = try? JSONDecoder().decode([ModelRow].self, from: data) {
-                models = rows
-                savedModels = rows
-                loaded = true
-            }
-        }
-        if !ok {
-            setFeedback(response["error"] as? String ?? "操作失败", error: true)
-        } else if cleared {
-            setFeedback("已清空并重启 ChatGPT")
-        } else if response["restarted"] as? Bool == true {
-            setFeedback("已保存，ChatGPT 已重启")
-        } else if response["saved"] as? Bool == true {
-            setFeedback("已保存，点击“保存并重启 ChatGPT”后生效")
-        } else {
-            setFeedback("")
-        }
-        table.reloadData()
-        updateControls()
+        store?.apply(response)
     }
 
-    func setFeedback(_ text: String, error: Bool = false) {
-        feedback.stringValue = text
-        feedback.textColor = error ? .systemRed : CodexTheme.secondaryText
-    }
-
-    func setUpdateButtonTitle(_ title: String, enabled: Bool) {
-        updateButton.isEnabled = enabled
-        updateButton.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: enabled ? CodexTheme.secondaryText : CodexTheme.tertiaryText,
-        ])
-        updateButton.setAccessibilityLabel(title)
-    }
-
-    func refreshVersionLabel(_ suffix: String = "") {
-        guard !currentVersion.isEmpty else { return }
-        versionLabel.stringValue = suffix.isEmpty
-            ? "v\(currentVersion)"
-            : "v\(currentVersion) · \(suffix)"
-    }
-
-    @objc func checkForUpdates() {
-        if latestVersion != nil, let url = releaseURL.flatMap(URL.init(string:)) {
-            NSWorkspace.shared.open(url)
-            return
-        }
-        guard !checkingUpdate else { return }
-        checkingUpdate = true
-        setUpdateButtonTitle("检查中…", enabled: false)
-        sendRequest(["action": "check-update"])
-    }
-
-    func finishUpdateCheck(_ response: [String: Any]) {
-        checkingUpdate = false
-        guard response["ok"] as? Bool == true, let latest = response["latest"] as? String else {
-            refreshVersionLabel("检查更新失败")
-            setUpdateButtonTitle("重试", enabled: true)
-            return
-        }
-        if isVersion(latest, newerThan: currentVersion) {
-            latestVersion = latest
-            releaseURL = response["url"] as? String
-            refreshVersionLabel("有新版本 v\(latest)")
-            setUpdateButtonTitle("去下载", enabled: true)
-        } else {
-            latestVersion = nil
-            releaseURL = nil
-            refreshVersionLabel("已是最新")
-            setUpdateButtonTitle("检查更新", enabled: true)
-        }
-    }
-
-    func isVersion(_ candidate: String, newerThan base: String) -> Bool {
-        func parts(_ value: String) -> [Int] {
-            value.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 }
-        }
-        let left = parts(candidate)
-        let right = parts(base)
-        for index in 0..<max(left.count, right.count) {
-            let leftPart = index < left.count ? left[index] : 0
-            let rightPart = index < right.count ? right[index] : 0
-            if leftPart != rightPart { return leftPart > rightPart }
-        }
-        return false
-    }
-
-    func updateControls() {
-        addButton.isEnabled = loaded && !busy
-        removeButton.isEnabled = loaded && !busy && models.indices.contains(table.selectedRow)
-        saveButton.isEnabled = loaded && !busy && models != savedModels
-        restartButton.isEnabled = loaded && !busy
-        clearButton.isEnabled = loaded && !busy
-        let showEmptyState = loaded && models.isEmpty
-        emptyLabel.isHidden = !showEmptyState
-        emptyState.isHidden = !showEmptyState
-        window?.isDocumentEdited = models != savedModels
-    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { canDiscardChanges() }
 
     func canDiscardChanges() -> Bool {
-        guard !busy else { NSSound.beep(); return false }
-        window?.makeFirstResponder(nil)
-        guard models != savedModels else { return true }
+        // 面板还没建过（没打开过面板就点退出）时没有可丢的改动，直接放行。
+        guard let store else { return true }
+        guard !store.busy else { return true }
+        guard store.isDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "放弃未保存的更改？"
         alert.addButton(withTitle: "继续编辑")
         alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }
-        models = savedModels
+        store.channels = store.savedChannels
+        store.editingIndex = nil
         return true
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool { canDiscardChanges() }
-
     @objc func quitPlugin() {
         guard canDiscardChanges() else { return }
+        quitRequested = true
         if parentPID > 1 { kill(parentPID, SIGTERM) }
         NSApp.terminate(nil)
     }
@@ -679,6 +958,7 @@ struct StatusMenuApp {
             return main
         }
         let application = NSApplication.shared
+        // 平时只挂菜单栏图标；打开面板时再切成普通 App，程序坞和 ⌘Tab 里才看得到。
         application.setActivationPolicy(.accessory)
         application.mainMenu = buildEditMenu()
         let controller = StatusMenuController(parentPID: parent, iconPath: iconPath)

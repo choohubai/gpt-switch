@@ -19,8 +19,9 @@ fi
 
 "$NODE" --check "$SOURCE_DIR/injector.mjs"
 "$NODE" --check "$SOURCE_DIR/injection.js"
+"$NODE" --check "$SOURCE_DIR/channel-config.mjs"
 "$NODE" --test "$ROOT_DIR"/tests/*.test.mjs
-/bin/zsh "$SCRIPT_DIR/swiftc.sh" -parse-as-library -target "$(uname -m)-apple-macosx13.0" -typecheck "$SOURCE_DIR/StatusMenu.swift"
+/bin/zsh "$SCRIPT_DIR/swiftc.sh" -parse-as-library -target "$(uname -m)-apple-macosx13.0" -framework SwiftUI -typecheck "$SOURCE_DIR/StatusMenu.swift"
 /bin/zsh -n "$SCRIPT_DIR/GPTSwitch"
 /bin/zsh -n "$SCRIPT_DIR/build.sh"
 /bin/zsh -n "$SCRIPT_DIR/swiftc.sh"
@@ -29,7 +30,7 @@ fi
 /usr/bin/plutil -lint "$RESOURCE_DIR/Info.plist"
 
 # Windows 安装包的载荷：面板、启动器和打包脚本都要在。
-WINDOWS_PAYLOADS=("$SOURCE_DIR/StatusMenu.ps1" "$SCRIPT_DIR/GPTSwitch.ps1" "$SCRIPT_DIR/package-windows.sh" "$SCRIPT_DIR/windows-installer.nsi")
+WINDOWS_PAYLOADS=("$SOURCE_DIR/StatusMenu.ps1" "$SOURCE_DIR/channel-config.mjs" "$SCRIPT_DIR/GPTSwitch.ps1" "$SCRIPT_DIR/package-windows.sh" "$SCRIPT_DIR/windows-installer.nsi")
 for payload in "${WINDOWS_PAYLOADS[@]}"; do
   if [[ ! -f "$payload" ]]; then
     print -u2 -- "缺少 Windows 打包文件：$payload"

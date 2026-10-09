@@ -13,11 +13,15 @@
   const normalizeModel = (value) => {
     const id = typeof value === "string" ? value : value?.id || value?.model || value?.slug;
     if (typeof id !== "string" || !id.trim()) return null;
+    const modalities = typeof value === "object" && Array.isArray(value.inputModalities)
+      ? value.inputModalities.filter((item) => item === "text" || item === "image")
+      : [];
     return {
       id: id.trim(),
       displayName: typeof value === "object" && typeof value.displayName === "string" && value.displayName.trim()
         ? value.displayName.trim()
         : id.trim(),
+      inputModalities: modalities.length ? modalities : ["text", "image"],
     };
   };
   const uniqueModels = (values) => {
@@ -77,7 +81,7 @@
       { reasoningEffort: "high", description: "Deep reasoning" },
       { reasoningEffort: "xhigh", description: "Extra high reasoning" },
     ],
-    inputModalities: ["text", "image"],
+    inputModalities: model.inputModalities,
     supportsPersonality: false,
     additionalSpeedTiers: [],
     serviceTiers: [],

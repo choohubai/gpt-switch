@@ -8,11 +8,14 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import {
-  loadModels, handlePanelRequest, buildCatalog, writeCatalog,
+  buildCatalog, writeCatalog,
   catalogPathFromToml, writeCatalogRecord, clearCatalogFiles,
 } from "./model-config.mjs";
+import {
+  loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
+} from "./channel-config.mjs";
 
-const VERSION = "0.1.32";
+const VERSION = "0.1.33";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -29,8 +32,8 @@ const LOCK_PATH = path.join(SUPPORT_DIR, "launcher.lock");
 const LOG_PATH = IS_WINDOWS
   ? path.join(SUPPORT_DIR, "GPTSwitch.log")
   : path.join(HOME, "Library", "Logs", "GPTSwitch.log");
-const MODEL_CONFIG = path.join(SUPPORT_DIR, "models.json");
-const DEFAULT_MODELS = path.join(SCRIPT_DIR, "models.json");
+/// 0.1.x 早期版本把模型列表存在这里，首次升级时读它导入成第一个渠道。
+const LEGACY_MODELS = path.join(SUPPORT_DIR, "models.json");
 const STATUS_MENU_PATH = path.join(SCRIPT_DIR, "GPTSwitchStatusMenu");
 const STATUS_ICON_PATH = path.join(SCRIPT_DIR, "MenuBarIcon.png");
 const WINDOWS_PANEL_PATH = path.join(SCRIPT_DIR, "StatusMenu.ps1");
@@ -66,23 +69,6 @@ const runAppleScript = (script) => spawnSync(
   ["-e", script],
   { encoding: "utf8" },
 );
-
-/// Carry the model list over from the previous CodexModelUnlocker config directory.
-const migrateLegacyConfig = () => {
-  if (!IS_MACOS) return;
-  try {
-    if (fs.existsSync(MODEL_CONFIG)) return;
-    const legacy = path.join(LEGACY_SUPPORT_DIR, "models.json");
-    if (!fs.existsSync(legacy)) return;
-    fs.mkdirSync(SUPPORT_DIR, { recursive: true, mode: 0o700 });
-    fs.copyFileSync(legacy, MODEL_CONFIG);
-    log("config_migrated", { from: legacy, to: MODEL_CONFIG });
-  } catch (error) {
-    log("config_migration_failed", String(error?.message || error));
-  }
-};
-
-migrateLegacyConfig();
 
 const quoteAppleScript = (value) => String(value)
   .replaceAll("\\", "\\\\")
@@ -739,8 +725,23 @@ const waitForTargets = async (port, timeoutMs = 30_000) => {
 
 const CODEX_HOME = path.join(HOME, ".codex");
 const USER_CONFIG = path.join(CODEX_HOME, "config.toml");
+const AUTH_PATH = path.join(CODEX_HOME, "auth.json");
 const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
 const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
+const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
+const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
+
+/// 渠道配置不存在时按这个顺序找老配置导入：本插件旧目录、更早的 CodexModelUnlocker 目录。
+const channelImportOptions = () => ({
+  userConfigPath: USER_CONFIG,
+  authPath: AUTH_PATH,
+  modelPaths: [LEGACY_MODELS, path.join(LEGACY_SUPPORT_DIR, "models.json")],
+});
+
+const currentChannelModels = () => {
+  const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+  return state.channels.find((channel) => channel.id === state.current)?.models ?? [];
+};
 
 const readCodexCatalog = (binary) => {
   const result = spawnSync(binary, ["debug", "models", "--bundled"], {
@@ -926,7 +927,15 @@ const main = async () => {
     }
     if (request?.action === "check-update") return checkForUpdate();
     return { ...await handlePanelRequest(request, {
-      configPath: MODEL_CONFIG, defaultPath: DEFAULT_MODELS, restart,
+      configPath: CHANNELS_CONFIG,
+      importOptions: channelImportOptions(),
+      restart,
+      applyCodex: (channel) => applyChannelToCodex({
+        channel, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
+      }),
+      restoreCodex: () => restoreCodexConfig({
+        authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
+      }),
       applyCatalog: async (nextModels) => {
         const target = clientPath();
         if (!target) throw appMissing();
@@ -947,7 +956,7 @@ const main = async () => {
 
   if (attachPort) {
     try {
-      await restart(loadModels(MODEL_CONFIG, DEFAULT_MODELS), attachPort);
+      await restart(currentChannelModels(), attachPort);
     } catch (error) {
       if (!statusMenuProcess || runOnce) throw error;
       showError(error.message);

@@ -38,12 +38,13 @@ $stdin = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), $utf8
 $stdout = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), $utf8)
 $stdout.AutoFlush = $true
 
-$script:models = @()
-$script:savedModels = @()
+$script:channels = @()
+$script:savedChannels = @()
+$script:channelIndex = -1
+$script:currentChannelId = ""
 $script:loaded = $false
 $script:busy = $false
 $script:rendering = $false
-$script:selectedIndex = -1
 $script:currentVersion = ""
 $script:latestVersion = $null
 $script:releaseUrl = $null
@@ -64,22 +65,22 @@ function Convert-Context([int]$k) {
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="GPT Switch" Height="560" Width="780" MinHeight="460" MinWidth="660"
-        Background="#FDFDFD" FontFamily="Segoe UI" FontSize="12"
+        Title="GPT Switch" Height="700" Width="860" MinHeight="600" MinWidth="760"
+        Background="#FFFFFF" FontFamily="Segoe UI" FontSize="13"
         WindowStartupLocation="CenterScreen" SnapsToDevicePixels="True" UseLayoutRounding="True">
   <Window.Resources>
     <Style x:Key="Pill" TargetType="Button">
-      <Setter Property="Background" Value="#EDEDEE"/>
+      <Setter Property="Background" Value="#FFFFFF"/>
       <Setter Property="Foreground" Value="#212327"/>
       <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Padding" Value="14,0"/>
-      <Setter Property="Height" Value="30"/>
-      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Padding" Value="18,0"/>
+      <Setter Property="Height" Value="34"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="fill" Background="{TemplateBinding Background}" CornerRadius="7">
+            <Border x:Name="fill" Background="{TemplateBinding Background}" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="7">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -95,9 +96,39 @@ function Convert-Context([int]$k) {
       </Setter>
     </Style>
     <Style x:Key="PillPrimary" TargetType="Button" BasedOn="{StaticResource Pill}">
-      <Setter Property="Background" Value="#212327"/>
-      <Setter Property="Foreground" Value="#FFFFFF"/>
+      <Setter Property="Background" Value="#F4F4F5"/>
+      <Setter Property="Foreground" Value="#212327"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style x:Key="PillDanger" TargetType="Button" BasedOn="{StaticResource Pill}">
+      <Setter Property="Foreground" Value="#D93025"/>
+    </Style>
+    <Style x:Key="Dashed" TargetType="Button">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="#656667"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Height" Value="46"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontWeight" Value="Medium"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Rectangle RadiusX="8" RadiusY="8" Stroke="#D8D8DC" StrokeThickness="1" StrokeDashArray="3 2"/>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="#212327"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style x:Key="PillIcon" TargetType="Button" BasedOn="{StaticResource Pill}">
       <Setter Property="Width" Value="32"/>
@@ -109,7 +140,7 @@ function Convert-Context([int]$k) {
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Foreground" Value="#656667"/>
       <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="FontSize" Value="12"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Padding" Value="4,0"/>
       <Setter Property="Template">
@@ -130,94 +161,168 @@ function Convert-Context([int]$k) {
         </Setter.Value>
       </Setter>
     </Style>
-    <Style x:Key="Cell" TargetType="TextBox">
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Background" Value="Transparent"/>
+    <Style x:Key="Field" TargetType="TextBox">
+      <Setter Property="Height" Value="38"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Padding" Value="12,0"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="FontFamily" Value="Consolas"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="Foreground" Value="#212327"/>
-      <Setter Property="CaretBrush" Value="#212327"/>
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="frame" Background="{TemplateBinding Background}"
+                    BorderBrush="#E0E0E3" BorderThickness="1" CornerRadius="8">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                            VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="frame" Property="BorderBrush" Value="#8AB4F8"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="frame" Property="Opacity" Value="0.5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Card" TargetType="Border">
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="BorderBrush" Value="#E8E8EB"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
     </Style>
   </Window.Resources>
   <Grid Margin="20,18,20,18">
     <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
-    <Grid Grid.Row="0" Margin="0,0,0,14">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="Auto"/>
-      </Grid.ColumnDefinitions>
-      <StackPanel Grid.Column="0">
-        <TextBlock Text="模型配置" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
-        <TextBlock Text="自定义模型 ID 与上下文窗口，保存并重启后在新任务中生效"
-                   FontSize="12" Foreground="#656667" Margin="0,4,0,0"/>
+    <Grid x:Name="ListPage" Grid.Row="0">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <StackPanel Grid.Row="0" Margin="0,0,0,12">
+        <TextBlock Text="渠道" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
+        <TextBlock Text="点「启用」立即写进 Codex 配置并重启；点右侧编辑图标改配置"
+                   FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
       </StackPanel>
-      <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-        <Button x:Name="AddButton" Style="{StaticResource PillIcon}" Content="+" ToolTip="添加模型" Margin="0,0,6,0"/>
-        <Button x:Name="RemoveButton" Style="{StaticResource PillIcon}" Content="-" ToolTip="删除选中模型"/>
-      </StackPanel>
-    </Grid>
-
-    <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#EDEDEE" BorderThickness="1" CornerRadius="12">
-      <Grid>
+      <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
+        <Grid>
         <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-        <Border Grid.Row="0" BorderBrush="#EDEDEE" BorderThickness="0,0,0,1" Padding="12,8">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="*"/>
-              <ColumnDefinition Width="128"/>
-              <ColumnDefinition Width="96"/>
-            </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="模型 ID" FontSize="12" Foreground="#656667"/>
-            <TextBlock Grid.Column="1" Text="上下文窗口" FontSize="12" Foreground="#656667" HorizontalAlignment="Right"/>
-            <TextBlock Grid.Column="2" Text="会话大小" FontSize="12" Foreground="#656667" HorizontalAlignment="Right"/>
-          </Grid>
-        </Border>
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="0,4,0,4">
-          <StackPanel x:Name="RowsPanel"/>
-        </ScrollViewer>
-        <StackPanel x:Name="EmptyState" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
-          <TextBlock Text="暂无自定义模型" FontSize="13" Foreground="#212327" HorizontalAlignment="Center"/>
-          <TextBlock Text="点击右上角 + 添加模型，例如 gpt-6-astra" FontSize="11" Foreground="#88898A"
-                     HorizontalAlignment="Center" Margin="0,6,0,0"/>
-        </StackPanel>
-      </Grid>
-    </Border>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="18,16,18,16">
+            <StackPanel x:Name="ChannelPanel"/>
+          </ScrollViewer>
+          <StackPanel x:Name="ChannelEmpty" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
+            <TextBlock Text="还没有渠道" FontSize="14" Foreground="#212327" HorizontalAlignment="Center"/>
+            <TextBlock Text="点下面的“添加渠道”填地址、密钥和模型" FontSize="12" Foreground="#88898A"
+                       HorizontalAlignment="Center" Margin="0,6,0,0"/>
+          </StackPanel>
+          <!-- 「添加渠道」按 cc-switch 的做法做成列表里最后一行。 -->
+          <Button x:Name="AddChannelButton" Grid.Row="1" Style="{StaticResource Dashed}" Content="添加渠道" Margin="14,0,14,14"/>
+        </Grid>
+      </Border>
+    </Grid>
 
-    <Grid Grid.Row="2" Margin="0,10,0,0">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="Auto"/>
-      </Grid.ColumnDefinitions>
-      <TextBlock Grid.Column="0" Text="窗口单位 k：1000k = 1M，保存后需重启 ChatGPT/Codex 才生效"
-                 FontSize="11" Foreground="#88898A" VerticalAlignment="Center"/>
-      <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-        <TextBlock x:Name="VersionLabel" FontSize="11" Foreground="#88898A" VerticalAlignment="Center"/>
-        <Button x:Name="UpdateButton" Style="{StaticResource Link}" Content="检查更新" Margin="8,0,0,0"/>
+    <Grid x:Name="DetailPage" Grid.Row="0" Visibility="Collapsed">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <Grid Grid.Row="0" Margin="0,0,0,12">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Button x:Name="BackButton" Grid.Column="0" Style="{StaticResource Link}" Content="‹ 返回"/>
+        <TextBlock x:Name="PageTitle" Grid.Column="1" Text="添加渠道" FontSize="16" FontWeight="SemiBold"
+                   Foreground="#212327" VerticalAlignment="Center" Margin="8,0,0,0"/>
+        <Button x:Name="DeleteChannelButton" Grid.Column="3" Style="{StaticResource PillDanger}" Content="删除渠道"/>
+      </Grid>
+      <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#E4E4E7" BorderThickness="1" CornerRadius="12" Padding="16,14">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <TextBlock Grid.Row="0" Grid.Column="0" Text="渠道 ID" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+          <TextBox x:Name="ChannelIdField" Grid.Row="1" Grid.Column="0" Style="{StaticResource Field}" Width="240" HorizontalAlignment="Left" Margin="0,4,16,0"/>
+          <TextBlock Grid.Row="0" Grid.Column="2" Text="API 密钥" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+          <TextBox x:Name="ChannelApiKeyField" Grid.Row="1" Grid.Column="2" Style="{StaticResource Field}" Width="240" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+          <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4" Text="API 地址" FontSize="13" FontWeight="Medium" Foreground="#656667" Margin="0,14,0,0"/>
+          <TextBox x:Name="ChannelBaseUrlField" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="4" Style="{StaticResource Field}" HorizontalAlignment="Stretch" Margin="0,4,0,0"/>
+        </Grid>
+      </Border>
+      <StackPanel Grid.Row="2" Margin="0,12,0,8">
+        <TextBlock Text="额外请求头（可选）" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+          <TextBox x:Name="ChannelHeaderNameField" Style="{StaticResource Field}" Width="220"/>
+          <TextBox x:Name="ChannelHeaderValueField" Style="{StaticResource Field}" Width="300" Margin="8,0,0,0"/>
+        </StackPanel>
+        <TextBlock Text="需要自定义请求头的中转才填，留空则不加" FontSize="12" Foreground="#88898A" Margin="0,4,0,0"/>
+      </StackPanel>
+      <Grid Grid.Row="3" Margin="0,0,0,8">
+        <TextBlock Text="模型目录" FontSize="14" FontWeight="SemiBold" Foreground="#212327" VerticalAlignment="Center"/>
+      </Grid>
+      <Border Grid.Row="4" Style="{StaticResource Card}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="18,16,18,4">
+            <StackPanel x:Name="RowsPanel"/>
+          </ScrollViewer>
+          <StackPanel x:Name="EmptyState" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
+            <TextBlock Text="暂无自定义模型" FontSize="14" Foreground="#212327" HorizontalAlignment="Center"/>
+            <TextBlock Text="点下面的「添加模型」，例如 gpt-6-astra" FontSize="12" Foreground="#88898A"
+                       HorizontalAlignment="Center" Margin="0,6,0,0"/>
+          </StackPanel>
+          <Border Grid.Row="1" BorderBrush="#E8E8EB" BorderThickness="0,1,0,0"/>
+          <Button x:Name="AddModelButton" Grid.Row="2" Style="{StaticResource Dashed}" Content="＋ 添加模型"
+                  HorizontalAlignment="Left" Width="120" Margin="14,10,14,12"/>
+        </Grid>
+      </Border>
+      <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <Button x:Name="SaveButton" Style="{StaticResource Pill}" Content="保存"/>
       </StackPanel>
     </Grid>
 
-    <Grid Grid.Row="3" Margin="0,12,0,0">
+    <Grid Grid.Row="1" Margin="0,12,0,0">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <TextBlock x:Name="Feedback" Grid.Column="0" FontSize="12" Foreground="#656667"
+      <TextBlock x:Name="Feedback" Grid.Column="0" FontSize="13" Foreground="#656667"
                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,12,0"/>
-      <StackPanel Grid.Column="1" Orientation="Horizontal">
-        <Button x:Name="ClearButton" Style="{StaticResource Pill}" Content="清空并重启" Margin="0,0,8,0"/>
-        <Button x:Name="SaveButton" Style="{StaticResource Pill}" Content="保存" Margin="0,0,8,0"/>
-        <Button x:Name="RestartButton" Style="{StaticResource PillPrimary}" Content="保存并重启 ChatGPT"/>
-      </StackPanel>
+      <Button x:Name="ClearButton" Grid.Column="1" Style="{StaticResource Link}" Content="还原 Codex 配置并重启" Margin="0,0,8,0"/>
+      <TextBlock x:Name="VersionLabel" Grid.Column="2" FontSize="12" Foreground="#88898A" VerticalAlignment="Center"/>
+      <Button x:Name="UpdateButton" Grid.Column="3" Style="{StaticResource Link}" Content="检查更新" Margin="8,0,0,0"/>
     </Grid>
   </Grid>
 </Window>
@@ -226,16 +331,27 @@ function Convert-Context([int]$k) {
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
-$addButton = $window.FindName("AddButton")
-$removeButton = $window.FindName("RemoveButton")
+$addButton = $window.FindName("AddModelButton")
 $clearButton = $window.FindName("ClearButton")
 $saveButton = $window.FindName("SaveButton")
-$restartButton = $window.FindName("RestartButton")
 $updateButton = $window.FindName("UpdateButton")
 $versionLabel = $window.FindName("VersionLabel")
 $feedback = $window.FindName("Feedback")
 $rowsPanel = $window.FindName("RowsPanel")
 $emptyState = $window.FindName("EmptyState")
+$listPage = $window.FindName("ListPage")
+$detailPage = $window.FindName("DetailPage")
+$channelPanel = $window.FindName("ChannelPanel")
+$channelEmpty = $window.FindName("ChannelEmpty")
+$addChannelButton = $window.FindName("AddChannelButton")
+$backButton = $window.FindName("BackButton")
+$pageTitle = $window.FindName("PageTitle")
+$deleteChannelButton = $window.FindName("DeleteChannelButton")
+$channelIdField = $window.FindName("ChannelIdField")
+$channelBaseUrlField = $window.FindName("ChannelBaseUrlField")
+$channelApiKeyField = $window.FindName("ChannelApiKeyField")
+$channelHeaderNameField = $window.FindName("ChannelHeaderNameField")
+$channelHeaderValueField = $window.FindName("ChannelHeaderValueField")
 
 # 面板跑在 powershell.exe 里，不显式设置就会顶着 PowerShell 的图标。
 # sips 生成的 ico 是 PNG 压缩的，先走 WIC 解码，失败再退回 System.Drawing。
@@ -284,31 +400,198 @@ function Set-Feedback([string]$Text, [bool]$IsError = $false) {
   $feedback.Foreground = if ($IsError) { "#D93025" } else { "#656667" }
 }
 
+function Get-ActiveChannel {
+  if ($script:channelIndex -ge 0 -and $script:channelIndex -lt $script:channels.Count) {
+    return $script:channels[$script:channelIndex]
+  }
+  return $null
+}
+
+function Get-ActiveModels {
+  $channel = Get-ActiveChannel
+  if ($channel) { return @($channel.models) }
+  return @()
+}
+
+function Update-ChannelFields {
+  $channel = Get-ActiveChannel
+  $script:rendering = $true
+  try {
+    $channelIdField.Text = if ($channel) { [string]$channel.id } else { "" }
+    $channelBaseUrlField.Text = if ($channel) { [string]$channel.baseUrl } else { "" }
+    $channelApiKeyField.Text = if ($channel) { [string]$channel.apiKey } else { "" }
+    $channelHeaderNameField.Text = if ($channel) { [string]$channel.headerName } else { "" }
+    $channelHeaderValueField.Text = if ($channel) { [string]$channel.headerValue } else { "" }
+    $pageTitle.Text = if ($channel -and -not [string]::IsNullOrWhiteSpace([string]$channel.id)) { [string]$channel.id } else { "添加渠道" }
+  } finally {
+    $script:rendering = $false
+  }
+}
+
+function Update-ChannelList {
+  $script:rendering = $true
+  try {
+    $channelPanel.Children.Clear()
+    for ($index = 0; $index -lt $script:channels.Count; $index++) {
+      $channel = $script:channels[$index]
+      $isCurrent = $script:currentChannelId -and [string]$channel.id -eq $script:currentChannelId
+      $border = New-Object System.Windows.Controls.Border
+      $border.BorderThickness = "1"
+      $border.BorderBrush = if ($isCurrent) { "#212327" } else { "#E4E4E7" }
+      $border.Background = if ($isCurrent) { "#F4F4F5" } else { "#FFFFFF" }
+      $border.CornerRadius = "12"
+      $border.Padding = "18,0"
+      $border.Margin = "0,0,0,10"
+      $border.Height = 66
+      $border.Tag = $index
+
+      $grid = New-Object System.Windows.Controls.Grid
+      foreach ($width in @("*", "Auto", "Auto")) {
+        $column = New-Object System.Windows.Controls.ColumnDefinition
+        $column.Width = if ($width -eq "*") { [System.Windows.GridLength]::new(1, "Star") } else { [System.Windows.GridLength]::new(0, "Auto") }
+        $grid.ColumnDefinitions.Add($column)
+      }
+
+      $texts = New-Object System.Windows.Controls.StackPanel
+      $texts.VerticalAlignment = "Center"
+      $idText = New-Object System.Windows.Controls.TextBlock
+      $idText.Text = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "未填渠道 ID" } else { [string]$channel.id }
+      $idText.FontFamily = "Consolas"
+      $idText.FontSize = 14
+      $idText.FontWeight = "SemiBold"
+      $idText.Foreground = "#212327"
+      $idText.TextTrimming = "CharacterEllipsis"
+      $urlText = New-Object System.Windows.Controls.TextBlock
+      $urlText.Text = if ([string]::IsNullOrWhiteSpace([string]$channel.baseUrl)) { "还没填地址" } else { [string]$channel.baseUrl }
+      $urlText.FontSize = 12
+      $urlText.Foreground = "#656667"
+      $urlText.TextTrimming = "CharacterEllipsis"
+      [void]$texts.Children.Add($idText)
+      [void]$texts.Children.Add($urlText)
+
+      # 当前渠道显示状态文字，其余渠道给「启用」按钮，直接在首页启用。
+      $trailing = New-Object System.Windows.Controls.StackPanel
+      $trailing.Orientation = "Horizontal"
+      $trailing.VerticalAlignment = "Center"
+      if ($isCurrent) {
+        $dot = New-Object System.Windows.Controls.Ellipse
+        $dot.Width = 6
+        $dot.Height = 6
+        $dot.Fill = "#212327"
+        $dot.Margin = "0,0,6,0"
+        $dot.VerticalAlignment = "Center"
+        $statusText = New-Object System.Windows.Controls.TextBlock
+        $statusText.Text = "使用中"
+        $statusText.FontSize = 13
+        $statusText.FontWeight = "Medium"
+        $statusText.Foreground = "#212327"
+        $statusText.VerticalAlignment = "Center"
+        [void]$trailing.Children.Add($dot)
+        [void]$trailing.Children.Add($statusText)
+      } else {
+        $switchButton = New-Object System.Windows.Controls.Button
+        $switchButton.Style = $window.FindResource("Pill")
+        $switchButton.Content = "启用"
+        $switchButton.Tag = $index
+        $switchButton.Add_Click({
+          param($sender, $eventArgs)
+          $eventArgs.Handled = $true
+          if ($script:busy) { return }
+          $script:channelIndex = [int]$sender.Tag
+          Submit "switch"
+        })
+        [void]$trailing.Children.Add($switchButton)
+      }
+
+      [System.Windows.Controls.Grid]::SetColumn($texts, 0)
+      [System.Windows.Controls.Grid]::SetColumn($trailing, 1)
+      [void]$grid.Children.Add($texts)
+      [void]$grid.Children.Add($trailing)
+
+      # 只有这个图标进编辑页，卡片本身不响应点击，免得抢走「启用」按钮的点击。
+      $editButton = New-Object System.Windows.Controls.Button
+      $editButton.Style = $window.FindResource("PillIcon")
+      # Segoe MDL2 的编辑铅笔字形，和 macOS 侧的 pencil 图标对齐。
+      $editButton.Content = [char]0xE70F
+      $editButton.FontFamily = "Segoe MDL2 Assets"
+      $editButton.FontSize = 14
+      $editButton.ToolTip = "编辑渠道"
+      $editButton.Tag = $index
+      $editButton.Margin = "8,0,0,0"
+      $editButton.Add_Click({
+        param($sender, $eventArgs)
+        $eventArgs.Handled = $true
+        if ($script:busy) { return }
+        $script:channelIndex = [int]$sender.Tag
+        Show-Detail-Page
+      })
+      [System.Windows.Controls.Grid]::SetColumn($editButton, 2)
+      [void]$grid.Children.Add($editButton)
+      $border.Child = $grid
+      [void]$channelPanel.Children.Add($border)
+    }
+    $channelEmpty.Visibility = if ($script:channels.Count -eq 0) { "Visible" } else { "Collapsed" }
+  } finally {
+    $script:rendering = $false
+  }
+}
+
+function Show-List-Page {
+  $listPage.Visibility = "Visible"
+  $detailPage.Visibility = "Collapsed"
+  # 回到列表就等于离开编辑页，编辑页的未保存提示不能挂到这里。
+  Set-Feedback ""
+  Update-ChannelList
+  Update-Controls
+}
+
+function Show-Detail-Page {
+  $listPage.Visibility = "Collapsed"
+  $detailPage.Visibility = "Visible"
+  Update-ChannelFields
+  Rebuild-Rows
+  Update-Controls
+}
+
 function Update-Controls {
-  $addButton.IsEnabled = $script:loaded -and -not $script:busy
-  $removeButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:selectedIndex -ge 0 -and $script:selectedIndex -lt $script:models.Count
+  $hasChannel = $null -ne (Get-ActiveChannel)
+  $models = Get-ActiveModels
+  $addButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
+  $addChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -lt 50
+  $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
+  $backButton.IsEnabled = -not $script:busy
+  foreach ($field in @($channelIdField, $channelBaseUrlField, $channelApiKeyField, $channelHeaderNameField, $channelHeaderValueField)) {
+    $field.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
+  }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
-  $restartButton.IsEnabled = $script:loaded -and -not $script:busy
-  $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and (Compare-Models $script:models $script:savedModels)
-  $emptyState.Visibility = if ($script:loaded -and $script:models.Count -eq 0) { "Visible" } else { "Collapsed" }
+  # 还原入口只在渠道列表页出现，编辑页放的是保存。
+  $clearButton.Visibility = if ($listPage.Visibility -eq "Visible") { "Visible" } else { "Collapsed" }
+  $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and (Compare-Channels $script:channels $script:savedChannels)
+  $emptyState.Visibility = if ($script:loaded -and $models.Count -eq 0) { "Visible" } else { "Collapsed" }
+}
+
+function Compare-Channels($Left, $Right) {
+  if ($Left.Count -ne $Right.Count) { return $true }
+  for ($index = 0; $index -lt $Left.Count; $index++) {
+    foreach ($field in @("id", "name", "baseUrl", "apiKey", "headerName", "headerValue")) {
+      if ([string]$Left[$index].$field -ne [string]$Right[$index].$field) { return $true }
+    }
+    if (Compare-Models $Left[$index].models $Right[$index].models) { return $true }
+  }
+  return $false
 }
 
 function Compare-Models($Left, $Right) {
   if ($Left.Count -ne $Right.Count) { return $true }
   for ($index = 0; $index -lt $Left.Count; $index++) {
     if ($Left[$index].id -ne $Right[$index].id) { return $true }
+    if ([string]$Left[$index].displayName -ne [string]$Right[$index].displayName) { return $true }
     if ($Left[$index].context -ne $Right[$index].context) { return $true }
+    $leftModalities = @($Left[$index].inputModalities) -join ","
+    $rightModalities = @($Right[$index].inputModalities) -join ","
+    if ($leftModalities -ne $rightModalities) { return $true }
   }
   return $false
-}
-
-function Select-Row([int]$Index) {
-  $script:selectedIndex = $Index
-  $rows = $rowsPanel.Children
-  for ($i = 0; $i -lt $rows.Count; $i++) {
-    $rows[$i].Background = if ($i -eq $Index) { "#F1F1F3" } else { "#00FFFFFF" }
-  }
-  Update-Controls
 }
 
 # 面板进程里 WPF 自带的 Ctrl+V 没有反应，右键也没有默认菜单：直接读 Win32 剪贴板。
@@ -373,84 +656,187 @@ function Add-CellClipboard($Box) {
   })
 }
 
+# 模型卡片里的一格：标题 + 一行输入控件。
+function New-ModelFieldBlock([string]$Title, [System.Windows.FrameworkElement[]]$Fields) {
+  $block = New-Object System.Windows.Controls.StackPanel
+  $label = New-Object System.Windows.Controls.TextBlock
+  $label.Text = $Title
+  $label.FontSize = 13
+  $label.FontWeight = "Medium"
+  $label.Foreground = "#656667"
+  [void]$block.Children.Add($label)
+  $row = New-Object System.Windows.Controls.StackPanel
+  $row.Orientation = "Horizontal"
+  $row.Margin = "0,4,0,0"
+  foreach ($field in $Fields) { [void]$row.Children.Add($field) }
+  [void]$block.Children.Add($row)
+  return $block
+}
+
+function New-ModelBox([hashtable]$Tag, [string]$Text, [double]$Width) {
+  $box = New-Object System.Windows.Controls.TextBox
+  $box.Style = $window.FindResource("Field")
+  $box.Text = $Text
+  $box.Width = $Width
+  $box.Tag = $Tag
+  $box.IsEnabled = $script:loaded -and -not $script:busy
+  $box.Add_TextChanged({ param($sender, $eventArgs) Update-Model $sender $sender.Tag.field })
+  Add-CellClipboard $box
+  return $box
+}
+
 function Rebuild-Rows {
+  $models = Get-ActiveModels
   $script:rendering = $true
   $rowsPanel.Children.Clear()
-  for ($index = 0; $index -lt $script:models.Count; $index++) {
-    $model = $script:models[$index]
-    $border = New-Object System.Windows.Controls.Border
-    $border.BorderThickness = "0,0,0,1"
-    $border.BorderBrush = "#EDEDEE"
-    $border.Background = "#00FFFFFF"
-    $border.Padding = "12,0"
-    $border.Height = 40
-    $border.Tag = $index
+  for ($index = 0; $index -lt $models.Count; $index++) {
+    $model = $models[$index]
+    $card = New-Object System.Windows.Controls.Border
+    $card.Style = $window.FindResource("Card")
+    $card.Padding = "16,14,16,16"
+    $card.Margin = "0,0,0,8"
+    $card.Tag = $index
 
-    $grid = New-Object System.Windows.Controls.Grid
-    foreach ($width in @("*", "128", "96")) {
-      $column = New-Object System.Windows.Controls.ColumnDefinition
-      $column.Width = [System.Windows.GridLength]::new([double]($width -replace '\*', '1'), $(if ($width -eq "*") { "Star" } else { "Pixel" }))
-      $grid.ColumnDefinitions.Add($column)
+    $content = New-Object System.Windows.Controls.StackPanel
+    $enabled = $script:loaded -and -not $script:busy
+    # 删除按钮单独一行靠右，和 cc-switch 的垃圾桶位置一致。
+    $trashRow = New-Object System.Windows.Controls.StackPanel
+    $trashRow.Orientation = "Horizontal"
+    $trashRow.HorizontalAlignment = "Right"
+    $trash = New-Object System.Windows.Controls.Button
+    $trash.Style = $window.FindResource("PillIcon")
+    $trash.Content = [char]0xE74D
+    $trash.FontFamily = "Segoe MDL2 Assets"
+    $trash.FontSize = 14
+    $trash.Width = 24
+    $trash.Height = 24
+    $trash.ToolTip = "删除模型"
+    $trash.Tag = $index
+    $trash.IsEnabled = $enabled
+    $trash.Add_Click({ param($sender, $eventArgs) Remove-Model ([int]$sender.Tag) })
+    [void]$trashRow.Children.Add($trash)
+    [void]$content.Children.Add($trashRow)
+
+    $idBox = New-ModelBox @{ index = $index; field = "id" } ([string]$model.id) 300
+    $idBox.HorizontalAlignment = "Stretch"
+    [void]$content.Children.Add((New-ModelFieldBlock "模型 ID" @($idBox)))
+
+    $contextBox = New-ModelBox @{ index = $index; field = "context" } ([string]$model.context) 148
+    $contextBox.Margin = "0,0,0,0"
+    $contextBlock = New-ModelFieldBlock "上下文窗口（k）" @($contextBox)
+    $sizeText = New-Object System.Windows.Controls.TextBlock
+    $sizeText.Text = "约 $(Convert-Context ([int]$model.context))"
+    $sizeText.FontSize = 12
+    $sizeText.Foreground = "#88898A"
+    $sizeText.VerticalAlignment = "Bottom"
+    $sizeText.Margin = "10,0,0,5"
+    $sizeText.Tag = $index
+    $contextRow = New-Object System.Windows.Controls.StackPanel
+    $contextRow.Orientation = "Horizontal"
+    [void]$contextRow.Children.Add($contextBlock)
+    [void]$contextRow.Children.Add($sizeText)
+    [void]$content.Children.Add($contextRow)
+
+    $modalityLabel = New-Object System.Windows.Controls.TextBlock
+    $modalityLabel.Text = "输入类型"
+    $modalityLabel.FontSize = 13
+    $modalityLabel.FontWeight = "Medium"
+    $modalityLabel.Foreground = "#656667"
+    [void]$content.Children.Add($modalityLabel)
+    $modalityRow = New-Object System.Windows.Controls.StackPanel
+    $modalityRow.Orientation = "Horizontal"
+    $modalityRow.Margin = "0,4,0,0"
+    foreach ($modality in @("text", "image")) {
+      $check = New-Object System.Windows.Controls.CheckBox
+      $check.Content = if ($modality -eq "text") { "文本" } else { "图片" }
+      $check.FontSize = 14
+      $check.IsEnabled = $enabled
+      $check.Tag = @{ index = $index; modality = $modality }
+      $check.IsChecked = @($model.inputModalities) -contains $modality
+      $check.Margin = if ($modality -eq "text") { "0,0,14,0" } else { "0" }
+      $check.Add_Click({ param($sender, $eventArgs) Toggle-Modality $sender })
+      [void]$modalityRow.Children.Add($check)
     }
+    [void]$content.Children.Add($modalityRow)
 
-    $idBox = New-Object System.Windows.Controls.TextBox
-    $idBox.Style = $window.FindResource("Cell")
-    $idBox.Text = [string]$model.id
-    $idBox.Tag = $index
-    $idBox.IsEnabled = $script:loaded -and -not $script:busy
-    $idBox.VerticalAlignment = "Center"
-    $idBox.Add_TextChanged({ param($sender, $eventArgs) Update-Model $sender "id" })
-    $idBox.Add_GotFocus({ param($sender, $eventArgs) Select-Row ([int]$sender.Tag) })
-
-    $contextBox = New-Object System.Windows.Controls.TextBox
-    $contextBox.Style = $window.FindResource("Cell")
-    $contextBox.Text = [string]$model.context
-    $contextBox.Tag = $index
-    $contextBox.IsEnabled = $script:loaded -and -not $script:busy
-    $contextBox.TextAlignment = "Right"
-    $contextBox.VerticalAlignment = "Center"
-    $contextBox.Add_TextChanged({ param($sender, $eventArgs) Update-Model $sender "context" })
-    $contextBox.Add_GotFocus({ param($sender, $eventArgs) Select-Row ([int]$sender.Tag) })
-
-    Add-CellClipboard $idBox
-    Add-CellClipboard $contextBox
-
-    $converted = New-Object System.Windows.Controls.TextBlock
-    $converted.Text = Convert-Context ([int]$model.context)
-    $converted.FontFamily = "Consolas"
-    $converted.FontSize = 12
-    $converted.Foreground = "#656667"
-    $converted.HorizontalAlignment = "Right"
-    $converted.VerticalAlignment = "Center"
-
-    [System.Windows.Controls.Grid]::SetColumn($idBox, 0)
-    [System.Windows.Controls.Grid]::SetColumn($contextBox, 1)
-    [System.Windows.Controls.Grid]::SetColumn($converted, 2)
-    [void]$grid.Children.Add($idBox)
-    [void]$grid.Children.Add($contextBox)
-    [void]$grid.Children.Add($converted)
-    $border.Child = $grid
-    [void]$rowsPanel.Children.Add($border)
+    $card.Child = $content
+    [void]$rowsPanel.Children.Add($card)
   }
   $script:rendering = $false
-  Select-Row $script:selectedIndex
 }
 
 function Update-Model($Sender, [string]$Field) {
   if ($script:rendering -or $script:busy) { return }
-  $index = [int]$Sender.Tag
-  if ($index -lt 0 -or $index -ge $script:models.Count) { return }
-  if ($Field -eq "id") {
-    $script:models[$index].id = $Sender.Text
-  } else {
-    $value = 0
-    if ([int]::TryParse($Sender.Text.Trim(), [ref]$value) -and $value -ge 1) {
-      $script:models[$index].context = $value
-      $row = $rowsPanel.Children[$index]
-      $row.Child.Children[2].Text = Convert-Context $value
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $index = [int]$Sender.Tag.index
+  if ($index -lt 0 -or $index -ge $channel.models.Count) { return }
+  switch ($Field) {
+    "id" { $channel.models[$index].id = $Sender.Text }
+    "displayName" { $channel.models[$index].displayName = $Sender.Text }
+    "context" {
+      $value = 0
+      if ([int]::TryParse($Sender.Text.Trim(), [ref]$value) -and $value -ge 1) {
+        $channel.models[$index].context = $value
+        # 卡片最后一行是输入类型，会话大小在倒数第二行。
+        $card = $rowsPanel.Children[$index]
+        $sizeText = $card.Child.Children[2].Children[1]
+        $sizeText.Text = "约 $(Convert-Context $value)"
+      }
     }
   }
-  Set-Feedback $(if (Compare-Models $script:models $script:savedModels) { "有未保存的更改" } else { "" })
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+# 关掉唯一的输入类型会让配置不可用，所以最后一个勾不能取消。
+function Toggle-Modality($Sender) {
+  if ($script:rendering -or $script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $index = [int]$Sender.Tag.index
+  $modality = [string]$Sender.Tag.modality
+  if ($index -lt 0 -or $index -ge $channel.models.Count) { return }
+  $current = @($channel.models[$index].inputModalities)
+  if ($Sender.IsChecked -eq $true) {
+    if ($current -notcontains $modality) { $current += $modality }
+  } else {
+    $remaining = @($current | Where-Object { $_ -ne $modality })
+    if ($remaining.Count -eq 0) {
+      $Sender.IsChecked = $true
+      return
+    }
+    $current = $remaining
+  }
+  $channel.models[$index].inputModalities = $current
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+function Remove-Model([int]$Index) {
+  if ($script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  if ($Index -lt 0 -or $Index -ge $channel.models.Count) { return }
+  $remaining = @()
+  for ($position = 0; $position -lt $channel.models.Count; $position++) {
+    if ($position -ne $Index) { $remaining += $channel.models[$position] }
+  }
+  $channel.models = $remaining
+  Rebuild-Rows
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+function Update-ChannelField([string]$Field, [string]$Value) {
+  if ($script:rendering -or $script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $channel[$Field] = $Value
+  if ($Field -eq "id") {
+    $pageTitle.Text = if ([string]::IsNullOrWhiteSpace($Value)) { "添加渠道" } else { $Value }
+  }
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
 }
 
@@ -467,12 +853,54 @@ function Receive-Response($Response) {
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
   if ($ok -or $Response.saved -eq $true -or $cleared) {
-    if ($null -ne $Response.models) {
-      $script:models = @($Response.models | ForEach-Object { @{ id = [string]$_.id; context = [int]$_.context } })
-      $script:savedModels = @($script:models | ForEach-Object { @{ id = $_.id; context = $_.context } })
+    if ($null -ne $Response.channels) {
+      $previousId = ""
+      $active = Get-ActiveChannel
+      if ($active) { $previousId = [string]$active.id }
+      $script:channels = @($Response.channels | ForEach-Object {
+        @{
+          id = [string]$_.id
+          name = [string]$_.name
+          baseUrl = [string]$_.baseUrl
+          apiKey = [string]$_.apiKey
+          headerName = [string]$_.headerName
+          headerValue = [string]$_.headerValue
+          models = @($_.models | ForEach-Object {
+            @{
+              id = [string]$_.id; displayName = [string]$_.displayName
+              context = [int]$_.context; inputModalities = @($_.inputModalities)
+            }
+          })
+        }
+      })
+      $script:savedChannels = @($script:channels | ForEach-Object {
+        @{
+          id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
+          headerName = $_.headerName; headerValue = $_.headerValue
+          models = @($_.models | ForEach-Object {
+            @{
+              id = $_.id; displayName = $_.displayName
+              context = $_.context; inputModalities = @($_.inputModalities)
+            }
+          })
+        }
+      })
+      $script:currentChannelId = [string]$Response.current
       $script:loaded = $true
-      $script:selectedIndex = -1
+      $wanted = 0
+      if ($previousId) {
+        for ($i = 0; $i -lt $script:channels.Count; $i++) {
+          if ($script:channels[$i].id -eq $previousId) { $wanted = $i; break }
+        }
+      }
+      $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($wanted, $script:channels.Count - 1) }
+      Update-ChannelFields
       Rebuild-Rows
+      if ($cleared -or $Response.restarted -eq $true -or $script:channelIndex -lt 0) {
+        Show-List-Page
+      } else {
+        Update-ChannelList
+      }
     }
   }
   if (-not $ok) {
@@ -480,9 +908,9 @@ function Receive-Response($Response) {
   } elseif ($cleared) {
     Set-Feedback "已清空并重启 ChatGPT"
   } elseif ($Response.restarted -eq $true) {
-    Set-Feedback "已保存，ChatGPT 已重启"
+    Set-Feedback "已启用渠道，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
-    Set-Feedback "已保存，点击“保存并重启 ChatGPT”后生效"
+    Set-Feedback "已保存，点列表里的「启用」才会生效"
   } else {
     Set-Feedback ""
   }
@@ -528,52 +956,97 @@ function Finish-UpdateCheck($Response) {
   $updateButton.IsEnabled = $true
 }
 
-function Submit([bool]$Restart) {
+function Submit([string]$Action) {
   if (-not $script:loaded -or $script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
   $script:busy = $true
-  Set-Feedback $(if ($Restart) { "正在保存并重启 ChatGPT…" } else { "正在保存…" })
+  Set-Feedback $(if ($Action -eq "switch") { "正在启用渠道并重启 ChatGPT…" } else { "正在保存…" })
   Rebuild-Rows
   Update-Controls
   Send-Request @{
-    action = "save"
-    restart = $Restart
-    models = @($script:models | ForEach-Object { @{ id = $_.id; context = $_.context } })
+    action = $Action
+    restart = ($Action -eq "switch")
+    current = $(if ($Action -eq "switch") { [string]$channel.id } else { [string]$script:currentChannelId })
+    channels = @($script:channels | ForEach-Object {
+      @{
+        id = [string]$_.id; name = [string]$_.name; baseUrl = [string]$_.baseUrl
+        apiKey = [string]$_.apiKey; headerName = [string]$_.headerName; headerValue = [string]$_.headerValue
+        models = @($_.models | ForEach-Object {
+          @{
+            id = [string]$_.id; displayName = [string]$_.displayName
+            context = [int]$_.context; inputModalities = @($_.inputModalities)
+          }
+        })
+      }
+    })
   }
 }
 
 $addButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
-  $script:models = @($script:models) + @{ id = ""; context = 272 }
-  $script:selectedIndex = $script:models.Count - 1
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $channel.models = @($channel.models) + @{
+    id = ""; displayName = ""; context = 272; inputModalities = @("text", "image")
+  }
   Rebuild-Rows
   Set-Feedback "有未保存的更改"
   Update-Controls
-  $rowsPanel.Children[$script:selectedIndex].Child.Children[0].Focus() | Out-Null
+  $newCard = $rowsPanel.Children[$rowsPanel.Children.Count - 1]
+  $newCard.Child.Children[1].Children[1].Children[0].Focus() | Out-Null
 })
 
-$removeButton.Add_Click({
-  if ($script:busy) { return }
-  if ($script:selectedIndex -lt 0 -or $script:selectedIndex -ge $script:models.Count) { return }
-  $remaining = @()
-  for ($index = 0; $index -lt $script:models.Count; $index++) {
-    if ($index -ne $script:selectedIndex) { $remaining += $script:models[$index] }
+$saveButton.Add_Click({ Submit "save" })
+
+$addChannelButton.Add_Click({
+  if (-not $script:loaded -or $script:busy -or $script:channels.Count -ge 50) { return }
+  $script:channels = @($script:channels) + @{
+    id = ""; name = ""; baseUrl = ""; apiKey = ""
+    headerName = ""; headerValue = ""; models = @()
   }
-  $script:models = $remaining
-  $script:selectedIndex = -1
-  Rebuild-Rows
-  Set-Feedback $(if (Compare-Models $script:models $script:savedModels) { "有未保存的更改" } else { "" })
+  $script:channelIndex = $script:channels.Count - 1
+  Show-Detail-Page
+  Set-Feedback "有未保存的更改"
+  $channelIdField.Focus() | Out-Null
+})
+
+$backButton.Add_Click({ Show-List-Page })
+
+$deleteChannelButton.Add_Click({
+  if ($script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $label = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "未命名渠道" } else { [string]$channel.id }
+  $answer = [System.Windows.MessageBox]::Show(
+    $window,
+    "只删除面板里保存的这份配置，不会改动已经写进 Codex 的内容。",
+    "删除渠道「$label」？",
+    "OKCancel", "Warning")
+  if ($answer -ne "OK") { return }
+  $remaining = @()
+  for ($index = 0; $index -lt $script:channels.Count; $index++) {
+    if ($index -ne $script:channelIndex) { $remaining += $script:channels[$index] }
+  }
+  $script:channels = $remaining
+  $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($script:channelIndex, $script:channels.Count - 1) }
+  if ($script:channels.Count -eq 0) { Show-List-Page } else { Show-Detail-Page }
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
 })
 
-$saveButton.Add_Click({ Submit $false })
-$restartButton.Add_Click({ Submit $true })
+$channelIdField.Add_TextChanged({ Update-ChannelField "id" $channelIdField.Text })
+$channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBaseUrlField.Text })
+$channelApiKeyField.Add_TextChanged({ Update-ChannelField "apiKey" $channelApiKeyField.Text })
+$channelHeaderNameField.Add_TextChanged({ Update-ChannelField "headerName" $channelHeaderNameField.Text })
+$channelHeaderValueField.Add_TextChanged({ Update-ChannelField "headerValue" $channelHeaderValueField.Text })
 
 $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "将删除插件保存的模型配置，并清理写入 Codex 的模型目录和 model_catalog_json 配置。",
-    "清空自定义模型并重启 ChatGPT？",
+    "会还原插件写进 Codex 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。",
+    "还原 Codex 配置并重启 ChatGPT？",
     "OKCancel", "Warning")
   if ($answer -ne "OK") { return }
   $script:busy = $true
@@ -690,7 +1163,8 @@ $application.ShutdownMode = "OnExplicitShutdown"
 $application.Add_SessionEnding({ $script:quitting = $true })
 Set-Feedback "正在读取配置…"
 $script:busy = $true
-Update-Controls
+Show-List-Page
+Rebuild-Rows
 Send-Request @{ action = "load" }
 # 启动期用 Stop 尽早暴露问题；跑起来之后用 Continue，避免偶发异常把面板整个关掉。
 $ErrorActionPreference = "Continue"
