@@ -15,7 +15,7 @@ import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.33";
+const VERSION = "0.1.34";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -168,6 +168,14 @@ const startWindowsPanel = (onRequest) => {
 const startPanel = IS_WINDOWS ? startWindowsPanel : startStatusMenu;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/// 主循环的节奏（事件通道不可用时的兜底轮询间隔）：CDP 目标轮询和客户端存活检查
+/// 都按它走。原来 250ms 一轮，每轮 ping 一次调试端口、fork 一次 pgrep，
+/// 4Hz 的唤醒让这个后台进程一直出不了空闲状态；1 秒一轮便宜得多。
+const POLL_INTERVAL_MS = 1000;
+
+/// 浏览器级事件连不上时的兜底轮询间隔：Target 事件漏掉也会在 5 秒内自愈。
+const TARGET_BACKSTOP_MS = 5000;
 
 const processIsAlive = (pid) => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -574,6 +582,69 @@ const fetchTargets = async (port) => {
   ));
 };
 
+/// 浏览器级的 CDP 长连接，只用来听「有新页面了」这类事件。
+/// 有了它就不必每秒去问一次 /json/list：新窗口一出现就能立刻注入，
+/// 平时进程完全睡着。
+class BrowserWatch {
+  constructor(port, onChange) {
+    this.port = port;
+    this.onChange = onChange;
+    this.socket = null;
+    this.closed = false;
+  }
+
+  get active() {
+    return !this.closed && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  async connect() {
+    const version = await fetchJson(`http://127.0.0.1:${this.port}/json/version`);
+    const url = version?.webSocketDebuggerUrl;
+    if (typeof url !== "string" || !url) throw new Error("调试端口没有提供 WebSocket 地址");
+    this.socket = new WebSocket(url);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.close();
+        reject(new Error("CDP browser connection timed out"));
+      }, 5000);
+      this.socket.addEventListener("open", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      this.socket.addEventListener("error", () => {
+        clearTimeout(timer);
+        // 连失败的 socket 要扔掉，不然它晚一点连上会让 active 变成 true，
+        // 但那时已经没人发 setDiscoverTargets，事件永远不会来。
+        this.close();
+        reject(new Error("CDP browser connection failed"));
+      }, { once: true });
+    });
+    this.socket.addEventListener("message", (event) => {
+      let message;
+      try {
+        message = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      // targetCreated / targetDestroyed / targetInfoChanged 都算变化。
+      if (typeof message.method === "string" && message.method.startsWith("Target.")) this.onChange();
+    });
+    this.socket.addEventListener("close", () => {
+      this.closed = true;
+      // 客户端退出时这条连接会断，当成一次变化去复查。
+      this.onChange();
+    });
+    this.socket.send(JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }));
+    return true;
+  }
+
+  close() {
+    this.closed = true;
+    try { this.socket?.close(); } catch { /* 已经断了就算了 */ }
+    this.socket = null;
+  }
+}
+
 class CDPSession {
   constructor(target) {
     this.target = target;
@@ -853,7 +924,31 @@ const main = async () => {
   let appPath;
   const clientPath = () => (appPath ??= findApp());
   const requests = [];
-  startPanel((request, reply) => requests.push({ request, reply }));
+  // 面板请求一到就立刻结束这一轮等待，别让「保存」白等一整个轮询周期。
+  let wakePolling = null;
+  const waitPolling = (milliseconds) => new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      wakePolling = null;
+      resolve();
+    }, milliseconds);
+    wakePolling = () => {
+      clearTimeout(timer);
+      wakePolling = null;
+      resolve();
+    };
+  });
+  startPanel((request, reply) => {
+    requests.push({ request, reply });
+    if (wakePolling) wakePolling();
+  });
+  // CDP 目标变化由 BrowserWatch 推过来，平时完全不用醒；事件漏了还有兜底轮询。
+  let browserWatch = null;
+  let targetsDirty = true;
+  let lastTargetPoll = 0;
+  const markTargetsDirty = () => {
+    targetsDirty = true;
+    if (wakePolling) wakePolling();
+  };
   const sessions = new Map();
   let models = [];
   let port = 0;
@@ -909,7 +1004,15 @@ const main = async () => {
     if (!existingPort) await launchApp(target, nextPort);
     const targets = await waitForTargets(nextPort);
     port = nextPort;
+    // 端口确认可用后再连事件通道；刚启动时连不上会一直退回轮询。
+    browserWatch?.close();
+    browserWatch = new BrowserWatch(nextPort, markTargetsDirty);
+    // 连不上不影响功能：没有事件就退回轮询。
+    browserWatch.connect().catch((error) => log("browser_watch_failed", String(error?.message || error)));
     await injectTargets(targets);
+    // 这一轮已经抓过目标了，别让主循环紧接着再抓一次。
+    targetsDirty = false;
+    lastTargetPoll = Date.now();
     if (models.length > 0 && sessions.size === 0) throw new Error("模型注入失败，请重试并检查插件日志");
     log("launcher_started", { version: VERSION, appPath: target, port, models });
     writeState({ pid: process.pid, version: VERSION, appPath: target, port, models, startedAt: Date.now() });
@@ -972,10 +1075,15 @@ const main = async () => {
     }
 
     if (port) {
-      try {
-        await injectTargets(await fetchTargets(port));
-      } catch (error) {
-        if (runOnce) throw error;
+      const backstop = browserWatch?.active ? TARGET_BACKSTOP_MS : POLL_INTERVAL_MS;
+      if (targetsDirty || Date.now() - lastTargetPoll >= backstop) {
+        targetsDirty = false;
+        lastTargetPoll = Date.now();
+        try {
+          await injectTargets(await fetchTargets(port));
+        } catch (error) {
+          if (runOnce) throw error;
+        }
       }
     }
     if (runOnce) break;
@@ -984,6 +1092,8 @@ const main = async () => {
       appMissingSince ??= Date.now();
       if (Date.now() - appMissingSince > 5000) {
         port = 0;
+        browserWatch?.close();
+        browserWatch = null;
         for (const session of sessions.values()) session.close();
         sessions.clear();
         cleanupState();
@@ -993,7 +1103,7 @@ const main = async () => {
     }
 
     if (!port && !statusMenuProcess) break;
-    await sleep(250);
+    await waitPolling(browserWatch?.active ? TARGET_BACKSTOP_MS : POLL_INTERVAL_MS);
   }
 
   for (const session of sessions.values()) session.close();
