@@ -574,6 +574,27 @@ struct PanelView: View {
     }
 }
 
+/// 搜索框按文字自适应高度：用写死的 38pt 框时，光标一进去 AppKit 的编辑区就把
+/// 文字顶到框顶，框里空出一大截。上下留白对称，编辑与否都居中。
+private struct SearchField: View {
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("搜索模型", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .focused($focused)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.16))
+            )
+    }
+}
+
 /// 端点公布的清单先在这里勾选，点「添加所选」才进模型目录。
 struct ModelPickerCard: View {
     @ObservedObject var store: PanelStore
@@ -606,10 +627,7 @@ struct ModelPickerCard: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 14) {
-                    TextField("搜索模型", text: $store.discoveryFilter)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .fieldBox()
+                    SearchField(text: $store.discoveryFilter)
                     Toggle("全选", isOn: allVisible)
                         .toggleStyle(.checkbox)
                         .font(.system(size: 13))
@@ -645,9 +663,13 @@ struct ModelPickerCard: View {
             }
             .padding(24)
             .frame(width: 460)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .windowBackgroundColor)))
+            // 白底：跟卡片里的白输入框一样平，不然白框压在灰底卡片上像浮着一层。
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
+            )
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
-            .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
         }
     }
 
@@ -720,9 +742,13 @@ struct DeleteConfirmCard: View {
             }
             .padding(24)
             .frame(width: 460)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .windowBackgroundColor)))
+            // 白底：跟卡片里的白输入框一样平，不然白框压在灰底卡片上像浮着一层。
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
+            )
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
-            .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
         }
     }
 }

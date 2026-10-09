@@ -192,7 +192,7 @@ prepare_release() {
   run_release_gate
 
   info "构建 ${APP_NAME}"
-  OUTPUT_DIR="$BUILD_DIR" "$SCRIPT_DIR/build.sh" >/dev/null
+  OUTPUT_DIR="$BUILD_DIR" DMG_OUTPUT_DIR="$BUILD_DIR" "$SCRIPT_DIR/build.sh" >/dev/null
   [[ -d "$APP_PATH" ]] || die "构建后没有找到应用：$APP_PATH"
 
   mkdir -p "$ARTIFACT_DIR"

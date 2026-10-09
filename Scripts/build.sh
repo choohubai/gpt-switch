@@ -5,17 +5,29 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_DIR="$ROOT_DIR/Sources"
 RESOURCE_DIR="$ROOT_DIR/Resources"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
+# 本地打包不留中间产物：默认建个临时目录放 .app，脚本退出就删，只在下载目录留一个 dmg。
+TEMP_OUTPUT_DIR=""
+if [[ -z "${OUTPUT_DIR:-}" ]]; then
+  TEMP_OUTPUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-build.XXXXXX")"
+  OUTPUT_DIR="$TEMP_OUTPUT_DIR"
+fi
 APP="$OUTPUT_DIR/GPT Switch.app"
 CONTENTS="$APP/Contents"
 VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$RESOURCE_DIR/Info.plist")"
-DMG="$OUTPUT_DIR/GPT-Switch-v${VERSION}-macOS.dmg"
+# dmg 放仓库的 dist/；中间产物（.app）留在临时目录，不进 dist。
+DMG_DIR="${DMG_OUTPUT_DIR:-$ROOT_DIR/dist}"
+DMG="$DMG_DIR/GPT-Switch-v${VERSION}-macOS.dmg"
 DMG_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-dmg.XXXXXX")"
 ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch.XXXXXX")"
 ICONSET="$ICON_WORK_DIR/AppIcon.iconset"
 MASTER_ICON="$ICON_WORK_DIR/AppIcon-1024.png"
 
-trap 'rm -rf "$ICON_WORK_DIR" "$DMG_SOURCE"' EXIT
+cleanup() {
+  rm -rf "$ICON_WORK_DIR" "$DMG_SOURCE"
+  [[ -z "$TEMP_OUTPUT_DIR" ]] || rm -rf "$TEMP_OUTPUT_DIR"
+  return 0
+}
+trap cleanup EXIT
 
 is_app_running() {
   /bin/ps -axo pid=,args= | /usr/bin/awk -v app="$APP" -v self="$$" '
@@ -29,14 +41,11 @@ if [[ -d "$APP" ]] && is_app_running; then
   exit 1
 fi
 
-# 构建产物目录每次都重建，避免旧包和旧 app 混在里面被误启动。
-# 只对默认的 dist 整目录清理；自定义 OUTPUT_DIR 时只删自己产出的文件。
-if [[ "$OUTPUT_DIR" == "$ROOT_DIR/dist" ]]; then
-  rm -rf "$OUTPUT_DIR"
-else
+# 临时目录每次都是新建的；显式给了 OUTPUT_DIR（发布流程）时只删自己产出的文件。
+if [[ -z "$TEMP_OUTPUT_DIR" ]]; then
   rm -rf "$APP" "$DMG"
 fi
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$ICONSET" "$DMG_DIR"
 
 cp "$RESOURCE_DIR/Info.plist" "$CONTENTS/Info.plist"
 cp "$SCRIPT_DIR/GPTSwitch" "$CONTENTS/MacOS/GPTSwitch"
@@ -75,7 +84,8 @@ if ! /usr/bin/iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/AppIcon.icns";
 fi
 
 /usr/bin/codesign --force --deep --sign - "$APP"
-/usr/bin/plutil -lint "$CONTENTS/Info.plist"
+# 校验失败会走 stderr 报错；成功就别把临时 app 的路径打到屏幕上。
+/usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
 
 # 固定名字的 dmg：带 /Applications 快捷方式，方便拖拽安装。
 /usr/bin/ditto "$APP" "$DMG_SOURCE/GPT Switch.app"
@@ -83,5 +93,4 @@ fi
 /usr/bin/hdiutil create -quiet -ov -format UDZO \
   -volname "GPT Switch" -srcfolder "$DMG_SOURCE" "$DMG"
 
-print -r -- "$APP"
 print -r -- "$DMG"
