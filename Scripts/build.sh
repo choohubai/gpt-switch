@@ -13,10 +13,10 @@ if [[ -z "${OUTPUT_DIR:-}" ]]; then
 fi
 APP="$OUTPUT_DIR/GPT Switch.app"
 CONTENTS="$APP/Contents"
-VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$RESOURCE_DIR/Info.plist")"
 # dmg 放仓库的 dist/；中间产物（.app）留在临时目录，不进 dist。
+# 本地测试用的 dmg 不带版本号：新包直接覆盖旧包，dist 里始终只有当前这一份（发布包的名字由 local-release.sh 定）。
 DMG_DIR="${DMG_OUTPUT_DIR:-$ROOT_DIR/dist}"
-DMG="$DMG_DIR/GPT-Switch-v${VERSION}-macOS.dmg"
+DMG="$DMG_DIR/${DMG_NAME:-GPT-Switch-macOS.dmg}"
 DMG_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-dmg.XXXXXX")"
 ICON_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch.XXXXXX")"
 ICONSET="$ICON_WORK_DIR/AppIcon.iconset"

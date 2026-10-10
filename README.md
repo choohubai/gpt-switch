@@ -56,14 +56,14 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 - Provider ID：写进 `config.toml` 的 `model_providers.<Provider ID>`，只能用字母、数字、`-` 和 `_`。
 - 地址：写进 `model_providers.<渠道>.base_url`，例如 `https://choohub.net/api-proxy/v1`。
-- 密钥：写进 `~/.codex/auth.json` 的 `OPENAI_API_KEY`。
+- 密钥：写进 `~/.codex/auth.json` 的 `OPENAI_API_KEY`；面板里默认打码，点右边的眼睛图标可查看。
 - 请求头名 / 请求头值：可以留空；填了就写进 `model_providers.<渠道>.http_headers`，用来兼容需要自定义请求头的中转。
 
 下面是这个渠道的模型列表，每个模型一张卡片：模型 ID、显示名称（留空就用模型 ID）、上下文窗口（k）和输入类型。不同渠道的模型列表互相独立，启用渠道时整份列表一起换，卡片右上角的垃圾桶删除该模型。
 
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 
-- “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置。
+- “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。
 - 「启用」：存盘后把该渠道写进 `~/.codex/config.toml` 和 `auth.json`，更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。
 - “还原 ChatGPT 配置并重启”（列表页右上角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 

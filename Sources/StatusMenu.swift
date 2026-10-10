@@ -154,6 +154,8 @@ final class PanelStore: ObservableObject {
     var send: ([String: Any]) -> Void = { _ in }
     private var pendingUpdateURL: URL?
     private var checkingUpdate = false
+    /// 进编辑页时这条渠道是不是正在用的那条：保存时按它决定「使用中」跟谁走。
+    private var editingActiveChannel = false
     /// 删除要落盘，存盘失败时把刚拿掉的那条放回去，别让面板和文件对不上。
     private var pendingDelete: (restore: [ChannelRow], note: String)?
 
@@ -183,6 +185,7 @@ final class PanelStore: ObservableObject {
 
     func showList() {
         editingIndex = nil
+        editingActiveChannel = false
         deletePrompt = nil
         cancelDiscovery()
         feedback = ""
@@ -199,6 +202,7 @@ final class PanelStore: ObservableObject {
     func editChannel(at index: Int) {
         guard channels.indices.contains(index) else { return }
         editingIndex = index
+        editingActiveChannel = channels[index].id == currentChannelID
     }
 
     /// 列表页和编辑页的垃圾桶都先问一句，删的动作还是走 deleteChannel。
@@ -295,7 +299,14 @@ final class PanelStore: ObservableObject {
 
     // MARK: 请求
 
-    func save() { submit(action: "save", currentID: currentChannelID ?? "") }
+    /// 保存不动「使用中」：编辑页里改了什么（渠道 ID 也一样）都只是这条渠道自己。
+    func save() {
+        if editingActiveChannel, let index = editingIndex, channels.indices.contains(index) {
+            submit(action: "save", currentID: channels[index].id)
+            return
+        }
+        submit(action: "save", currentID: currentChannelID ?? "")
+    }
 
     func enableChannel(at index: Int) {
         guard channels.indices.contains(index), loaded, !busy else { return }
@@ -921,7 +932,7 @@ struct ChannelDetailView: View {
                 LabeledField(title: "渠道 ID", placeholder: "输入渠道 ID",
                              text: $store.channels[store.activeIndex].id)
                 LabeledField(title: "API 密钥", placeholder: "输入 API 密钥",
-                             text: $store.channels[store.activeIndex].apiKey)
+                             text: $store.channels[store.activeIndex].apiKey, secure: true)
                 LabeledField(title: "API 地址", placeholder: "https://gateway.example/v1",
                              text: $store.channels[store.activeIndex].baseUrl)
                 LabeledField(title: "请求头名（可选）", placeholder: "Authorization",
@@ -1023,17 +1034,37 @@ struct LabeledField: View {
     let placeholder: String
     @Binding var text: String
     var width: CGFloat?
+    var secure = false
+    @State private var revealed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
-            TextField(placeholder, text: $text)
+            HStack(spacing: 8) {
+                // 密钥默认打码；要核对时点右边的眼睛看一眼。
+                Group {
+                    if secure && !revealed {
+                        SecureField(placeholder, text: $text)
+                    } else {
+                        TextField(placeholder, text: $text)
+                    }
+                }
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
-                .fieldBox()
-                .frame(width: width)
+                if secure {
+                    Button { revealed.toggle() } label: {
+                        Image(systemName: revealed ? "eye.slash" : "eye")
+                            .font(.system(size: 13))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .pointingHand()
+                }
+            }
+            .fieldBox()
+            .frame(width: width)
         }
     }
 }

@@ -15,7 +15,7 @@ import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.35";
+const VERSION = "0.1.36";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -806,6 +806,7 @@ const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
 const channelImportOptions = () => ({
   userConfigPath: USER_CONFIG,
   authPath: AUTH_PATH,
+  recordPath: CODEX_RECORD,
   modelPaths: [LEGACY_MODELS, path.join(LEGACY_SUPPORT_DIR, "models.json")],
 });
 

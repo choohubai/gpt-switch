@@ -205,6 +205,33 @@ function Convert-Context([int]$k) {
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="SecretField" TargetType="PasswordBox">
+      <Setter Property="Height" Value="38"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Padding" Value="12,0"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="PasswordBox">
+            <Border x:Name="frame" Background="{TemplateBinding Background}"
+                    BorderBrush="#E0E0E3" BorderThickness="1" CornerRadius="8">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                            VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="frame" Property="BorderBrush" Value="#8AB4F8"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="frame" Property="Opacity" Value="0.5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="Card" TargetType="Border">
       <Setter Property="Background" Value="#FFFFFF"/>
       <Setter Property="BorderBrush" Value="#E8E8EB"/>
@@ -295,7 +322,7 @@ function Convert-Context([int]$k) {
           <TextBlock Grid.Row="0" Grid.Column="0" Text="渠道 ID" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
           <TextBox x:Name="ChannelIdField" Grid.Row="1" Grid.Column="0" Style="{StaticResource Field}" Width="240" HorizontalAlignment="Left" Margin="0,4,16,0"/>
           <TextBlock Grid.Row="0" Grid.Column="2" Text="API 密钥" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
-          <TextBox x:Name="ChannelApiKeyField" Grid.Row="1" Grid.Column="2" Style="{StaticResource Field}" Width="240" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+          <PasswordBox x:Name="ChannelApiKeyField" Grid.Row="1" Grid.Column="2" Style="{StaticResource SecretField}" Width="240" HorizontalAlignment="Left" Margin="0,4,0,0"/>
           <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4" Text="API 地址" FontSize="13" FontWeight="Medium" Foreground="#656667" Margin="0,14,0,0"/>
           <TextBox x:Name="ChannelBaseUrlField" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="4" Style="{StaticResource Field}" HorizontalAlignment="Stretch" Margin="0,4,0,0"/>
         </Grid>
@@ -538,7 +565,7 @@ function Update-ChannelFields {
   try {
     $channelIdField.Text = if ($channel) { [string]$channel.id } else { "" }
     $channelBaseUrlField.Text = if ($channel) { [string]$channel.baseUrl } else { "" }
-    $channelApiKeyField.Text = if ($channel) { [string]$channel.apiKey } else { "" }
+    $channelApiKeyField.Password = if ($channel) { [string]$channel.apiKey } else { "" }
     $channelHeaderNameField.Text = if ($channel) { [string]$channel.headerName } else { "" }
     $channelHeaderValueField.Text = if ($channel) { [string]$channel.headerValue } else { "" }
     $pageTitle.Text = if ($channel -and -not [string]::IsNullOrWhiteSpace([string]$channel.id)) { [string]$channel.id } else { "添加渠道" }
@@ -775,7 +802,13 @@ function Paste-IntoCell($Box) {
     return
   }
   # 输入框是单行的，换行直接丢掉，避免粘出带换行的模型 ID。
-  $Box.SelectedText = $text -replace "\r?\n", ""
+  $plain = $text -replace "\r?\n", ""
+  # 密钥框是 PasswordBox，没有 SelectedText。
+  if ($Box -is [System.Windows.Controls.PasswordBox]) {
+    $Box.Password = $plain
+    return
+  }
+  $Box.SelectedText = $plain
 }
 
 function Add-CellClipboard($Box) {
@@ -784,8 +817,10 @@ function Add-CellClipboard($Box) {
   $copyItem.Add_Click({
     param($sender, $eventArgs)
     $target = $sender.Parent.PlacementTarget
-    if ($target -and $target.SelectedText) {
-      try { [System.Windows.Clipboard]::SetText($target.SelectedText) }
+    # 密钥框是 PasswordBox，没有 SelectedText，只能整段取。
+    $selected = if ($target -is [System.Windows.Controls.PasswordBox]) { $target.Password } else { $target.SelectedText }
+    if ($target -and $selected) {
+      try { [System.Windows.Clipboard]::SetText($selected) }
       catch { Set-Feedback "写入剪贴板失败：$($_.Exception.Message)" $true }
     }
   })
@@ -1388,7 +1423,8 @@ $confirmDelete.Add_Click({
 
 $channelIdField.Add_TextChanged({ Update-ChannelField "id" $channelIdField.Text })
 $channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBaseUrlField.Text })
-$channelApiKeyField.Add_TextChanged({ Update-ChannelField "apiKey" $channelApiKeyField.Text })
+# 密钥框是 PasswordBox，事件和取值都跟别的输入框不一样。
+$channelApiKeyField.Add_PasswordChanged({ Update-ChannelField "apiKey" $channelApiKeyField.Password })
 $channelHeaderNameField.Add_TextChanged({ Update-ChannelField "headerName" $channelHeaderNameField.Text })
 $channelHeaderValueField.Add_TextChanged({ Update-ChannelField "headerValue" $channelHeaderValueField.Text })
 

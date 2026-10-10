@@ -232,6 +232,27 @@ struct StatusMenuTests {
         assert(store.deletePrompt == nil && store.models.isEmpty, "确认后删掉模型")
         store.showList()
 
+        // 改当前渠道的 ID：它就还是当前渠道，列表里不能退回「启用」。
+        store.editChannel(at: 1)
+        store.channels[1].id = "relay-2"
+        store.save()
+        assert(requests.last?["current"] as? String == "relay-2", "当前渠道改名后 current 要跟着走")
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay-2", "baseUrl": "https://relay.example/v1", "models": []],
+        ], "current": "relay-2"])
+        assert(store.currentChannelID == "relay-2")
+
+        // 改的要不是当前渠道，当前渠道就不能被顺手改掉。
+        store.editChannel(at: 0)
+        store.channels[0].id = "choohub-2"
+        store.save()
+        assert(requests.last?["current"] as? String == "relay-2", "改别的渠道不能动当前渠道")
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub-2", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay-2", "baseUrl": "https://relay.example/v1", "models": []],
+        ], "current": "relay-2"])
+
         // 获取可用模型：带上渠道地址、密钥和自定义请求头问端点，拿回来的清单填进模型目录。
         store.editChannel(at: 0)
         store.channels[0].apiKey = "sk-fetch"

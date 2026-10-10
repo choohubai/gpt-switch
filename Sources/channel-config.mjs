@@ -344,9 +344,35 @@ export const importChannelsFromCodex = ({ userConfigPath, authPath, modelPaths =
   };
 };
 
+/// 老版本里改渠道 ID 会把 channels.json 的 current 弄丢（编辑不该动「使用中」）：config.toml 里那次切换还记得
+/// 是谁写的（记录里的 appliedId），只要它还指着我们写进去的那段，就按 ID 或地址认回是哪条渠道。
+const adoptRenamedCurrent = (state, options = {}) => {
+  if (state.current || !state.channels.length || !options.userConfigPath || !options.recordPath) return null;
+  const record = readRecord(options.recordPath);
+  const applied = typeof record?.appliedId === "string" ? record.appliedId : "";
+  if (!applied) return null;
+  let text = "";
+  try {
+    text = fs.readFileSync(options.userConfigPath, "utf8");
+  } catch {
+    return null;
+  }
+  if (modelProviderFromToml(text) !== applied) return null;
+  if (state.channels.some((channel) => channel.id === applied)) return applied;
+  const baseUrl = readProviderTable(text, applied)?.base_url;
+  const matches = typeof baseUrl === "string" && baseUrl.trim()
+    ? state.channels.filter((channel) => channel.baseUrl === baseUrl.trim())
+    : [];
+  return matches.length === 1 ? matches[0].id : null;
+};
+
 /// 没有渠道配置时：先看能不能从现有 Codex 配置导入，导不出来就开机空列表。
 export const loadChannelState = (configPath, importOptions) => {
-  if (fs.existsSync(configPath)) return readChannelState(configPath);
+  if (fs.existsSync(configPath)) {
+    const state = readChannelState(configPath);
+    const adopted = adoptRenamedCurrent(state, importOptions);
+    return adopted ? writeChannelState(configPath, { channels: state.channels, current: adopted }) : state;
+  }
   try {
     const imported = importChannelsFromCodex(importOptions);
     if (imported.channels.length) return writeChannelState(configPath, imported);

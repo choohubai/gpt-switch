@@ -202,6 +202,29 @@ test("channel state imports once, then round-trips through the file", (context) 
   assert.equal(fs.readdirSync(path.dirname(configPath)).includes("channels.json"), true);
 });
 
+test("a renamed current channel is recognised again from the codex config", (context) => {
+  const { userConfigPath, authPath, configPath, recordPath } = sandbox(context);
+  const options = { userConfigPath, authPath, recordPath, modelPaths: [] };
+  fs.writeFileSync(userConfigPath, '# user config\n');
+  // 切换时还叫 OpenAI，之后在面板里把 ID 改成了 choohub。
+  applyChannelToCodex({
+    channel: channel({ id: "OpenAI", name: "ChooHub", baseUrl: "https://choohub.net/api-proxy/v1" }),
+    authPath, userConfigPath, recordPath,
+  });
+  writeChannelState(configPath, {
+    channels: [channel({ id: "choohub", name: "ChooHub", baseUrl: "https://choohub.net/api-proxy/v1" })],
+    current: null,
+  });
+  const healed = loadChannelState(configPath, options);
+  assert.equal(healed.current, "choohub", "还指着那次切换写进去的 provider，就该认回这条渠道");
+  assert.equal(readChannelState(configPath).current, "choohub", "认回来要落盘，下次打开还在");
+
+  // 还原之后记录没了，配置也不再指着我们写的那段，不能再当成在用。
+  writeChannelState(configPath, { channels: healed.channels, current: null });
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(loadChannelState(configPath, options).current, null);
+});
+
 const panelOptions = (paths, over = {}) => {
   const calls = { applied: [], catalogs: [], restarts: [], restored: 0, cleared: 0 };
   const options = {
