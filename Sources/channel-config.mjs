@@ -490,7 +490,9 @@ export const discoverChannelModels = async (request = {}) => {
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`${url} 返回的不是 JSON`);
+    // New API 这类中转的模型接口在 /v1/models，只填站点根地址会拿回首页 HTML。
+    const hint = /^\s*</.test(text) ? "，这个地址返回的是网页；中转站一般要带上 /v1" : "";
+    throw new Error(`${url} 返回的不是 JSON${hint}`);
   }
   const models = readModelListing(body);
   if (models.length === 0) throw new Error("端点没有公布任何模型，请手动添加");

@@ -15,7 +15,7 @@ import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.36";
+const VERSION = "0.1.37";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -841,6 +841,8 @@ const readCodexCatalog = (binary) => {
 const windowsCodexBinary = (appPath) => {
   const candidates = [];
   if (!WINDOWS_PACKAGED_CLIENT.test(appPath)) {
+    // 新版客户端把 codex 挪进了 codex-cli/bin，旧版放在 resources 根下。
+    candidates.push(path.join(path.dirname(appPath), "resources", "codex-cli", "bin", "codex.exe"));
     candidates.push(path.join(path.dirname(appPath), "resources", "codex.exe"));
   }
   try {
@@ -860,14 +862,20 @@ const windowsCodexBinary = (appPath) => {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 };
 
+/// 新版客户端把 codex 挪进了 codex-cli/bin（codex-package.json 里的 entrypoint 就是它），旧版直接放在 Resources 下。
+const macCodexBinary = (appPath) => [
+  path.join(appPath, "Contents", "Resources", "codex-cli", "bin", "codex"),
+  path.join(appPath, "Contents", "Resources", "codex"),
+].find((candidate) => fs.existsSync(candidate)) || null;
+
 const readBundledCatalog = (appPath) => {
   if (IS_WINDOWS) {
     const binary = windowsCodexBinary(appPath);
     if (!binary) throw new Error("未找到 ChatGPT 自带的模型目录工具，无法读取官方模型目录");
     return readCodexCatalog(binary);
   }
-  const binary = path.join(appPath, "Contents", "Resources", "codex");
-  if (!fs.existsSync(binary)) throw new Error("未找到 ChatGPT 自带的模型目录工具，无法读取官方模型目录");
+  const binary = macCodexBinary(appPath);
+  if (!binary) throw new Error("未找到 ChatGPT 自带的模型目录工具，无法读取官方模型目录");
   return readCodexCatalog(binary);
 };
 

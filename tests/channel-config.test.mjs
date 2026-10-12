@@ -377,7 +377,15 @@ test("discoverChannelModels reports the failures the panel shows", async () => {
     await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "返回 401，检查 API 密钥");
   });
   await withFetch(async () => new Response("<html>", { status: 200 }), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "返回的不是 JSON");
+    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+      "返回的不是 JSON，这个地址返回的是网页；中转站一般要带上 /v1");
+  });
+  // 不是 HTML 的坏响应别乱猜地址。
+  await withFetch(async () => new Response("nope", { status: 200 }), async () => {
+    await assert.rejects(
+      () => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+      (error) => error.message === "https://a.example/v1/models 返回的不是 JSON",
+    );
   });
   await withFetch(async () => listing({ nope: true }), async () => {
     await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
