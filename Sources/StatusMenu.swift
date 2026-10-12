@@ -109,6 +109,12 @@ enum DeletePrompt: Equatable {
     case model(Int)
 }
 
+/// 点「启用」和右上角「重启」都会重启客户端，只是说法不同：这里只记「写哪条、按哪个说法问」。
+enum RestartPrompt: Equatable {
+    case enable(Int)
+    case restart(Int)
+}
+
 /// 「获取可用模型」拿回来的行：id 一定有，显示名和窗口只在端点给出时才有。
 struct DiscoveredModel: Decodable {
     let id: String
@@ -149,6 +155,8 @@ final class PanelStore: ObservableObject {
     @Published var discoveredSelection: Set<String> = []
     @Published var discoveryFilter = ""
     @Published var confirmingClear = false
+    /// 「启用」和「重启」都会重启客户端，先弹一句说明；这里记着要写哪一条。
+    @Published var restartPrompt: RestartPrompt?
     @Published var deletePrompt: DeletePrompt?
 
     var send: ([String: Any]) -> Void = { _ in }
@@ -313,6 +321,58 @@ final class PanelStore: ObservableObject {
         submit(action: "switch", currentID: channels[index].id)
     }
 
+    /// 点某条渠道的「启用」：先问一句，确认后才写配置并重启。
+    func requestEnable(at index: Int) {
+        guard channels.indices.contains(index), loaded, !busy else { return }
+        restartPrompt = .enable(index)
+    }
+
+    /// 右上角的「重启」：用正在使用的渠道重新写一遍配置再重启。
+    func requestRestart() {
+        guard loaded, !busy, let index = currentChannelIndex else { return }
+        restartPrompt = .restart(index)
+    }
+
+    func confirmRestart() {
+        guard let prompt = restartPrompt else { return }
+        restartPrompt = nil
+        switch prompt {
+        case .enable(let index), .restart(let index): enableChannel(at: index)
+        }
+    }
+
+    func cancelRestart() {
+        restartPrompt = nil
+    }
+
+    /// 正在使用的那条渠道：右上角的「重启」写的就是它。
+    var currentChannelIndex: Int? {
+        guard let currentChannelID else { return nil }
+        return channels.firstIndex { $0.id == currentChannelID }
+    }
+
+    var canRestart: Bool {
+        loaded && !busy && currentChannelIndex != nil
+    }
+
+    /// 重启说明的标题、正文和确认按钮文案。
+    var restartPromptText: (title: String, message: String, confirm: String)? {
+        switch restartPrompt {
+        case .enable(let index):
+            guard channels.indices.contains(index) else { return nil }
+            return ("启用「\(channelDisplayLabel(channels[index]))」会重启 ChatGPT",
+                    "会把它写进 ChatGPT 配置并更新模型目录；客户端只在启动时读配置，重启后才生效。",
+                    "启用并重启")
+        case .restart(let index):
+            guard channels.indices.contains(index) else { return nil }
+            return ("重启 ChatGPT？",
+                    "会用「\(channelDisplayLabel(channels[index]))」重新写一遍 ChatGPT 配置，然后重启客户端。",
+                    "重启")
+        case nil:
+            return nil
+        }
+    }
+
     private func submit(action: String, currentID: String, note: String? = nil) {
         guard loaded, !busy else { return }
         busy = true
@@ -414,7 +474,9 @@ final class PanelStore: ObservableObject {
             feedback = "已启用渠道，ChatGPT 已重启"
             feedbackIsError = false
         } else if response["saved"] as? Bool == true {
-            feedback = pending?.note ?? "已保存，点列表里的「启用」才会生效"
+            feedback = pending?.note ?? (editingActiveChannel
+                ? "已保存，点右上角「重启」写进 ChatGPT"
+                : "已保存，点列表里的「启用」才会生效")
             feedbackIsError = false
         } else {
             feedback = ""
@@ -571,6 +633,20 @@ struct PanelView: View {
         } message: {
             Text("会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
         }
+        .confirmationDialog(restartPromptTitle, isPresented: restartPromptPresented, titleVisibility: .visible) {
+            Button(store.restartPromptText?.confirm ?? "重启") { store.confirmRestart() }
+            Button("取消", role: .cancel) { store.cancelRestart() }
+        } message: {
+            Text(store.restartPromptText?.message ?? "")
+        }
+    }
+
+    /// 「启用」和「重启」都会重启客户端，先弹一句再动手。
+    private var restartPromptTitle: String { store.restartPromptText?.title ?? "" }
+
+    private var restartPromptPresented: Binding<Bool> {
+        Binding(get: { store.restartPromptText != nil },
+                set: { presented in if !presented { store.cancelRestart() } })
     }
 
     /// 列表和编辑页共用这一层：要么问一句删不删，要么让人挑要加哪些模型。
@@ -772,16 +848,17 @@ struct ChannelListView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("渠道").font(.system(size: 20, weight: .semibold))
-                    Text("点「启用」写进 ChatGPT 配置并重启；点右侧铅笔改配置")
+                    Text("点「启用」写进 ChatGPT 配置并重启；改完当前渠道点右上角「重启」生效")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
-                Button("还原 ChatGPT 配置并重启") { store.confirmingClear = true }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
+                // 「重启生效」原来挂在当前渠道那行；它是全局动作，挪到这里只留一个入口。
+                Button("重启") { store.requestRestart() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                     .pointingHand()
-                    .disabled(!store.loaded || store.busy)
+                    .disabled(!store.canRestart)
             }
             .padding(.horizontal, 24)
             .padding(.top, 22)
@@ -829,8 +906,10 @@ struct ChannelCard: View {
                     Circle().fill(Color.accentColor).frame(width: 6, height: 6)
                     Text("使用中").font(.system(size: 13, weight: .medium))
                 }
-            } else {
-                Button("启用") { store.enableChannel(at: index) }
+            }
+            // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
+            if !isCurrent {
+                Button("启用") { store.requestEnable(at: index) }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                     .pointingHand()
@@ -1154,6 +1233,11 @@ struct BottomBar: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            Button("还原 ChatGPT 配置并重启") { store.confirmingClear = true }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                .pointingHand()
+                .disabled(!store.loaded || store.busy)
             Text(store.feedback)
                 .font(.system(size: 13))
                 .foregroundStyle(store.feedbackIsError ? Color.red : Color.secondary)

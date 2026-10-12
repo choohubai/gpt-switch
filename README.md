@@ -10,7 +10,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 - 插件启动时不启动或重启 ChatGPT/Codex；点「启用」后，启用一个仅监听 `127.0.0.1` 的随机 Chromium 调试端口并应用配置。
 - 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应，这部分注入只存在于当前 renderer 会话，重启后失效。
 - 启用渠道时会把该渠道的模型合并进模型目录：默认写入 `~/.codex/model_catalog.json`，并在 `~/.codex/config.toml` 中补上 `model_catalog_json` 配置。该目录是磁盘文件，由客户端自己读取，所以插件退出或删除后，已保存的自定义模型仍然保留。
-- 点列表页右上角的“还原 ChatGPT 配置并重启”会把插件写过的那部分还原到写入之前的样子（provider 段和 `OPENAI_API_KEY` 都还原），清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启客户端；面板里的渠道列表保留。
+- 点列表页左下角的“还原 ChatGPT 配置并重启”会把插件写过的那部分还原到写入之前的样子（provider 段和 `OPENAI_API_KEY` 都还原），清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启客户端；面板里的渠道列表保留。
 - 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”；打开面板时程序坞和 ⌘Tab 里也会出现 GPT Switch，关掉窗口只是缩回菜单栏，只有菜单里的“退出”会真正结束插件。
 - 面板底部显示当前版本并提供“检查更新”：检测到新版本时，可直接打开对应 GitHub Release 下载页。
 
@@ -36,7 +36,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 1. 确认 ChatGPT 桌面端已经安装在 `/Applications/ChatGPT.app`（旧版 `/Applications/Codex.app` 也认）。
 2. 双击 `GPT Switch.app`，点击菜单栏图标，选择“打开面板”。
 3. 在渠道列表点“添加渠道”，填好 Provider ID、地址、密钥和模型列表，点这一行的「启用」，然后新建任务并打开模型选择器。
-4. 需要还原配置时，点列表页右上角的“还原 ChatGPT 配置并重启”，插件会还原 provider 和密钥、清理模型目录并重启客户端。
+4. 需要还原配置时，点列表页左下角的“还原 ChatGPT 配置并重启”，插件会还原 provider 和密钥、清理模型目录并重启客户端。
 5. 需要停止插件时，点击 macOS 菜单栏中的插件图标，选择“退出”。
 
 ### Windows
@@ -52,9 +52,9 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 ### 渠道与模型配置
 
-点击菜单栏图标，选择“打开面板”。首页是渠道列表，点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是“还原 ChatGPT 配置并重启”。每个渠道填四项：
+点击菜单栏图标，选择“打开面板”。首页是渠道列表，点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是「重启」、左下角是“还原 ChatGPT 配置并重启”。每个渠道填四项：
 
-- Provider ID：写进 `config.toml` 的 `model_providers.<Provider ID>`，只能用字母、数字、`-` 和 `_`。
+- Provider ID：写进 `config.toml` 的 `model_providers.<Provider ID>`，只能用字母、数字、`-` 和 `_`。每个回话会记住自己创建时用的 Provider ID，重开时只按它找表；所以「启用」会把当前渠道同时写进 `config.toml` 里所有用过的 Provider ID（渠道列表 + 插件历史写入记录），旧回话才会跟着一起切。
 - 地址：写进 `model_providers.<渠道>.base_url`，例如 `https://choohub.net/api-proxy/v1`。
 - 密钥：写进 `~/.codex/auth.json` 的 `OPENAI_API_KEY`；面板里默认打码，点右边的眼睛图标可查看。
 - 请求头名 / 请求头值：可以留空；填了就写进 `model_providers.<渠道>.http_headers`，用来兼容需要自定义请求头的中转。
@@ -64,8 +64,8 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 
 - “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。
-- 「启用」：存盘后把该渠道写进 `~/.codex/config.toml` 和 `auth.json`，更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。
-- “还原 ChatGPT 配置并重启”（列表页右上角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
+- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。
+- “还原 ChatGPT 配置并重启”（列表页左下角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。还原只撤销插件当前还占着的改动：早就不在 `config.toml` 里的 provider 段不会被重新补回来。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 
 首次升级会自动导入现有配置：`~/.codex/config.toml` 里正在使用的 provider、`~/.codex/auth.json` 里的密钥、以及旧版插件保存的模型列表，会合成第一个渠道，不需要重新填一遍。旧的 `~/Library/Application Support/GPTSwitch/models.json`（Windows 是 `%LOCALAPPDATA%\GPTSwitch\models.json`）只作为导入来源，不会被删除。
 

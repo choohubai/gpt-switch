@@ -165,9 +165,9 @@ export const readProviderTable = (text, id) => {
   return table;
 };
 
-export const buildProviderBlock = (channel) => {
+export const buildProviderBlock = (channel, id = channel.id) => {
   const lines = [
-    `[model_providers.${channel.id}]`,
+    `[model_providers.${id}]`,
     `name = ${tomlString(channel.name || channel.id)}`,
     `base_url = ${tomlString(channel.baseUrl)}`,
     'wire_api = "responses"',
@@ -231,8 +231,22 @@ const readRecord = (recordPath) => {
   }
 };
 
+/// 每个回话会把创建时的 provider ID 记在自己身上，重开时只按这个 ID 去 config.toml 找表，
+/// 不会回落到当前渠道。所以每次切换都要把当前渠道写进所有出现过的 ID（渠道列表 + 历史写入记录），
+/// 否则旧回话要么继续指着旧地址（地址与全局密钥错配），要么因为表被删掉而打不开。
+const providerIdsToRepoint = ({ channel, channelIds, record }) => {
+  const candidates = [channel.id, ...channelIds, record.appliedId, record.modelProvider?.value,
+    ...(record.tablesAdded ?? []), ...Object.keys(record.tablesOriginal ?? {})];
+  const ids = [];
+  for (const id of candidates) {
+    if (typeof id !== "string" || !ID_PATTERN.test(id) || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids;
+};
+
 /// 切换渠道：密钥进 auth.json，地址和 provider 段进 config.toml，原值记下来供还原。
-export const applyChannelToCodex = ({ channel, authPath, userConfigPath, recordPath }) => {
+export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userConfigPath, recordPath }) => {
   if (!channel.baseUrl) throw new Error(`渠道「${channel.name}」还没填地址`);
   const record = readRecord(recordPath) ?? { auth: null, modelProvider: null, tablesAdded: [] };
   if (!Array.isArray(record.tablesAdded)) record.tablesAdded = [];
@@ -249,19 +263,19 @@ export const applyChannelToCodex = ({ channel, authPath, userConfigPath, recordP
       value: modelProviderFromToml(text),
     };
   }
-  // Provider ID 改名后把上一次切换写进去的那段删掉，避免 config.toml 里留两份。
-  if (record.appliedId && record.appliedId !== channel.id && record.tablesAdded.includes(record.appliedId)) {
-    text = removeProviderTable(text, record.appliedId);
-    record.tablesAdded = record.tablesAdded.filter((id) => id !== record.appliedId);
+  for (const id of providerIdsToRepoint({ channel, channelIds, record })) {
+    if (!record.tablesAdded.includes(id)) {
+      const span = providerSpan(text, id);
+      if (span) {
+        // 用户自己的 provider 段（升级时导入的就是这种）先留一份原文，还原时原样放回去。
+        if (!record.tablesOriginal[id]) record.tablesOriginal[id] = text.slice(span.start, span.end);
+      } else {
+        record.tablesAdded.push(id);
+      }
+    }
+    text = replaceProviderTable(text, id, buildProviderBlock(channel, id));
   }
   record.appliedId = channel.id;
-  const span = providerSpan(text, channel.id);
-  if (span) {
-    // 用户自己的 provider 段（升级时导入的就是这种）先留一份原文，还原时原样放回去。
-    if (!record.tablesOriginal[channel.id]) record.tablesOriginal[channel.id] = text.slice(span.start, span.end);
-  } else if (!record.tablesAdded.includes(channel.id)) {
-    record.tablesAdded.push(channel.id);
-  }
   // 备份先落盘再动 auth.json 和 config.toml：中间崩掉也还留得住还原信息。
   atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`);
 
@@ -279,7 +293,7 @@ export const applyChannelToCodex = ({ channel, authPath, userConfigPath, recordP
     atomicWrite(authPath, `${JSON.stringify(data, null, 2)}\n`);
   }
 
-  atomicWrite(userConfigPath, setModelProvider(upsertProviderTable(text, channel), channel.id));
+  atomicWrite(userConfigPath, setModelProvider(text, channel.id));
   return { id: channel.id, baseUrl: channel.baseUrl, keyWritten: Boolean(channel.apiKey) };
 };
 
@@ -295,7 +309,8 @@ export const restoreCodexConfig = ({ authPath, userConfigPath, recordPath }) => 
     let text = fs.readFileSync(userConfigPath, "utf8");
     for (const id of record.tablesAdded ?? []) text = removeProviderTable(text, id);
     for (const [id, block] of Object.entries(record.tablesOriginal ?? {})) {
-      text = replaceProviderTable(text, id, block);
+      // 只把插件现在还占着的那段放回原文；早就不在配置里的段（旧版本留下的备份）不要凭空补回来。
+      if (providerSpan(text, id)) text = replaceProviderTable(text, id, block);
     }
     const provider = record.modelProvider;
     text = provider?.existed ? setModelProvider(text, provider.value) : removeModelProvider(text);
@@ -550,7 +565,7 @@ export const handlePanelRequest = async (request, {
       return { ok: true, saved: true, channels: savedState.channels, current: savedState.current };
     }
     const active = savedState.channels.find((channel) => channel.id === savedState.current);
-    if (applyCodex) await applyCodex(active);
+    if (applyCodex) await applyCodex(active, savedState.channels.map((item) => item.id));
     if (applyCatalog) await applyCatalog(active.models);
     if (request.restart && restart) await restart(active.models);
     return {

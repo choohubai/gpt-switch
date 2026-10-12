@@ -57,6 +57,32 @@ struct StatusMenuTests {
         ], "current": "relay"])
         assert(store.feedback == "已启用渠道，ChatGPT 已重启")
 
+        // 「启用」会重启客户端，所以先弹一句：取消什么都不做，确认才发 switch。
+        store.requestEnable(at: 0)
+        assert(store.restartPromptText?.title == "启用「OpenAI」会重启 ChatGPT")
+        assert(store.restartPromptText?.confirm == "启用并重启")
+        let sentBeforePrompt = requests.count
+        store.cancelRestart()
+        assert(store.restartPromptText == nil)
+        assert(requests.count == sentBeforePrompt, "取消不能发请求")
+        store.requestEnable(at: 0)
+        store.confirmRestart()
+        assert(store.restartPromptText == nil, "确认之后要收起提示")
+        assert(requests.last?["action"] as? String == "switch")
+        assert(requests.last?["restart"] as? Bool == true)
+        assert(requests.last?["current"] as? String == "OpenAI")
+        store.busy = false
+
+        // 右上角「重启」写的是正在使用的那条渠道，确认后才动手。
+        store.requestRestart()
+        assert(store.restartPromptText?.title == "重启 ChatGPT？")
+        assert(store.restartPromptText?.message == "会用「relay」重新写一遍 ChatGPT 配置，然后重启客户端。")
+        store.confirmRestart()
+        assert(requests.last?["action"] as? String == "switch")
+        assert(requests.last?["restart"] as? Bool == true)
+        assert(requests.last?["current"] as? String == "relay")
+        store.busy = false
+
         // 进编辑页改模型：显示名称、窗口、输入类型都要落到渠道里。
         store.editChannel(at: 0)
         assert(store.editingTitle == "编辑渠道")
@@ -99,6 +125,17 @@ struct StatusMenuTests {
         ], "current": "relay"])
         assert(store.feedback == "已保存，点列表里的「启用」才会生效")
         assert(!store.isDirty)
+
+        // 保存的是当前渠道时，提示要指向右上角那个「重启」。
+        store.showList()
+        store.editChannel(at: 1)
+        store.channels[1].baseUrl = "https://relay.example/v2"
+        store.save()
+        store.apply(["ok": true, "saved": true, "channels": [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v2", "models": []],
+        ], "current": "relay"])
+        assert(store.feedback == "已保存，点右上角「重启」写进 ChatGPT")
 
         // 新增渠道进编辑页；删除立刻落盘并回列表页。
         store.showList()

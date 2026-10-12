@@ -12,10 +12,10 @@ import {
   catalogPathFromToml, writeCatalogRecord, clearCatalogFiles,
 } from "./model-config.mjs";
 import {
-  loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
+  loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig, modelProviderFromToml,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.37";
+const VERSION = "0.1.38";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -1027,6 +1027,21 @@ const main = async () => {
     writeState({ pid: process.pid, version: VERSION, appPath: target, port, models, startedAt: Date.now() });
   };
 
+  /// 客户端启动后还会再写一次 config.toml（本机实测比写入晚 8 秒）。这里只比对、只记日志，
+  /// 用来确认「切换看着成功、请求却还走旧地址」到底是不是它把 provider 盖回去了。
+  const logProviderMismatch = () => {
+    const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+    const active = state.channels.find((channel) => channel.id === state.current);
+    if (!active) return;
+    let provider = null;
+    try {
+      provider = modelProviderFromToml(fs.readFileSync(USER_CONFIG, "utf8"));
+    } catch {
+      return;
+    }
+    if (provider !== active.id) log("codex_config_mismatch", { expected: active.id, found: provider });
+  };
+
   const dispatchRequest = async (request) => {
     if (request?.action === "quit") {
       // Windows 托盘菜单的“退出”走这里；macOS 面板是直接结束父进程。
@@ -1038,12 +1053,12 @@ const main = async () => {
       return { ok: true, quitting: true, version: VERSION };
     }
     if (request?.action === "check-update") return checkForUpdate();
-    return { ...await handlePanelRequest(request, {
+    const answer = await handlePanelRequest(request, {
       configPath: CHANNELS_CONFIG,
       importOptions: channelImportOptions(),
       restart,
-      applyCodex: (channel) => applyChannelToCodex({
-        channel, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
+      applyCodex: (channel, channelIds) => applyChannelToCodex({
+        channel, channelIds, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
       }),
       restoreCodex: () => restoreCodexConfig({
         authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
@@ -1063,7 +1078,10 @@ const main = async () => {
         log("catalog_written", { path: dest, models: nextModels.map((model) => model.id) });
       },
       clearCatalog: () => clearCatalog(clientPath()),
-    }), version: VERSION };
+    });
+    // 等客户端把自己的那份配置写完（实测启动后约 8 秒）再看一眼，只记录不修改。
+    if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
+    return { ...answer, version: VERSION };
   };
 
   if (attachPort) {

@@ -116,14 +116,44 @@ test("switching writes auth.json and config.toml, clearing puts both back", (con
     authPath, userConfigPath, recordPath,
   });
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).OPENAI_API_KEY, "sk-relay");
-  assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model_provider = "second"\n/);
-  assert.equal(fs.readFileSync(userConfigPath, "utf8").includes("[model_providers.relay]"), false, "换 id 后旧的 provider 段要删掉");
+  const switched = fs.readFileSync(userConfigPath, "utf8");
+  assert.match(switched, /^model_provider = "second"\n/);
+  assert.equal(readProviderTable(switched, "relay").base_url, "https://b.example/v1",
+    "换 id 后旧的段改成新渠道，别删：回话绑着它");
+  assert.equal(readProviderTable(switched, "OpenAI").base_url, "https://b.example/v1",
+    "原来的 provider 段也要跟着指到当前渠道");
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG);
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).OPENAI_API_KEY, "sk-old");
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).tokens.id, "keep-me");
   assert.equal(fs.existsSync(recordPath), false);
   assert.equal(restoreCodexConfig({ authPath, userConfigPath, recordPath }), null);
+});
+
+test("switching points every provider id a thread may have pinned at the active channel", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, CONFIG);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  const channelIds = ["OpenAI", "feiyu", "ChooHub"];
+  applyChannelToCodex({
+    channel: channel({ id: "feiyu", baseUrl: "https://www.feiyutoken.com/v1" }),
+    channelIds, authPath, userConfigPath, recordPath,
+  });
+  let written = fs.readFileSync(userConfigPath, "utf8");
+  assert.match(written, /^model_provider = "feiyu"\n/);
+  for (const id of channelIds) {
+    assert.equal(readProviderTable(written, id).base_url, "https://www.feiyutoken.com/v1", `${id} 要指到当前渠道`);
+  }
+  applyChannelToCodex({
+    channel: channel({ id: "ChooHub", name: "ChooHub", baseUrl: "https://choohub.net" }),
+    channelIds, authPath, userConfigPath, recordPath,
+  });
+  written = fs.readFileSync(userConfigPath, "utf8");
+  for (const id of channelIds) {
+    assert.equal(readProviderTable(written, id).base_url, "https://choohub.net", `${id} 来回切也要跟着走`);
+  }
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "还原只留用户原来那张表");
 });
 
 test("switching over a provider table the user already had puts it back on clear", (context) => {
@@ -138,6 +168,26 @@ test("switching over a provider table the user already had puts it back on clear
     "启用时按插件格式重写这张表");
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原要连多余字段和注释一起放回去");
+});
+
+test("clearing does not resurrect a provider table that is already gone", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, CONFIG);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  // 旧版本留下的备份：这段表早就不在 config.toml 里了，还原时不要再补出来。
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, JSON.stringify({
+    auth: null,
+    modelProvider: { existed: true, value: "OpenAI" },
+    tablesAdded: [],
+    tablesOriginal: { gone: '[model_providers.gone]\nname = "gone"\n' },
+    appliedId: "OpenAI",
+  }));
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  const text = fs.readFileSync(userConfigPath, "utf8");
+  assert.equal(text.includes("[model_providers.gone]"), false, "已经不在配置里的段不要凭空补回来");
+  assert.equal(text, CONFIG);
+  assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).OPENAI_API_KEY, "sk-old");
 });
 
 test("switching into a channel without a key leaves auth.json alone", (context) => {
@@ -226,13 +276,13 @@ test("a renamed current channel is recognised again from the codex config", (con
 });
 
 const panelOptions = (paths, over = {}) => {
-  const calls = { applied: [], catalogs: [], restarts: [], restored: 0, cleared: 0 };
+  const calls = { applied: [], repointed: [], catalogs: [], restarts: [], restored: 0, cleared: 0 };
   const options = {
     configPath: paths.configPath,
     importOptions: {
       userConfigPath: paths.userConfigPath, authPath: paths.authPath, modelPaths: [],
     },
-    applyCodex: (active) => { calls.applied.push(active.id); },
+    applyCodex: (active, channelIds) => { calls.applied.push(active.id); calls.repointed.push(channelIds); },
     restoreCodex: () => { calls.restored += 1; },
     applyCatalog: (models) => { calls.catalogs.push(models); },
     clearCatalog: () => { calls.cleared += 1; },
@@ -270,6 +320,7 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.equal(switched.restarted, true);
   assert.equal(switched.current, "b");
   assert.deepEqual(calls.applied, ["b"]);
+  assert.deepEqual(calls.repointed, [["a", "b"]], "切换要把渠道列表的 ID 一起交给写入");
   const expectedModels = [model({ id: "m-b", context: 64 })];
   assert.deepEqual(calls.catalogs, [expectedModels]);
   assert.deepEqual(calls.restarts, [expectedModels]);
