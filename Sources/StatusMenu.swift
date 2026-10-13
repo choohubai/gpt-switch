@@ -638,8 +638,8 @@ struct PanelView: View {
         // 卡片只挡鼠标挡不住键盘：不把底下的表单停下，打字还会进到被遮住的输入框。
         .disabled(store.deletePromptText != nil || store.discovering)
         .frame(minWidth: 680, minHeight: 520)
-        // 标题栏透明后内容要填满整窗，不然红绿灯那块会露出灰底。
-        .background(Color(nsColor: .textBackgroundColor).ignoresSafeArea())
+        // 整窗铺一层毛玻璃，桌面透过来；卡片再在这层上面叠自己的材质。
+        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
         .overlay { modalLayer }
         .confirmationDialog("还原 ChatGPT 配置并重启客户端？", isPresented: $store.confirmingClear) {
             Button("还原并重启", role: .destructive) { store.clearAndRestart() }
@@ -764,13 +764,12 @@ struct ModelPickerCard: View {
             }
             .padding(24)
             .frame(width: 460)
-            // 白底：跟卡片里的白输入框一样平，不然白框压在灰底卡片上像浮着一层。
             .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.thickMaterial)
                     .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
             )
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.1)))
         }
     }
 
@@ -843,13 +842,12 @@ struct DeleteConfirmCard: View {
             }
             .padding(24)
             .frame(width: 460)
-            // 白底：跟卡片里的白输入框一样平，不然白框压在灰底卡片上像浮着一层。
             .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.thickMaterial)
                     .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
             )
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.1)))
         }
     }
 }
@@ -862,8 +860,8 @@ struct ChannelListView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("渠道").font(.system(size: 20, weight: .semibold))
-                    Text("点「启用」写进 ChatGPT 配置并重启；改完当前渠道点右上角「重启」生效")
-                        .font(.system(size: 13))
+                    Text("点「启用」写入 ChatGPT 并重启客户端")
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
@@ -904,8 +902,8 @@ struct ChannelCard: View {
     private var isCurrent: Bool { !channel.id.isEmpty && channel.id == store.currentChannelID }
 
     var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(channel.id.isEmpty ? "未填渠道 ID" : channel.id)
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 Text(channel.baseUrl.isEmpty ? "还没填地址" : channel.baseUrl)
@@ -915,46 +913,61 @@ struct ChannelCard: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            if isCurrent {
-                HStack(spacing: 6) {
-                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                    Text("使用中").font(.system(size: 13, weight: .medium))
+            // 三个控件等高才看着齐：胶囊比图标按钮矮一截就会显得没对齐。
+            HStack(spacing: 8) {
+                if isCurrent {
+                    Text("使用中")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
                 }
+                // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
+                if !isCurrent {
+                    Button(store.enablingIndex == index ? "启用中" : "启用") { store.requestEnable(at: index) }
+                        .buttonStyle(.bordered)
+                        .tint(Color.accentColor)
+                        .controlSize(.regular)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(height: 28)
+                        .pointingHand()
+                        .disabled(store.busy)
+                }
+                Button { store.editChannel(at: index) } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 14))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .pointingHand()
+                .disabled(store.busy)
+                Button { store.requestDelete(at: index) } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .pointingHand()
+                .disabled(store.busy || isCurrent)
+                .help(isCurrent ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
             }
-            // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
-            if !isCurrent {
-                Button(store.enablingIndex == index ? "启用中" : "启用") { store.requestEnable(at: index) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .pointingHand()
-                    .disabled(store.busy)
-            }
-            Button { store.editChannel(at: index) } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 15))
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .pointingHand()
-            .disabled(store.busy)
-            Button { store.requestDelete(at: index) } label: {
-                Image(systemName: "trash").font(.system(size: 14))
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .pointingHand()
-            .disabled(store.busy || isCurrent)
-            .help(isCurrent ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
+            .frame(height: 28)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isCurrent ? Color.accentColor.opacity(0.09) : Color(nsColor: .textBackgroundColor))
+                .fill(isCurrent ? AnyShapeStyle(Color.accentColor.opacity(0.14))
+                                : AnyShapeStyle(Color(nsColor: .controlBackgroundColor)))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(isCurrent ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.09))
+                .strokeBorder(isCurrent ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.07))
         )
+        .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
     }
 }
 
@@ -985,10 +998,15 @@ struct ChannelDetailView: View {
 
             OverlayScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    Text("渠道信息")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 2)
                     channelForm
                     HStack(spacing: 12) {
                         Text("模型目录")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
                         Spacer(minLength: 12)
                         Button(store.fetchingModels ? "获取中…" : "获取可用模型") { store.fetchModels() }
                             .buttonStyle(.link)
@@ -1038,7 +1056,8 @@ struct ChannelDetailView: View {
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
+            .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
         }
     }
 }
@@ -1102,7 +1121,8 @@ struct ModelCard: View {
         }
         .padding(20)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
+        .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
     }
 
     private func modality(_ name: String) -> Binding<Bool> {
@@ -1226,20 +1246,25 @@ struct DashedRowButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 13, weight: .medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .contentShape(Rectangle())
+            HStack(spacing: 6) {
+                Image(systemName: systemImage).font(.system(size: 12, weight: .semibold))
+                Text(title).font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(Color.accentColor)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
         .pointingHand()
         .opacity(isEnabled ? 1 : 0.45)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .foregroundStyle(Color(nsColor: .separatorColor))
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.primary.opacity(0.07))
         )
     }
 }
@@ -1252,6 +1277,7 @@ struct BottomBar: View {
             Button("还原 ChatGPT 配置并重启") { store.confirmingClear = true }
                 .buttonStyle(.link)
                 .font(.system(size: 12))
+                .foregroundStyle(Color.red)
                 .pointingHand()
                 .disabled(!store.loaded || store.busy)
             Text(store.feedback)
@@ -1272,6 +1298,9 @@ struct BottomBar: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+        }
     }
 }
 
@@ -1370,6 +1399,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         panel.title = "GPT Switch"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        // 窗口本身不画底：毛玻璃才透得出桌面，浅色/深色也跟着系统材质走。
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
         panel.contentView = hosting
         panel.minSize = NSSize(width: 680, height: 520)
         panel.isReleasedWhenClosed = false
