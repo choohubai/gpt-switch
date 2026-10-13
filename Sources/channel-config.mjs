@@ -12,6 +12,7 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const TABLE_START = /^[ \t]*\[/m;
 const MODEL_PROVIDER_LINE = /^[ \t]*model_provider[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\r?\n?/m;
+const MODEL_LINE = /^[ \t]*model[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\r?\n?/m;
 const AUTH_KEY = "OPENAI_API_KEY";
 
 const MODEL_LIST_TIMEOUT_MS = 5_000;
@@ -125,12 +126,26 @@ const removeTopLevelLine = (text, name) => {
   return `${head.replace(topLevelLinePattern(name), "")}${text.slice(head.length)}`;
 };
 
+/// 客户端自带的压缩提示是英文，压缩完接手的那一轮会顺着英文摘要继续用英文推理；换成「用用户当前使用的
+/// 语言写摘要、并注明后续继续用该语言」的提示，压缩后仍按用户的语言走。
+const COMPACT_PROMPT = "你正在进行上下文压缩检查点。请为接手这个任务的另一个 LLM 写一份交接摘要："
+  + "用用户当前使用的语言写，并在摘要开头注明「后续回复与推理继续使用该语言」。";
+
 /// 第三方端点没有联网检索工具，声明了只会让请求被拒（DeepSeek 官方接入文档也是关掉的）；
-/// 第三方模型的推理是裸文本，不开这个桌面端看不到。两个键都是全局的，启用时写入、还原时放回原值。
+/// 第三方模型的推理是裸文本，不开这个桌面端看不到。这几个键都是全局的，启用时写入、还原时放回原值。
 const GLOBAL_KEYS = [
   { name: "web_search", value: '"disabled"' },
   { name: "show_raw_agent_reasoning", value: "true" },
+  { name: "compact_prompt", value: tomlString(COMPACT_PROMPT) },
 ];
+
+/// 客户端把「当前默认模型」记在顶层 model 里。切换渠道后这个模型要是落不到新渠道的模型列表里，客户端的
+/// 选择器就只能显示「自定义」；这种时候换成渠道里的第一个模型。原来那行照旧记进 globalKeys，还原时放回去。
+export const channelDefaultModel = (text, channel) => {
+  const ids = channel.models.map((entry) => entry.id);
+  if (!ids.length) return null;
+  return ids.includes(modelFromToml(text)) ? null : ids[0];
+};
 
 const providerHeader = (id) => {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -172,6 +187,12 @@ const parseValue = (raw) => {
 
 export const modelProviderFromToml = (text) => {
   const match = MODEL_PROVIDER_LINE.exec(topLevelHead(text));
+  if (!match) return null;
+  return unescapeBasic(match[1] ?? match[2]);
+};
+
+export const modelFromToml = (text) => {
+  const match = MODEL_LINE.exec(topLevelHead(text));
   if (!match) return null;
   return unescapeBasic(match[1] ?? match[2]);
 };
@@ -278,8 +299,12 @@ export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userCo
     };
   }
   if (!record.globalKeys || typeof record.globalKeys !== "object") record.globalKeys = {};
+  const defaultModel = channelDefaultModel(text, channel);
+  const globalKeys = defaultModel
+    ? [...GLOBAL_KEYS, { name: "model", value: tomlString(defaultModel) }]
+    : GLOBAL_KEYS;
   const prepend = [];
-  for (const { name, value } of GLOBAL_KEYS) {
+  for (const { name, value } of globalKeys) {
     const match = topLevelLinePattern(name).exec(topLevelHead(text));
     if (!(name in record.globalKeys)) {
       // 原来没有就记 null，还原时把这一行删掉，别凭空留一个用户没写过的键。

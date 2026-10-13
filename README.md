@@ -5,7 +5,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 ## 它做了什么
 
 - 面板里可以有多个渠道，每个渠道一份「渠道地址 + 渠道 apikey + 模型列表」；每个模型一张卡片，填模型 ID、显示名称、上下文窗口（k，默认 272）和输入类型（文本 / 图片）。
-- 点列表里的「启用」时，插件把该渠道写进 ChatGPT 的配置：`~/.codex/config.toml` 里的 `model_provider` 和 `[model_providers.<渠道>]`，以及 `~/.codex/auth.json` 里的 `OPENAI_API_KEY`。
+- 点列表里的「启用」时，插件把该渠道写进 ChatGPT 的配置：`~/.codex/config.toml` 里的 `model_provider` 和 `[model_providers.<渠道>]`，以及 `~/.codex/auth.json` 里的 `OPENAI_API_KEY`；如果当前 `model` 不在这个渠道的模型列表里，还会把它改成该渠道的第一个模型。
 - 渠道列表存在 `~/.gptswitch/channels.json`（Windows 是 `%USERPROFILE%\.gptswitch\channels.json`），和 `~/.codex` 分开；升级插件不会覆盖它。
 - 插件启动时不启动或重启 ChatGPT/Codex；点「启用」后，启用一个仅监听 `127.0.0.1` 的随机 Chromium 调试端口并应用配置。
 - 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应，这部分注入只存在于当前 renderer 会话，重启后失效。
@@ -66,7 +66,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 
 - “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。没有改动时按钮置灰；改的是正在用的那条渠道时按钮变成「保存并重启」，点一下存盘后顺手写进 ChatGPT 并重启客户端。
-- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。等客户端重启的这段时间，那一行的按钮显示「启用中」并保持禁用，失败会退回「启用」，成功那一行就变成「使用中」。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。同时会把 `web_search` 关成 `"disabled"`、把 `show_raw_agent_reasoning` 打开：第三方端点没有联网检索工具，声明了只会让请求被拒；第三方模型的推理是裸文本，不开就看不到。这两个键原来是什么值（包括原来没有）都记在还原记录里，「还原」时照原样放回去。
+- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。等客户端重启的这段时间，那一行的按钮显示「启用中」并保持禁用，失败会退回「启用」，成功那一行就变成「使用中」。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。同时会把 `web_search` 关成 `"disabled"`、把 `show_raw_agent_reasoning` 打开：第三方端点没有联网检索工具，声明了只会让请求被拒；第三方模型的推理是裸文本，不开就看不到。如果当前 `model` 不在这个渠道的模型列表里（例如上一条渠道专属的模型），还会把它改成该渠道的第一个模型：客户端的选择器只认模型目录里的 id，落不进去就只能显示「自定义」。另外会把 `compact_prompt` 换成「用用户当前使用的语言写压缩摘要、并注明后续继续用该语言」的提示：客户端自带的压缩提示是英文，压缩完接手的那一轮会顺着英文摘要继续用英文推理。这几个键原来是什么值（包括原来没有）都记在还原记录里，「还原」时照原样放回去。
 - “还原 ChatGPT 配置并重启”（列表页左下角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。还原只撤销插件当前还占着的改动：早就不在 `config.toml` 里的 provider 段不会被重新补回来。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 
 首次升级会自动导入现有配置：`~/.codex/config.toml` 里正在使用的 provider、`~/.codex/auth.json` 里的密钥、以及旧版插件保存的模型列表，会合成第一个渠道，不需要重新填一遍。旧的 `~/Library/Application Support/GPTSwitch/models.json`（Windows 是 `%LOCALAPPDATA%\GPTSwitch\models.json`）只作为导入来源，不会被删除。

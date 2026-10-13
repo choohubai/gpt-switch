@@ -12,10 +12,11 @@ import {
   catalogPathFromToml, writeCatalogRecord, clearCatalogFiles,
 } from "./model-config.mjs";
 import {
-  loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig, modelProviderFromToml,
+  loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
+  modelProviderFromToml, modelFromToml, channelDefaultModel,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.41";
+const VERSION = "0.1.42";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -1028,18 +1029,23 @@ const main = async () => {
   };
 
   /// 客户端启动后还会再写一次 config.toml（本机实测比写入晚 8 秒）。这里只比对、只记日志，
-  /// 用来确认「切换看着成功、请求却还走旧地址」到底是不是它把 provider 盖回去了。
+  /// 用来确认「切换看着成功、请求却还走旧地址」和「刚对齐的 model 又被盖回去」到底是不是它干的。
   const logProviderMismatch = () => {
     const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
     const active = state.channels.find((channel) => channel.id === state.current);
     if (!active) return;
-    let provider = null;
+    let text = null;
     try {
-      provider = modelProviderFromToml(fs.readFileSync(USER_CONFIG, "utf8"));
+      text = fs.readFileSync(USER_CONFIG, "utf8");
     } catch {
       return;
     }
+    const provider = modelProviderFromToml(text);
     if (provider !== active.id) log("codex_config_mismatch", { expected: active.id, found: provider });
+    const expectedModel = channelDefaultModel(text, active);
+    if (expectedModel) {
+      log("codex_config_model_mismatch", { expected: expectedModel, found: modelFromToml(text) });
+    }
   };
 
   const dispatchRequest = async (request) => {

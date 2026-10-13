@@ -7,7 +7,7 @@ import {
   validateChannels, writeChannelState, readChannelState, loadChannelState,
   modelProviderFromToml, readProviderTable, upsertProviderTable, setModelProvider,
   applyChannelToCodex, restoreCodexConfig, importChannelsFromCodex, handlePanelRequest,
-  discoverChannelModels,
+  discoverChannelModels, modelFromToml,
 } from "../Sources/channel-config.mjs";
 
 const CONFIG = [
@@ -75,6 +75,9 @@ test("validateChannels trims rows, keeps ids unique and rejects bad input", () =
 
 test("toml helpers read the existing provider and rewrite only their own table", () => {
   assert.equal(modelProviderFromToml(CONFIG), "OpenAI");
+  assert.equal(modelFromToml(CONFIG), "gpt-6-astra");
+  assert.equal(modelFromToml("model = 'gpt-6-astra'\n"), "gpt-6-astra");
+  assert.equal(modelFromToml("[profiles.work]\nmodel = \"inside\"\n"), null, "表头之后的同名键不算顶层");
   assert.deepEqual(readProviderTable(CONFIG, "OpenAI"), {
     name: "ChooHub",
     base_url: "https://choohub.net/api-proxy/v1",
@@ -476,6 +479,7 @@ test("switching turns web search off and shows raw reasoning, clearing removes t
   let written = fs.readFileSync(userConfigPath, "utf8");
   assert.match(written, /^web_search = "disabled"$/m);
   assert.match(written, /^show_raw_agent_reasoning = true$/m);
+  assert.match(written, /^compact_prompt = ".*继续使用该语言.*"$/m, "压缩提示要求跟着用户的语言走");
   applyChannelToCodex({
     channel: channel({ id: "second", baseUrl: "https://b.example/v1" }),
     authPath, userConfigPath, recordPath,
@@ -497,4 +501,37 @@ test("switching keeps the user's own web_search value until clearing", (context)
   assert.equal(written.includes('web_search = "live"'), false);
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原放回用户原来的值");
+});
+
+test("switching keeps the current model and only falls back when the channel lacks it", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, CONFIG);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  const models = [model({ id: "gpt-6-astra", context: 128 }), model({ id: "m-two", context: 128 })];
+  applyChannelToCodex({ channel: channel({ models }), authPath, userConfigPath, recordPath });
+  assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model = "gpt-6-astra"$/m,
+    "当前模型在新渠道里有就留着");
+  applyChannelToCodex({
+    channel: channel({ id: "second", baseUrl: "https://b.example/v1", models }),
+    authPath, userConfigPath, recordPath,
+  });
+  assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model = "gpt-6-astra"$/m);
+  applyChannelToCodex({
+    channel: channel({ id: "third", baseUrl: "https://c.example/v1", models: [model({ id: "m-one", context: 128 })] }),
+    authPath, userConfigPath, recordPath,
+  });
+  assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model = "m-one"$/m,
+    "新渠道没有这个模型就退回渠道里的第一个");
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "还原放回用户原来的模型");
+});
+
+test("switching picks the channel's first model when config has no model", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, "# user config\n");
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
+  assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model = "m-one"$/m);
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), "# user config\n", "用户没写过 model 就删掉");
 });
