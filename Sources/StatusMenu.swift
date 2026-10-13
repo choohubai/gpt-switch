@@ -1380,7 +1380,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let icon = NSImage(contentsOfFile: iconPath)
         icon?.size = NSSize(width: 18, height: 18)
-        icon?.isTemplate = true
+        // 图标带品牌色（青蓝渐变）。模板渲染只取 alpha、由系统填成单色，那就和 ChatGPT 官方图标长得一模一样，
+        // 等于没换，所以这里按原图绘制。
+        icon?.isTemplate = false
         statusItem?.button?.image = icon
         statusItem?.button?.imageScaling = .scaleProportionallyDown
         statusItem?.button?.toolTip = "GPT Switch"
@@ -1426,6 +1428,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     @objc func openPanel() {
         NSApp.setActivationPolicy(.regular)
+        applyPluginApplicationIcon()
         if window == nil { buildPanel() }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -1434,6 +1437,17 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
             store.feedback = "正在读取配置…"
             sendRequest(["action": "load"])
         }
+    }
+
+    /// 切成普通 App 之后程序坞和 ⌘Tab 才出现，macOS 这时会用自己给这个进程挑的图标：这个二进制住在
+    /// Contents/Resources 里而不是 Contents/MacOS，系统挑不到 app 包时会借启动它的客户端图标。直接读
+    /// 同一个目录里的 AppIcon.icns，和打包脚本放进去的那份一致。
+    private func applyPluginApplicationIcon() {
+        guard let executable = Bundle.main.executablePath ?? CommandLine.arguments.first else { return }
+        let iconURL = URL(fileURLWithPath: executable).resolvingSymlinksInPath()
+            .deletingLastPathComponent().appendingPathComponent("AppIcon.icns")
+        guard let icon = NSImage(contentsOf: iconURL) else { return }
+        NSApp.applicationIconImage = icon
     }
 
     func buildPanel() {

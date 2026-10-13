@@ -11,7 +11,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 - 通过 CDP 在 renderer 运行时补充 Statsig 白名单和模型列表响应，这部分注入只存在于当前 renderer 会话，重启后失效。
 - 启用渠道时会把该渠道的模型合并进模型目录：默认写入 `~/.codex/model_catalog.json`，并在 `~/.codex/config.toml` 中补上 `model_catalog_json` 配置。该目录是磁盘文件，由客户端自己读取，所以插件退出或删除后，已保存的自定义模型仍然保留。
 - 点列表页左下角的“还原 ChatGPT 配置并重启”会把插件写过的那部分还原到写入之前的样子（provider 段和 `OPENAI_API_KEY` 都还原），清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启客户端；面板里的渠道列表保留。
-- 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”；打开面板时程序坞和 ⌘Tab 里也会出现 GPT Switch，关掉窗口只是缩回菜单栏，只有菜单里的“退出”会真正结束插件。
+- 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”；打开面板时程序坞和 ⌘Tab 里也会出现 GPT Switch（这两处的图标显式设成应用图标，免得系统借启动它的客户端的图标），关掉窗口只是缩回菜单栏，只有菜单里的“退出”会真正结束插件。
 - 面板底部显示当前版本，右边是图标形式的“检查更新”：平时是回形箭头，检查中转圈，检测到新版本时换成下载图标（悬停显示当前状态），点一下就打开对应的 GitHub Release 下载页。
 
 它不会修改 `ChatGPT.app`、`Codex.app`、`app.asar`、代码签名或历史会话；但会写入 `~/.codex/config.toml`、`~/.codex/auth.json`（渠道密钥）和 `~/.codex/model_catalog.json`。`config.toml` 和 `auth.json` 由 CLI 和桌面端共用，启用渠道会同时影响两边。
@@ -99,7 +99,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 | `Sources/channel-config.mjs` | 渠道校验与存储、从现有 `~/.codex` 配置导入、启用/还原 `config.toml` 与 `auth.json`、读取端点公布的模型列表 |
 | `Resources/Info.plist` | macOS 应用元数据 |
 | `Resources/AppIcon.png` | 应用图标：结形取自 ChatGPT 桌面端图标，重新配色成青蓝渐变的线稿，和 ChatGPT 官方图标区分开 |
-| `Resources/MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |
+| `Resources/MenuBarIcon.png` | 菜单栏图标：从应用图标里抠出结形、按模板图渲染（自动适配深浅色），和 ChatGPT 官方图标区分开；由 `Resources/AppIcon.png` 生成 |
 | `Scripts/GPTSwitch` | `.app` 的启动入口，选择客户端内置的 Node.js |
 | `Scripts/GPTSwitch.ps1` | Windows 启动入口：找 Node、后台起注入器、把已打开的面板叫回前台 |
 | `Scripts/build.sh` | 生成并临时签名 `.app` |
