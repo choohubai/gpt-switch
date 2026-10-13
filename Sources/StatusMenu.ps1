@@ -52,6 +52,7 @@ $script:checkingUpdate = $false
 $script:quitting = $false
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
+$script:enablingIndex = -1
 $script:deleteKind = ""
 $script:deleteIndex = -1
 $script:fetchingModels = $false
@@ -644,7 +645,7 @@ function Update-ChannelList {
       if (-not $isCurrent) {
         $switchButton = New-Object System.Windows.Controls.Button
         $switchButton.Style = $window.FindResource("Pill")
-        $switchButton.Content = "启用"
+        $switchButton.Content = if ($index -eq $script:enablingIndex) { "启用中" } else { "启用" }
         $switchButton.Tag = $index
         $switchButton.Add_Click({
           param($sender, $eventArgs)
@@ -660,6 +661,8 @@ function Update-ChannelList {
             "OKCancel", "Warning")
           if ($answer -ne "OK") { return }
           $script:channelIndex = $target
+          # 重启要等一会儿：这一行先显示「启用中」，返回后由 Receive-Response 清掉。
+          $script:enablingIndex = $target
           Submit "switch"
         })
         [void]$trailing.Children.Add($switchButton)
@@ -1252,6 +1255,7 @@ function Receive-Response($Response) {
     return
   }
   $script:busy = $false
+  $script:enablingIndex = -1
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
   if ($ok -or $Response.saved -eq $true -or $cleared) {
@@ -1299,8 +1303,9 @@ function Receive-Response($Response) {
     if ($script:pendingDeleteRestore) {
       $script:channels = $script:pendingDeleteRestore
       $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($script:channelIndex, $script:channels.Count - 1) }
-      Update-ChannelList
     }
+    # 重新渲染列表，把正在启用的那一行放回「启用」。
+    Update-ChannelList
     Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "操作失败" }) $true
   } elseif ($cleared) {
     Set-Feedback "已清空并重启 ChatGPT"

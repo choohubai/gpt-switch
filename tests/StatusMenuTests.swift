@@ -68,6 +68,7 @@ struct StatusMenuTests {
         store.requestEnable(at: 0)
         store.confirmRestart()
         assert(store.restartPromptText == nil, "确认之后要收起提示")
+        assert(store.enablingIndex == 0, "等重启这段时间那一行要显示「启用中」")
         assert(requests.last?["action"] as? String == "switch")
         assert(requests.last?["restart"] as? Bool == true)
         assert(requests.last?["current"] as? String == "OpenAI")
@@ -191,8 +192,10 @@ struct StatusMenuTests {
 
         // 错误响应要落到反馈里，并解除 busy。
         store.busy = true
+        store.enablingIndex = 0
         store.apply(["ok": false, "error": "测试用失败"])
         assert(store.feedback == "测试用失败" && store.feedbackIsError && !store.busy)
+        assert(store.enablingIndex == nil, "启用失败要放回「启用」")
 
         // 返回列表直接丢弃没保存的改动，不弹确认框。
         store.editChannel(at: 0)

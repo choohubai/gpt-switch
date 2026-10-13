@@ -157,6 +157,8 @@ final class PanelStore: ObservableObject {
     @Published var confirmingClear = false
     /// 「启用」和「重启」都会重启客户端，先弹一句说明；这里记着要写哪一条。
     @Published var restartPrompt: RestartPrompt?
+    /// 正在启用哪一条：重启要等一会儿，这一行先显示「启用中」；返回或失败后清掉。
+    @Published var enablingIndex: Int?
     @Published var deletePrompt: DeletePrompt?
 
     var send: ([String: Any]) -> Void = { _ in }
@@ -330,6 +332,7 @@ final class PanelStore: ObservableObject {
 
     func enableChannel(at index: Int) {
         guard channels.indices.contains(index), loaded, !busy else { return }
+        enablingIndex = index
         submit(action: "switch", currentID: channels[index].id)
     }
 
@@ -455,6 +458,7 @@ final class PanelStore: ObservableObject {
             return
         }
         busy = false
+        enablingIndex = nil
         let ok = response["ok"] as? Bool == true
         let cleared = response["cleared"] as? Bool == true
         let pending = pendingDelete
@@ -919,7 +923,7 @@ struct ChannelCard: View {
             }
             // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
             if !isCurrent {
-                Button("启用") { store.requestEnable(at: index) }
+                Button(store.enablingIndex == index ? "启用中" : "启用") { store.requestEnable(at: index) }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                     .pointingHand()
