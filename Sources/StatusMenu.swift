@@ -1230,6 +1230,7 @@ private struct FieldBox: ViewModifier {
                 RoundedRectangle(cornerRadius: 9)
                     .strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.14))
             )
+            .fieldCursor()
     }
 }
 
@@ -1238,7 +1239,8 @@ extension View {
 }
 
 /// SwiftUI 的按钮在 macOS 上默认不换成手型光标，得自己推栈。
-private struct PointingHand: ViewModifier {
+private struct CursorPush: ViewModifier {
+    let cursor: NSCursor
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
@@ -1248,7 +1250,7 @@ private struct PointingHand: ViewModifier {
                 guard isEnabled else { return }
                 if inside, !hovering {
                     hovering = true
-                    NSCursor.pointingHand.push()
+                    cursor.push()
                 } else if !inside, hovering {
                     hovering = false
                     NSCursor.pop()
@@ -1264,7 +1266,9 @@ private struct PointingHand: ViewModifier {
 }
 
 extension View {
-    func pointingHand() -> some View { modifier(PointingHand()) }
+    func pointingHand() -> some View { modifier(CursorPush(cursor: .pointingHand)) }
+    /// 输入框整框都要 I 型光标：系统只在文字区弹，左右内边距上还是箭头，鼠标划过去会来回跳。
+    func fieldCursor() -> some View { modifier(CursorPush(cursor: .iBeam)) }
 }
 
 struct DashedRowButton: View {
@@ -1333,7 +1337,9 @@ struct BottomBar: View {
                         .contentShape(Rectangle())
                 }
             }
-            .buttonStyle(.plain)
+            // borderless 才不画键盘焦点环；再关掉可聚焦，免得它进 Tab 链。
+            .buttonStyle(.borderless)
+            .focusable(false)
             .pointingHand()
             .disabled(!store.updateEnabled)
             .help(store.updateTitle)
