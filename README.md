@@ -12,7 +12,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 - 启用渠道时会把该渠道的模型合并进模型目录：默认写入 `~/.codex/model_catalog.json`，并在 `~/.codex/config.toml` 中补上 `model_catalog_json` 配置。该目录是磁盘文件，由客户端自己读取，所以插件退出或删除后，已保存的自定义模型仍然保留。
 - 点列表页左下角的“还原 ChatGPT 配置并重启”会把插件写过的那部分还原到写入之前的样子（provider 段和 `OPENAI_API_KEY` 都还原），清理插件写入的模型目录和 `model_catalog_json` 配置，然后重启客户端；面板里的渠道列表保留。
 - 插件启动后在 macOS 菜单栏显示应用图标，菜单提供“打开面板”和“退出”；打开面板时程序坞和 ⌘Tab 里也会出现 GPT Switch，关掉窗口只是缩回菜单栏，只有菜单里的“退出”会真正结束插件。
-- 面板底部显示当前版本并提供“检查更新”：检测到新版本时，可直接打开对应 GitHub Release 下载页。
+- 面板底部显示当前版本，右边是图标形式的“检查更新”：平时是回形箭头，检查中转圈，检测到新版本时换成下载图标（悬停显示当前状态），点一下就打开对应的 GitHub Release 下载页。
 
 它不会修改 `ChatGPT.app`、`Codex.app`、`app.asar`、代码签名或历史会话；但会写入 `~/.codex/config.toml`、`~/.codex/auth.json`（渠道密钥）和 `~/.codex/model_catalog.json`。`config.toml` 和 `auth.json` 由 CLI 和桌面端共用，启用渠道会同时影响两边。
 
@@ -41,7 +41,7 @@ macOS / Windows 桌面工具：在面板里维护多个渠道（渠道地址、�
 
 ### Windows
 
-Windows 版下载 `GPT-Switch-Setup-<版本>.exe`，安装后从开始菜单打开 `GPT Switch`，会弹出和 macOS 一样的模型配置面板；托盘图标提供“打开面板 / 退出”。
+Windows 版下载 `GPT-Switch-Setup-<版本>.exe`，安装后从开始菜单打开 `GPT Switch`，会弹出和 macOS 一样的模型配置面板（界面仍是原来的浅色样式，没有毛玻璃）；托盘图标提供“打开面板 / 退出”。
 
 1. 先安装 ChatGPT/Codex 桌面端，商店版和官方独立安装版都可以。
 2. 面板里维护渠道（Provider ID / 地址 / 密钥 / 模型），点这一行的「启用」：插件会写 ChatGPT 配置、关掉客户端、带着本机调试端口重新拉起它，再把模型注入进去。
@@ -52,7 +52,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 ### 渠道与模型配置
 
-点击菜单栏图标，选择“打开面板”。首页是渠道列表，点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是「重启」、左下角是“还原 ChatGPT 配置并重启”。正在使用的渠道不能删（按钮置灰），要先启用别的渠道。每个渠道填四项：
+点击菜单栏图标，选择“打开面板”。面板背景是系统毛玻璃材质，跟着系统深浅色走。首页是渠道列表：正在使用的那一条是浅灰底，其它候选渠道是白卡片加一个「启用」按钮，使用中的那条不显示「启用」。点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是「重启」、左下角是“还原 ChatGPT 配置并重启”。正在使用的渠道不能删（按钮置灰），要先启用别的渠道。每个渠道填四项：
 
 - Provider ID：写进 `config.toml` 的 `model_providers.<Provider ID>`，只能用字母、数字、`-` 和 `_`。每个回话会记住自己创建时用的 Provider ID，重开时只按它找表；所以「启用」会把当前渠道同时写进 `config.toml` 里所有用过的 Provider ID（渠道列表 + 插件历史写入记录），旧回话才会跟着一起切。
 - 地址：写进 `model_providers.<渠道>.base_url`，例如 `https://choohub.net/api-proxy/v1`。
@@ -66,7 +66,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 
 - “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。没有改动时按钮置灰；改的是正在用的那条渠道时按钮变成「保存并重启」，点一下存盘后顺手写进 ChatGPT 并重启客户端。
-- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。同时会把 `web_search` 关成 `"disabled"`、把 `show_raw_agent_reasoning` 打开：第三方端点没有联网检索工具，声明了只会让请求被拒；第三方模型的推理是裸文本，不开就看不到。这两个键原来是什么值（包括原来没有）都记在还原记录里，「还原」时照原样放回去。
+- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。等客户端重启的这段时间，那一行的按钮显示「启用中」并保持禁用，失败会退回「启用」，成功那一行就变成「使用中」。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。同时会把 `web_search` 关成 `"disabled"`、把 `show_raw_agent_reasoning` 打开：第三方端点没有联网检索工具，声明了只会让请求被拒；第三方模型的推理是裸文本，不开就看不到。这两个键原来是什么值（包括原来没有）都记在还原记录里，「还原」时照原样放回去。
 - “还原 ChatGPT 配置并重启”（列表页左下角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。还原只撤销插件当前还占着的改动：早就不在 `config.toml` 里的 provider 段不会被重新补回来。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 
 首次升级会自动导入现有配置：`~/.codex/config.toml` 里正在使用的 provider、`~/.codex/auth.json` 里的密钥、以及旧版插件保存的模型列表，会合成第一个渠道，不需要重新填一遍。旧的 `~/Library/Application Support/GPTSwitch/models.json`（Windows 是 `%LOCALAPPDATA%\GPTSwitch\models.json`）只作为导入来源，不会被删除。
@@ -98,7 +98,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 | `Sources/model-config.mjs` | 模型校验、模型目录合并与 `model_catalog_json` 读写 |
 | `Sources/channel-config.mjs` | 渠道校验与存储、从现有 `~/.codex` 配置导入、启用/还原 `config.toml` 与 `auth.json`、读取端点公布的模型列表 |
 | `Resources/Info.plist` | macOS 应用元数据 |
-| `Resources/AppIcon.png` | 应用图标，取自 ChatGPT 桌面端图标 |
+| `Resources/AppIcon.png` | 应用图标：结形取自 ChatGPT 桌面端图标，重新配色成青蓝渐变的线稿，和 ChatGPT 官方图标区分开 |
 | `Resources/MenuBarIcon.png` | 菜单栏图标，ChatGPT 官方模板图（自动适配深浅色） |
 | `Scripts/GPTSwitch` | `.app` 的启动入口，选择客户端内置的 Node.js |
 | `Scripts/GPTSwitch.ps1` | Windows 启动入口：找 Node、后台起注入器、把已打开的面板叫回前台 |
@@ -107,6 +107,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 | `Scripts/package-windows.sh` | 用 NSIS 打 Windows 安装包（载荷只有脚本和图标） |
 | `Scripts/windows-installer.nsi` | Windows 安装包定义：开始菜单快捷方式、卸载项、卸载前停插件 |
 | `Scripts/test.sh` | 源码和构建产物的静态检查 |
+| `Scripts/local-release.sh` | 本地发布：`prepare` 校验源码并打包 dmg 与 Windows 安装包，`publish` 打 tag 并发布 Release；tag 推送后 CI 也跑同一套，先发布完的一边收工、另一边不重复发布 |
 | `.github/workflows/release.yml` | 推 `v*` tag 后在 CI 上打包 dmg 与 exe 并发布 Release |
 
 ## 兼容性说明
