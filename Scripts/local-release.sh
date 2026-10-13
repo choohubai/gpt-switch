@@ -344,7 +344,11 @@ publish_release() {
   repository="$(resolve_github_repository)"
   if gh release view "$tag" --repo "$repository" >/dev/null 2>&1; then
     is_draft="$(gh release view "$tag" --repo "$repository" --json isDraft --jq '.isDraft')"
-    [[ "$is_draft" == "true" ]] || die "$tag 的 GitHub Release 已存在且不是 Draft，请使用新的版本号"
+    if [[ "$is_draft" != "true" ]]; then
+      # 本地和 CI 都会在打标签后发布：另一边先发完时，前面已经核对过 tag 指向当前提交，就是同一次发布。
+      info "$tag 已经发布过（tag 指向当前提交），无需重复发布"
+      return 0
+    fi
     info "更新 GitHub Draft Release $tag"
     gh release edit "$tag" --repo "$repository" --title "GPT Switch $version" \
       --notes-file "$notes" --draft=true >/dev/null
