@@ -105,7 +105,7 @@ test("switching writes auth.json and config.toml, clearing puts both back", (con
   assert.equal(auth.OPENAI_API_KEY, "sk-relay");
   assert.deepEqual(auth.tokens, { id: "keep-me" });
   const written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^model_provider = "relay"\n/);
+  assert.match(written, /^model_provider = "relay"$/m);
   assert.match(written, /\[model_providers\.relay\]/);
   if (process.platform !== "win32") {
     assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
@@ -117,7 +117,7 @@ test("switching writes auth.json and config.toml, clearing puts both back", (con
   });
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).OPENAI_API_KEY, "sk-relay");
   const switched = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(switched, /^model_provider = "second"\n/);
+  assert.match(switched, /^model_provider = "second"$/m);
   assert.equal(readProviderTable(switched, "relay").base_url, "https://b.example/v1",
     "换 id 后旧的段改成新渠道，别删：回话绑着它");
   assert.equal(readProviderTable(switched, "OpenAI").base_url, "https://b.example/v1",
@@ -140,7 +140,7 @@ test("switching points every provider id a thread may have pinned at the active 
     channelIds, authPath, userConfigPath, recordPath,
   });
   let written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^model_provider = "feiyu"\n/);
+  assert.match(written, /^model_provider = "feiyu"$/m);
   for (const id of channelIds) {
     assert.equal(readProviderTable(written, id).base_url, "https://www.feiyutoken.com/v1", `${id} 要指到当前渠道`);
   }
@@ -466,4 +466,35 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
   assert.equal(bad.ok, false);
   assert.match(bad.error, /请先填渠道地址/);
+});
+
+test("switching turns web search off and shows raw reasoning, clearing removes them again", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, CONFIG);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
+  let written = fs.readFileSync(userConfigPath, "utf8");
+  assert.match(written, /^web_search = "disabled"$/m);
+  assert.match(written, /^show_raw_agent_reasoning = true$/m);
+  applyChannelToCodex({
+    channel: channel({ id: "second", baseUrl: "https://b.example/v1" }),
+    authPath, userConfigPath, recordPath,
+  });
+  written = fs.readFileSync(userConfigPath, "utf8");
+  assert.equal((written.match(/^web_search/gm) || []).length, 1, "来回切不要写出第二行");
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "用户没写过的键还原时删掉");
+});
+
+test("switching keeps the user's own web_search value until clearing", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  const original = `web_search = "live"\n${CONFIG}`;
+  fs.writeFileSync(userConfigPath, original);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
+  const written = fs.readFileSync(userConfigPath, "utf8");
+  assert.match(written, /^web_search = "disabled"$/m);
+  assert.equal(written.includes('web_search = "live"'), false);
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原放回用户原来的值");
 });

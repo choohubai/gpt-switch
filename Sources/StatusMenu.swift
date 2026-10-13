@@ -163,7 +163,7 @@ final class PanelStore: ObservableObject {
     private var pendingUpdateURL: URL?
     private var checkingUpdate = false
     /// 进编辑页时这条渠道是不是正在用的那条：保存时按它决定「使用中」跟谁走。
-    private var editingActiveChannel = false
+    private(set) var editingActiveChannel = false
     /// 删除要落盘，存盘失败时把刚拿掉的那条放回去，别让面板和文件对不上。
     private var pendingDelete: (restore: [ChannelRow], note: String)?
 
@@ -210,13 +210,18 @@ final class PanelStore: ObservableObject {
     func editChannel(at index: Int) {
         guard channels.indices.contains(index) else { return }
         editingIndex = index
-        editingActiveChannel = channels[index].id == currentChannelID
+        editingActiveChannel = isCurrentChannel(at: index)
     }
 
     /// 列表页和编辑页的垃圾桶都先问一句，删的动作还是走 deleteChannel。
     func requestDelete(at index: Int) {
-        guard channels.indices.contains(index), !busy else { return }
+        guard channels.indices.contains(index), !busy, !isCurrentChannel(at: index) else { return }
         deletePrompt = .channel(index)
+    }
+
+    /// 正在使用的渠道不能删：客户端那边还指着它，删完面板和 ChatGPT 就对不上了。
+    func isCurrentChannel(at index: Int) -> Bool {
+        channels.indices.contains(index) && channels[index].id == currentChannelID
     }
 
     func requestModelDelete(at index: Int) {
@@ -258,13 +263,14 @@ final class PanelStore: ObservableObject {
         guard loaded, !busy, channels.count < 50 else { return }
         channels.append(ChannelRow())
         editingIndex = channels.count - 1
+        editingActiveChannel = false
         feedback = "有未保存的更改"
         feedbackIsError = false
     }
 
     /// 删除立刻落盘并回列表页：只从内存里拿掉、人还留在编辑页，等于没删成。
     func deleteChannel(at index: Int) {
-        guard channels.indices.contains(index), !busy else { return }
+        guard channels.indices.contains(index), !busy, !isCurrentChannel(at: index) else { return }
         let removed = channels[index]
         let restore = channels
         channels.remove(at: index)
@@ -308,12 +314,18 @@ final class PanelStore: ObservableObject {
     // MARK: 请求
 
     /// 保存不动「使用中」：编辑页里改了什么（渠道 ID 也一样）都只是这条渠道自己。
+    /// 例外是改正在用的那条：存盘后还得写进 ChatGPT 才生效，顺手做完并重启。
     func save() {
         if editingActiveChannel, let index = editingIndex, channels.indices.contains(index) {
-            submit(action: "save", currentID: channels[index].id)
+            submit(action: "switch", currentID: channels[index].id)
             return
         }
         submit(action: "save", currentID: currentChannelID ?? "")
+    }
+
+    /// 改的是正在用的渠道且有改动时，按钮要说清楚它还会重启客户端。
+    var saveButtonTitle: String {
+        isDirty && editingActiveChannel ? "保存并重启" : "保存"
     }
 
     func enableChannel(at index: Int) {
@@ -474,9 +486,7 @@ final class PanelStore: ObservableObject {
             feedback = "已启用渠道，ChatGPT 已重启"
             feedbackIsError = false
         } else if response["saved"] as? Bool == true {
-            feedback = pending?.note ?? (editingActiveChannel
-                ? "已保存，点右上角「重启」写进 ChatGPT"
-                : "已保存，点列表里的「启用」才会生效")
+            feedback = pending?.note ?? "已保存，点列表里的「启用」才会生效"
             feedbackIsError = false
         } else {
             feedback = ""
@@ -928,7 +938,8 @@ struct ChannelCard: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .pointingHand()
-            .disabled(store.busy)
+            .disabled(store.busy || isCurrent)
+            .help(isCurrent ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -961,7 +972,8 @@ struct ChannelDetailView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()
-                    .disabled(!store.hasChannel || store.busy)
+                    .disabled(!store.hasChannel || store.busy || store.editingActiveChannel)
+                    .help(store.editingActiveChannel ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
             }
             .padding(.horizontal, 24)
             .padding(.top, 22)
@@ -993,7 +1005,7 @@ struct ChannelDetailView: View {
 
             HStack(spacing: 8) {
                 Spacer()
-                Button("保存") { store.save() }
+                Button(store.saveButtonTitle) { store.save() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()

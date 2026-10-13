@@ -52,7 +52,6 @@ $script:checkingUpdate = $false
 $script:quitting = $false
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
-$script:saveTouchedCurrent = $false
 $script:deleteKind = ""
 $script:deleteIndex = -1
 $script:fetchingModels = $false
@@ -700,6 +699,11 @@ function Update-ChannelList {
       $deleteButton.ToolTip = "删除渠道"
       $deleteButton.Tag = $index
       $deleteButton.Margin = "4,0,0,0"
+      # 使用中的渠道不能删：先启用别的渠道。
+      if ($isCurrent) {
+        $deleteButton.IsEnabled = $false
+        $deleteButton.ToolTip = "使用中的渠道不能删除：先启用别的渠道"
+      }
       $deleteButton.Add_Click({
         param($sender, $eventArgs)
         $eventArgs.Handled = $true
@@ -738,14 +742,19 @@ function Update-Controls {
   $models = Get-ActiveModels
   $addButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   $addChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -lt 50
-  $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
+  $editingCurrent = $hasChannel -and [string](Get-ActiveChannel).id -eq [string]$script:currentChannelId
+  $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel -and -not $editingCurrent
+  $deleteChannelButton.ToolTip = if ($editingCurrent) { "使用中的渠道不能删除：先启用别的渠道" } else { "删除渠道" }
   $backButton.IsEnabled = -not $script:busy
   foreach ($field in @($channelIdField, $channelBaseUrlField, $channelApiKeyField, $channelHeaderNameField, $channelHeaderValueField)) {
     $field.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
   $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and -not [string]::IsNullOrWhiteSpace([string]$script:currentChannelId)
-  $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and (Compare-Channels $script:channels $script:savedChannels)
+  $dirty = Compare-Channels $script:channels $script:savedChannels
+  # 改的是正在用的渠道：存盘要顺手写进 ChatGPT 并重启，按钮就写清楚。
+  $saveButton.Content = if ($dirty -and $editingCurrent) { "保存并重启" } else { "保存" }
+  $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and $dirty
   # 没填地址就问不动端点，所以按钮跟着地址一起灰。
   $fetchModelsButton.Content = if ($script:fetchingModels) { "获取中…" } else { "获取可用模型" }
   $fetchModelsButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel -and -not [string]::IsNullOrWhiteSpace([string](Get-ActiveChannel).baseUrl)
@@ -1031,11 +1040,19 @@ function Get-ChannelLabel($Channel) {
   return "$name ($id)"
 }
 
+# 正在使用的渠道不能删：客户端那边还指着它，删完面板和 ChatGPT 就对不上了。
+function Test-CurrentChannel([int]$Index) {
+  if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return $false }
+  return -not [string]::IsNullOrWhiteSpace([string]$script:currentChannelId) -and `
+    [string]$script:channels[$Index].id -eq [string]$script:currentChannelId
+}
+
 # 列表页、编辑页和模型卡片的删除都先弹这张卡片，确认后才真正删。
 function Request-Delete([string]$Kind, [int]$Index) {
   if ($script:busy) { return }
   if ($Kind -eq "channel") {
     if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
+    if (Test-CurrentChannel $Index) { return }
     $label = Get-ChannelLabel $script:channels[$Index]
     $confirmTitle.Text = "删除 $label?"
     $confirmMessage.Text = "删除 $label 会移除其配置和存储的 API 密钥。"
@@ -1186,6 +1203,7 @@ function Remove-Model([int]$Index) {
 function Remove-Channel([int]$Index) {
   if ($script:busy) { return }
   if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
+  if (Test-CurrentChannel $Index) { return }
   $channel = $script:channels[$Index]
   $script:pendingDeleteRestore = Copy-Channels $script:channels
   $script:pendingDeleteNote = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "已删除渠道" } else { "已删除渠道「$($channel.id)」" }
@@ -1289,9 +1307,7 @@ function Receive-Response($Response) {
   } elseif ($Response.restarted -eq $true) {
     Set-Feedback "已启用渠道，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
-    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote }
-      elseif ($script:saveTouchedCurrent) { "已保存，点右上角「重启」写进 ChatGPT" }
-      else { "已保存，点列表里的「启用」才会生效" })
+    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点列表里的「启用」才会生效" })
   } else {
     Set-Feedback ""
   }
@@ -1345,8 +1361,6 @@ function Submit([string]$Action, [string]$Note = "") {
   # 保存整份列表不需要当前渠道（删掉最后一个之后也要能存），只有切换渠道才必须有。
   if ($Action -eq "switch" -and -not $channel) { return }
   $script:busy = $true
-  # 保存的是当前渠道时，提示要指向右上角那个「重启」。
-  $script:saveTouchedCurrent = $Action -eq "save" -and $null -ne $channel -and [string]$channel.id -eq [string]$script:currentChannelId
   Set-Feedback $(if ($Note) { $Note } elseif ($Action -eq "switch") { "正在启用渠道并重启 ChatGPT…" } else { "正在保存…" })
   Rebuild-Rows
   Update-Controls
@@ -1383,7 +1397,16 @@ $addButton.Add_Click({
   $newCard.Child.Children[1].Children[1].Children[0].Focus() | Out-Null
 })
 
-$saveButton.Add_Click({ Submit "save" })
+$saveButton.Add_Click({
+  if (-not $script:loaded -or $script:busy) { return }
+  $channel = Get-ActiveChannel
+  # 改的是正在用的渠道：存盘后还得写进 ChatGPT 才生效，一步做完。
+  if ($null -ne $channel -and [string]$channel.id -eq [string]$script:currentChannelId) {
+    Submit "switch"
+    return
+  }
+  Submit "save"
+})
 
 $fetchModelsButton.Add_Click({ Fetch-Models })
 

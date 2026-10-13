@@ -52,7 +52,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 ### 渠道与模型配置
 
-点击菜单栏图标，选择“打开面板”。首页是渠道列表，点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是「重启」、左下角是“还原 ChatGPT 配置并重启”。每个渠道填四项：
+点击菜单栏图标，选择“打开面板”。首页是渠道列表，点「启用」立即写进 ChatGPT 配置并重启；点某一行进入编辑，编辑页右上角是“删除渠道”，列表页右上角是「重启」、左下角是“还原 ChatGPT 配置并重启”。正在使用的渠道不能删（按钮置灰），要先启用别的渠道。每个渠道填四项：
 
 - Provider ID：写进 `config.toml` 的 `model_providers.<Provider ID>`，只能用字母、数字、`-` 和 `_`。每个回话会记住自己创建时用的 Provider ID，重开时只按它找表；所以「启用」会把当前渠道同时写进 `config.toml` 里所有用过的 Provider ID（渠道列表 + 插件历史写入记录），旧回话才会跟着一起切。
 - 地址：写进 `model_providers.<渠道>.base_url`，例如 `https://choohub.net/api-proxy/v1`。
@@ -61,10 +61,12 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 下面是这个渠道的模型列表，每个模型一张卡片：模型 ID、显示名称（留空就用模型 ID）、上下文窗口（k）和输入类型。不同渠道的模型列表互相独立，启用渠道时整份列表一起换，卡片右上角的垃圾桶删除该模型。
 
+写进模型目录时，渠道模型一律按「非 Responses Lite」的第三方形状声明：`use_responses_lite = false`、`tool_mode = null`、`shell_type = "shell_command"`、`web_search_tool_type = "text"`、`supports_parallel_tool_calls = true`，并且不带 Fast 这类加速档，取值照 DeepSeek 官方 Codex 接入文档里的 `models.json`。照抄内置模型模板（GPT-5.x 那批是 Lite 形状）会让上游收到它不认识的请求：工具声明被塞进 `input[0].additional_tools`、工具调用改发 `custom_tool_call`、还多一个内部请求头，上游不认时模型只能把工具调用当文本吐出来。
+
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 
-- “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。
-- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。
+- “保存”：只把渠道列表写进 `~/.gptswitch/channels.json`，不动 ChatGPT 的配置，也不会改变哪条渠道正在用（在编辑页改 Provider ID 也一样）。没有改动时按钮置灰；改的是正在用的那条渠道时按钮变成「保存并重启」，点一下存盘后顺手写进 ChatGPT 并重启客户端。
+- 「启用」：点下去先弹一句「会重启 ChatGPT」，确认后才存盘、把该渠道写进 `~/.codex/config.toml` 和 `auth.json`、更新模型目录，然后重启客户端；`config.toml` 只在启动时读，不重启不生效。改完正在用的那条渠道，点列表页右上角的「重启」做同样的事（会用正在使用的渠道重新写一遍配置）。同时会把 `web_search` 关成 `"disabled"`、把 `show_raw_agent_reasoning` 打开：第三方端点没有联网检索工具，声明了只会让请求被拒；第三方模型的推理是裸文本，不开就看不到。这两个键原来是什么值（包括原来没有）都记在还原记录里，「还原」时照原样放回去。
 - “还原 ChatGPT 配置并重启”（列表页左下角）：把 ChatGPT 侧还原成插件写入之前的样子，清理模型目录，再重启客户端；面板里的渠道列表保留。还原只撤销插件当前还占着的改动：早就不在 `config.toml` 里的 provider 段不会被重新补回来。若 `model_catalog_json` 在安装插件前就已存在，则保留该配置和文件，只把自定义模型从目录中移除。
 
 首次升级会自动导入现有配置：`~/.codex/config.toml` 里正在使用的 provider、`~/.codex/auth.json` 里的密钥、以及旧版插件保存的模型列表，会合成第一个渠道，不需要重新填一遍。旧的 `~/Library/Application Support/GPTSwitch/models.json`（Windows 是 `%LOCALAPPDATA%\GPTSwitch\models.json`）只作为导入来源，不会被删除。

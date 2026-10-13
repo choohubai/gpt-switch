@@ -12,7 +12,6 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const TABLE_START = /^[ \t]*\[/m;
 const MODEL_PROVIDER_LINE = /^[ \t]*model_provider[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\r?\n?/m;
-const MODEL_PROVIDER_ANY_LINE = /^[ \t]*model_provider[ \t]*=[^\n]*\n?/m;
 const AUTH_KEY = "OPENAI_API_KEY";
 
 const MODEL_LIST_TIMEOUT_MS = 5_000;
@@ -108,6 +107,31 @@ const topLevelHead = (text) => {
   return index < 0 ? text : text.slice(0, index);
 };
 
+/// 顶层键的整行（含行尾换行）。
+const topLevelLinePattern = (name) => new RegExp(`^[ \\t]*${name}[ \\t]*=[^\\n]*\\n?`, "m");
+
+/// 没有就补在最前面，有就按原位置替换。
+const setTopLevelLine = (text, name, line) => {
+  const head = topLevelHead(text);
+  const pattern = topLevelLinePattern(name);
+  const tail = text.slice(head.length);
+  return pattern.test(head)
+    ? `${head.replace(pattern, `${line}\n`)}${tail}`
+    : `${line}\n${head.replace(/^\n+/, "")}${tail}`;
+};
+
+const removeTopLevelLine = (text, name) => {
+  const head = topLevelHead(text);
+  return `${head.replace(topLevelLinePattern(name), "")}${text.slice(head.length)}`;
+};
+
+/// 第三方端点没有联网检索工具，声明了只会让请求被拒（DeepSeek 官方接入文档也是关掉的）；
+/// 第三方模型的推理是裸文本，不开这个桌面端看不到。两个键都是全局的，启用时写入、还原时放回原值。
+const GLOBAL_KEYS = [
+  { name: "web_search", value: '"disabled"' },
+  { name: "show_raw_agent_reasoning", value: "true" },
+];
+
 const providerHeader = (id) => {
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^[ \\t]*\\[\\s*model_providers\\s*\\.\\s*(?:"${escaped}"|'${escaped}'|${escaped})\\s*\\][ \\t]*\\r?$`, "m");
@@ -198,20 +222,10 @@ export const removeProviderTable = (text, id) => {
   return span.end === text.length ? cut.replace(/\s+$/, "\n") : cut;
 };
 
-export const setModelProvider = (text, id) => {
-  const head = topLevelHead(text);
-  const tail = text.slice(head.length);
-  const line = `model_provider = ${tomlString(id)}\n`;
-  if (/^[ \t]*model_provider[ \t]*=/m.test(head)) {
-    return `${head.replace(MODEL_PROVIDER_ANY_LINE, line)}${tail}`;
-  }
-  return `${line}${head.replace(/^\n+/, "")}${tail}`;
-};
+export const setModelProvider = (text, id) =>
+  setTopLevelLine(text, "model_provider", `model_provider = ${tomlString(id)}`);
 
-export const removeModelProvider = (text) => {
-  const head = topLevelHead(text);
-  return `${head.replace(MODEL_PROVIDER_ANY_LINE, "")}${text.slice(head.length)}`;
-};
+export const removeModelProvider = (text) => removeTopLevelLine(text, "model_provider");
 
 const readAuthKey = (authPath) => {
   try {
@@ -262,6 +276,22 @@ export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userCo
       existed: /^[ \t]*model_provider[ \t]*=/m.test(head),
       value: modelProviderFromToml(text),
     };
+  }
+  if (!record.globalKeys || typeof record.globalKeys !== "object") record.globalKeys = {};
+  const prepend = [];
+  for (const { name, value } of GLOBAL_KEYS) {
+    const match = topLevelLinePattern(name).exec(topLevelHead(text));
+    if (!(name in record.globalKeys)) {
+      // 原来没有就记 null，还原时把这一行删掉，别凭空留一个用户没写过的键。
+      record.globalKeys[name] = match ? match[0].replace(/\r?\n$/, "") : null;
+    }
+    if (match) text = setTopLevelLine(text, name, `${name} = ${value}`);
+    else prepend.push(`${name} = ${value}`);
+  }
+  // 缺的键一起补在最前面，不然一个个插在开头会让它们在文件里倒过来。
+  if (prepend.length) {
+    const head = topLevelHead(text);
+    text = `${prepend.join("\n")}\n${head.replace(/^\n+/, "")}${text.slice(head.length)}`;
   }
   for (const id of providerIdsToRepoint({ channel, channelIds, record })) {
     if (!record.tablesAdded.includes(id)) {
@@ -314,6 +344,9 @@ export const restoreCodexConfig = ({ authPath, userConfigPath, recordPath }) => 
     }
     const provider = record.modelProvider;
     text = provider?.existed ? setModelProvider(text, provider.value) : removeModelProvider(text);
+    for (const [name, original] of Object.entries(record.globalKeys ?? {})) {
+      text = original ? setTopLevelLine(text, name, original) : removeTopLevelLine(text, name);
+    }
     atomicWrite(userConfigPath, text);
   }
   fs.rmSync(recordPath, { force: true });

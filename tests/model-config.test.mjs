@@ -45,6 +45,8 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
     max_context_window: 872000,
     effective_context_window_percent: 95,
     visibility: "list",
+    use_responses_lite: true,
+    shell_type: "unified_exec",
     extra: "keep",
   }] };
   const catalog = buildCatalog(bundled, [
@@ -59,6 +61,8 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
     max_context_window: 272000,
     effective_context_window_percent: 95,
     visibility: "list",
+    use_responses_lite: true,
+    shell_type: "unified_exec",
     extra: "keep",
     input_modalities: ["text", "image"],
   });
@@ -70,6 +74,13 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
   assert.equal(catalog.models[1].max_context_window, 1_000_000);
   assert.equal(catalog.models[1].effective_context_window_percent, 95);
   assert.equal(catalog.models[1].extra, "keep");
+  // 渠道模型要按第三方端点声明：Responses Lite 上游不认，模型就会把工具调用当文本吐出来。
+  assert.equal(catalog.models[1].use_responses_lite, false);
+  assert.equal(catalog.models[1].tool_mode, null);
+  assert.equal(catalog.models[1].shell_type, "shell_command");
+  assert.equal(catalog.models[1].web_search_tool_type, "text");
+  assert.equal(catalog.models[1].supports_parallel_tool_calls, true);
+  assert.deepEqual(catalog.models[1].service_tiers, []);
   assert.deepEqual(buildCatalog(bundled, []).models, bundled.models);
 });
 

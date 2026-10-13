@@ -214,6 +214,8 @@ prepare_release() {
   /bin/ln -s /Applications "$dmg_source/Applications"
   /usr/bin/hdiutil create -quiet -ov -format UDZO \
     -volname "GPT Switch" -srcfolder "$dmg_source" "$artifact_tmp"
+  # .app 只是打 dmg 用的中间产物，用完就删：发布流程显式给了 OUTPUT_DIR，build.sh 不会自己清。
+  rm -rf "$APP_PATH"
   artifact_sha256="$(shasum -a 256 "$artifact_tmp" | awk '{print $1}')"
   info "打包 Windows 安装包"
   OUTPUT_DIR="$ARTIFACT_DIR" "$SCRIPT_DIR/package-windows.sh" "$version" >/dev/null

@@ -70,13 +70,27 @@ export const atomicWrite = (filePath, contents) => {
   }
 };
 
+/// 渠道模型都走第三方端点，必须按「非 Responses Lite」的 Codex 形状声明：Lite 会把工具声明塞进
+/// input[0].additional_tools、改发 custom_tool_call、还要一个内部请求头，上游不认的时候模型只能把工具
+/// 调用当文本吐出来。取值照 DeepSeek 官方的 models.json（agent_integrations/codex）。
+const THIRD_PARTY_MODEL = {
+  use_responses_lite: false,
+  tool_mode: null,
+  shell_type: "shell_command",
+  web_search_tool_type: "text",
+  supports_parallel_tool_calls: true,
+  // 第三方端点不认 service_tier，Fast 档摆出来只会让请求被拒。
+  service_tiers: [],
+  additional_speed_tiers: [],
+};
+
 const MINIMAL_MODEL = {
+  ...THIRD_PARTY_MODEL,
   slug: "",
   display_name: "",
   description: "",
   visibility: "list",
   supported_in_api: true,
-  shell_type: "unified_exec",
   default_reasoning_level: "medium",
   supported_reasoning_levels: [],
 };
@@ -108,6 +122,7 @@ export const buildCatalog = (bundled, models) => {
     const displayName = model.displayName || model.id;
     const entry = {
       ...JSON.parse(JSON.stringify(template)),
+      ...THIRD_PARTY_MODEL,
       slug: model.id,
       display_name: displayName,
       description: displayName,

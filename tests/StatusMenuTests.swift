@@ -126,16 +126,22 @@ struct StatusMenuTests {
         assert(store.feedback == "已保存，点列表里的「启用」才会生效")
         assert(!store.isDirty)
 
-        // 保存的是当前渠道时，提示要指向右上角那个「重启」。
+        // 改的是正在用的渠道：按钮写成「保存并重启」，点一下就是存盘 + 写进 ChatGPT + 重启。
         store.showList()
         store.editChannel(at: 1)
         store.channels[1].baseUrl = "https://relay.example/v2"
+        assert(store.saveButtonTitle == "保存并重启", "当前渠道有改动时按钮要说明会重启")
         store.save()
-        store.apply(["ok": true, "saved": true, "channels": [
+        assert(requests.last?["action"] as? String == "switch", "当前渠道保存要顺手写进 ChatGPT")
+        assert(requests.last?["restart"] as? Bool == true)
+        assert(requests.last?["current"] as? String == "relay")
+        store.apply(["ok": true, "saved": true, "restarted": true, "channels": [
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v2", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已保存，点右上角「重启」写进 ChatGPT")
+        assert(store.feedback == "已启用渠道，ChatGPT 已重启")
+        assert(!store.isDirty)
+        assert(store.saveButtonTitle == "保存", "存完不脏了，按钮回到「保存」")
 
         // 新增渠道进编辑页；删除立刻落盘并回列表页。
         store.showList()
@@ -214,48 +220,67 @@ struct StatusMenuTests {
         store.addModel()
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.models.count == 1)
-        // 删除要立刻落盘、并且回到列表页，不能停在编辑页等用户再点一次返回。
+        // 正在使用的渠道不能删：编辑页那个按钮禁用，直接调也不动。
         store.showList()
         store.editChannel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        let beforeDelete = store.channels[1].id
+        assert(store.editingActiveChannel, "这条就是「使用中」")
         store.deleteChannel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        assert(store.channels.count == 1)
+        assert(store.channels.count == 2 && store.channels[1].id == "relay", "使用中的渠道删不掉")
+        assert(!store.busy, "挡下来就不该发请求")
+        store.requestDelete(at: 1)
+        assert(store.deletePrompt == nil, "使用中的渠道连删除确认卡片都不弹")
+
+        // 删别的渠道：立刻落盘、并且回到列表页，不能停在编辑页等用户再点一次返回。
+        store.editChannel(at: 0)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        store.deleteChannel(at: 0)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        assert(store.channels.count == 1 && store.channels[0].id == "relay")
         assert(store.editingIndex == nil, "删除后要回列表页")
         assert(store.busy, "删除要发起存盘请求")
         assert(requests.last?["action"] as? String == "save", "删除要落盘")
         store.apply(["ok": true, "saved": true, "channels": [
-            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已删除渠道「\(beforeDelete)」", "删除成功要给出明确的反馈")
+        assert(store.feedback == "已删除渠道「choohub」", "删除成功要给出明确的反馈")
         assert(!store.isDirty)
 
         // 存盘失败时，刚删掉的那条要放回去，不能只在面板里消失。
-        store.deleteChannel(at: 0)
-        assert(store.channels.isEmpty)
+        store.showList()
+        store.addChannel()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        assert(store.channels.count == 2)
+        store.deleteChannel(at: 1)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        assert(store.channels.count == 1)
         store.apply(["ok": false, "error": "测试用失败"])
-        assert(store.channels.count == 1, "存盘失败要把渠道放回去")
+        assert(store.channels.count == 2, "存盘失败要把渠道放回去")
         assert(store.feedbackIsError)
 
-        // 列表页的垃圾桶：先弹确认卡片，取消不删，确认后走同一条删除 + 落盘。
+        // 列表页的垃圾桶：使用中的那条不能删，别的先弹确认卡片，取消不删，确认后走同一条删除 + 落盘。
+        store.showList()
+        store.channels[1].id = "spare"
         store.requestDelete(at: 0)
-        assert(store.deletePrompt == .channel(0), "点垃圾桶要先确认")
-        assert(store.deletePromptText?.title == "删除 choohub?", "确认卡片要有标题")
-        assert(store.deletePromptText?.message == "删除 choohub 会移除其配置和存储的 API 密钥。")
+        assert(store.deletePrompt == nil, "使用中的渠道不能删")
+        store.requestDelete(at: 1)
+        assert(store.deletePrompt == .channel(1), "点垃圾桶要先确认")
+        assert(store.deletePromptText?.title == "删除 spare?", "确认卡片要有标题")
+        assert(store.deletePromptText?.message == "删除 spare 会移除其配置和存储的 API 密钥。")
         store.cancelDelete()
-        assert(store.deletePrompt == nil && store.channels.count == 1, "取消不能删掉")
-        store.requestDelete(at: 0)
+        assert(store.deletePrompt == nil && store.channels.count == 2, "取消不能删掉")
+        store.requestDelete(at: 1)
         store.confirmDelete()
         assert(store.deletePrompt == nil)
-        assert(store.channels.isEmpty, "确认后删掉")
+        assert(store.channels.count == 1, "确认后删掉")
         assert(store.editingIndex == nil, "列表页删除后仍然停在列表页")
         assert(requests.last?["action"] as? String == "save", "列表页删除也要落盘")
         store.apply(["ok": true, "saved": true, "channels": [
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已删除渠道「choohub」")
+        assert(store.feedback == "已删除渠道「spare」")
 
         // 删模型也要先确认，取消不删。
         store.editChannel(at: 0)
@@ -283,7 +308,9 @@ struct StatusMenuTests {
         // 改的要不是当前渠道，当前渠道就不能被顺手改掉。
         store.editChannel(at: 0)
         store.channels[0].id = "choohub-2"
+        assert(store.saveButtonTitle == "保存", "改的不是当前渠道，不说重启")
         store.save()
+        assert(requests.last?["action"] as? String == "save", "改别的渠道只存盘")
         assert(requests.last?["current"] as? String == "relay-2", "改别的渠道不能动当前渠道")
         store.apply(["ok": true, "saved": true, "channels": [
             ["id": "choohub-2", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
