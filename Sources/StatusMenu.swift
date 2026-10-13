@@ -421,6 +421,10 @@ final class PanelStore: ObservableObject {
         send(["action": "check-update"])
     }
 
+    /// 底栏那个图标按钮的三种样子：检查中转圈、有新版可下载、平常。
+    var updateChecking: Bool { checkingUpdate }
+    var updateAvailable: Bool { pendingUpdateURL != nil }
+
     /// 填了地址才问得动端点，所以地址是空的就不给点。
     var canFetchModels: Bool {
         guard loaded, !busy, let channel = activeChannel else { return false }
@@ -638,8 +642,18 @@ struct PanelView: View {
         // 卡片只挡鼠标挡不住键盘：不把底下的表单停下，打字还会进到被遮住的输入框。
         .disabled(store.deletePromptText != nil || store.discovering)
         .frame(minWidth: 680, minHeight: 520)
-        // 整窗铺一层毛玻璃，桌面透过来；卡片再在这层上面叠自己的材质。
-        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .all)
+        // 毛玻璃底下压一层中性渐变（窗口白 → 页面灰，最后带一丝强调色）：不然底色完全跟着壁纸走，
+        // 桌面一花面板就散；纯中性又太死，留一点强调色托住。
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [Color(nsColor: .windowBackgroundColor).opacity(0.78),
+                                        Color(nsColor: .underPageBackgroundColor).opacity(0.42),
+                                        Color.accentColor.opacity(0.03)],
+                               startPoint: .top, endPoint: .bottomTrailing)
+            }
+            .ignoresSafeArea()
+        }
         .overlay { modalLayer }
         .confirmationDialog("还原 ChatGPT 配置并重启客户端？", isPresented: $store.confirmingClear) {
             Button("还原并重启", role: .destructive) { store.clearAndRestart() }
@@ -918,26 +932,39 @@ struct ChannelCard: View {
                 if isCurrent {
                     Text("使用中")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.primary.opacity(0.75))
                         .padding(.horizontal, 10)
+                        // 中文字形落在行框偏下的位置，补 2pt 下内边距才在这个胶囊里看着居中。
+                        .padding(.bottom, 2)
                         .frame(height: 28)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                        .background(Capsule().fill(Color.primary.opacity(0.07)))
                 }
                 // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
                 if !isCurrent {
-                    Button(store.enablingIndex == index ? "启用中" : "启用") { store.requestEnable(at: index) }
-                        .buttonStyle(.bordered)
-                        .tint(Color.accentColor)
-                        .controlSize(.regular)
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(height: 28)
-                        .pointingHand()
-                        .disabled(store.busy)
+                    // 照系统设置那种按钮：浅底 + 细描边 + 深色文字，整块面板不用强调色。
+                    Button { store.requestEnable(at: index) } label: {
+                        Text(store.enablingIndex == index ? "启用中" : "启用")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.primary)
+                            .padding(.horizontal, 14)
+                            // 和「使用中」同一个原因：中文字形偏下，补 2pt 才在胶囊里居中。
+                            .padding(.bottom, 2)
+                            .frame(height: 28)
+                            .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.14)))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointingHand()
+                    .opacity(store.busy ? 0.5 : 1)
+                    .disabled(store.busy)
                 }
                 Button { store.editChannel(at: index) } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 14))
                         .frame(width: 28, height: 28)
+                        // 这两个字形本身就偏下，抬 1px 才跟左边的文字和胶囊齐。
+                        .offset(y: -1)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
@@ -947,6 +974,7 @@ struct ChannelCard: View {
                     Image(systemName: "trash")
                         .font(.system(size: 14))
                         .frame(width: 28, height: 28)
+                        .offset(y: -1)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
@@ -958,14 +986,15 @@ struct ChannelCard: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+        // 选中态只靠底色区分：描边和未选中一样细，不然一行比一行重，看着像另一套控件。
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isCurrent ? AnyShapeStyle(Color.accentColor.opacity(0.14))
-                                : AnyShapeStyle(Color(nsColor: .controlBackgroundColor)))
+                .fill(isCurrent ? AnyShapeStyle(Color.primary.opacity(0.07))
+                                : AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.7)))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(isCurrent ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.07))
+                .strokeBorder(Color.primary.opacity(0.07))
         )
         .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
     }
@@ -1055,7 +1084,7 @@ struct ChannelDetailView: View {
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor).opacity(0.7)))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
             .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
         }
@@ -1120,7 +1149,7 @@ struct ModelCard: View {
             }
         }
         .padding(20)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor).opacity(0.7)))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07)))
         .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
     }
@@ -1250,7 +1279,7 @@ struct DashedRowButton: View {
                 Image(systemName: systemImage).font(.system(size: 12, weight: .semibold))
                 Text(title).font(.system(size: 13, weight: .medium))
             }
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Color.primary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
             .contentShape(Rectangle())
@@ -1260,7 +1289,7 @@ struct DashedRowButton: View {
         .opacity(isEnabled ? 1 : 0.45)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.7))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -1290,11 +1319,24 @@ struct BottomBar: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
             }
-            Button(store.updateTitle) { store.checkForUpdates() }
-                .buttonStyle(.link)
-                .font(.system(size: 12))
-                .pointingHand()
-                .disabled(!store.updateEnabled)
+            // 图标按钮：检查中转圈，有新版换成下载圈，平时是回形箭头；文字挪到 tooltip。
+            Button { store.checkForUpdates() } label: {
+                if store.updateChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: store.updateAvailable ? "arrow.down.circle" : "arrow.clockwise")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(store.updateAvailable ? Color.primary : Color.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            .pointingHand()
+            .disabled(!store.updateEnabled)
+            .help(store.updateTitle)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
