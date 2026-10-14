@@ -13,13 +13,14 @@ const defaults = [{ id: "gpt-6-astra", displayName: "", context: 272, inputModal
 
 test("model validation accepts IDs with default context and rejects invalid rows", () => {
   assert.deepEqual(validateModels([{ id: " alias-id " }]),
-    [{ id: "alias-id", displayName: "", context: 272, inputModalities: ["text", "image"] }]);
+    [{ id: "alias-id", displayName: "alias-id", context: 272, inputModalities: ["text", "image"] }],
+    "没填显示名就存模型 ID");
   assert.deepEqual(validateModels([{ id: "alias-id", displayName: " 旧名称 " }]),
     [{ id: "alias-id", displayName: "旧名称", context: 272, inputModalities: ["text", "image"] }]);
   assert.deepEqual(validateModels([{ id: "x", context: " 1000 " }]),
-    [{ id: "x", displayName: "", context: 1000, inputModalities: ["text", "image"] }]);
+    [{ id: "x", displayName: "x", context: 1000, inputModalities: ["text", "image"] }]);
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["image"] }]),
-    [{ id: "x", displayName: "", context: 272, inputModalities: ["image"] }]);
+    [{ id: "x", displayName: "x", context: 272, inputModalities: ["image"] }]);
   // 勾了两次的输入类型去重，顺序按面板勾选顺序。
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["text", "text"] }])
     .at(0).inputModalities, ["text"]);
@@ -93,7 +94,10 @@ test("catalog keeps the bundled display name and applies panel display names", (
   const kept = buildCatalog(bundled, [
     { id: "gpt-6-astra", displayName: "", context: 272, inputModalities: ["text", "image"] },
   ]);
-  assert.equal(kept.models[0].display_name, "GPT-6-Astra", "面板没填显示名称时保留官方名字");
+  assert.equal(kept.models[0].display_name, "GPT-6-Astra", "直接把空名字交给 buildCatalog 时保留官方名字");
+  // 面板链路先过 validateModels：留空会落成模型 ID，重名时以面板的为准。
+  const chained = buildCatalog(bundled, validateModels([{ id: "gpt-6-astra" }]));
+  assert.equal(chained.models[0].display_name, "gpt-6-astra");
 });
 
 test("catalog cleanup only touches the plugin-managed catalog", () => {

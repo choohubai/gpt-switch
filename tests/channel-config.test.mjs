@@ -26,8 +26,10 @@ const CONFIG = [
   "",
 ].join("\n");
 
-/// validateChannels 会把模型补成面板保存后的完整形状，断言里用它对齐。
-const model = (over = {}) => ({ displayName: "", inputModalities: ["text", "image"], ...over });
+/// validateChannels 会把模型补成面板保存后的完整形状（没填显示名就落成模型 ID），断言里用它对齐。
+const model = (over = {}) => ({
+  displayName: String(over.id ?? ""), inputModalities: ["text", "image"], ...over,
+});
 
 const channel = (over = {}) => ({
   id: "relay", name: "Relay", baseUrl: "https://relay.example/v1",
@@ -409,7 +411,7 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
     { id: "glm-5.3" },
     { id: "long-name" },
     { id: "control-name" },
-  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；存不进去的显示名不要");
+  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；名字缺失或存不进去就不填，保存时统一兜底");
 
   const mapped = await withFetch(async () => listing({
     models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },

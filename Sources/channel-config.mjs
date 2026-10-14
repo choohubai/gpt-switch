@@ -500,7 +500,8 @@ const readModelListing = (body) => {
     const id = firstText(key, entry.id);
     if (!id || id.length > MAX_LABEL_LENGTH || hasControlChars(id) || seen.has(id)) continue;
     seen.add(id);
-    // 面板按同一套规则校验显示名，先筛掉存不进去的值，别让保存时才报错。
+    // 面板按同一套规则校验显示名，先筛掉存不进去的值，别让保存时才报错。端点没给名字就留空，
+    // 空名字在保存时由 validateModels 统一落成模型 ID。
     const name = firstText(entry.name, entry.display_name, entry.displayName);
     const displayName = name && name.length <= MAX_LABEL_LENGTH && !hasControlChars(name) ? name : undefined;
     // 面板里的窗口单位是 k，端点给的是 token；1 到 10000k 之外的值按边界夹住。
@@ -508,7 +509,7 @@ const readModelListing = (body) => {
       entry.max_input_tokens, entry.limit?.context);
     models.push({
       id,
-      ...(displayName && displayName !== id ? { displayName } : {}),
+      ...(displayName ? { displayName } : {}),
       ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
     });
   }

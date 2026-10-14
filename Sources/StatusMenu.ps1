@@ -59,6 +59,7 @@ $script:fetchingModels = $false
 $script:discoveredModels = @()
 $script:discoveredSelection = @{}
 $script:discovering = $false
+$script:modelSizeTexts = @()
 
 function Send-Request([hashtable]$Request) {
   $stdout.WriteLine(($Request | ConvertTo-Json -Compress -Depth 6))
@@ -906,6 +907,7 @@ function New-ModelBox([hashtable]$Tag, [string]$Text, [double]$Width) {
 function Rebuild-Rows {
   $models = Get-ActiveModels
   $script:rendering = $true
+  $script:modelSizeTexts = @()
   $rowsPanel.Children.Clear()
   for ($index = 0; $index -lt $models.Count; $index++) {
     $model = $models[$index]
@@ -939,6 +941,11 @@ function Rebuild-Rows {
     $idBox.HorizontalAlignment = "Stretch"
     [void]$content.Children.Add((New-ModelFieldBlock "模型 ID" @($idBox)))
 
+    # 客户端按模型 ID 发请求、按显示名称渲染选择器：名字只影响列表里怎么显示。
+    $nameBox = New-ModelBox @{ index = $index; field = "displayName" } ([string]$model.displayName) 300
+    $nameBox.HorizontalAlignment = "Stretch"
+    [void]$content.Children.Add((New-ModelFieldBlock "显示名称" @($nameBox)))
+
     $contextBox = New-ModelBox @{ index = $index; field = "context" } ([string]$model.context) 148
     $contextBox.Margin = "0,0,0,0"
     $contextBlock = New-ModelFieldBlock "上下文窗口（k）" @($contextBox)
@@ -949,6 +956,7 @@ function Rebuild-Rows {
     $sizeText.VerticalAlignment = "Bottom"
     $sizeText.Margin = "10,0,0,5"
     $sizeText.Tag = $index
+    $script:modelSizeTexts += $sizeText
     $contextRow = New-Object System.Windows.Controls.StackPanel
     $contextRow.Orientation = "Horizontal"
     [void]$contextRow.Children.Add($contextBlock)
@@ -996,10 +1004,10 @@ function Update-Model($Sender, [string]$Field) {
       $value = 0
       if ([int]::TryParse($Sender.Text.Trim(), [ref]$value) -and $value -ge 1) {
         $channel.models[$index].context = $value
-        # 卡片最后一行是输入类型，会话大小在倒数第二行。
-        $card = $rowsPanel.Children[$index]
-        $sizeText = $card.Child.Children[2].Children[1]
-        $sizeText.Text = "约 $(Convert-Context $value)"
+        # 「约 Nk」按行下标存着：卡片里的字段会增减，按 Children 下标找会错位。
+        if ($index -lt $script:modelSizeTexts.Count) {
+          $script:modelSizeTexts[$index].Text = "约 $(Convert-Context $value)"
+        }
       }
     }
   }

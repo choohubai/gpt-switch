@@ -16,7 +16,7 @@ import {
   modelProviderFromToml, modelFromToml, channelDefaultModel,
 } from "./channel-config.mjs";
 
-const VERSION = "0.1.42";
+const VERSION = "0.1.43";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";

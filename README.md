@@ -59,7 +59,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 - 密钥：写进 `~/.codex/auth.json` 的 `OPENAI_API_KEY`；面板里默认打码，点右边的眼睛图标可查看。
 - 请求头名 / 请求头值：可以留空；填了就写进 `model_providers.<渠道>.http_headers`，用来兼容需要自定义请求头的中转。
 
-下面是这个渠道的模型列表，每个模型一张卡片：模型 ID、显示名称（留空就用模型 ID）、上下文窗口（k）和输入类型。不同渠道的模型列表互相独立，启用渠道时整份列表一起换，卡片右上角的垃圾桶删除该模型。
+下面是这个渠道的模型列表，每个模型一张卡片：模型 ID、显示名称（留空就在保存时按模型 ID 存）、上下文窗口（k）和输入类型。不同渠道的模型列表互相独立，启用渠道时整份列表一起换，卡片右上角的垃圾桶删除该模型。
 
 写进模型目录时，渠道模型一律按「非 Responses Lite」的第三方形状声明：`use_responses_lite = false`、`tool_mode = null`、`shell_type = "shell_command"`、`web_search_tool_type = "text"`、`supports_parallel_tool_calls = true`，并且不带 Fast 这类加速档，取值照 DeepSeek 官方 Codex 接入文档里的 `models.json`。照抄内置模型模板（GPT-5.x 那批是 Lite 形状）会让上游收到它不认识的请求：工具声明被塞进 `input[0].additional_tools`、工具调用改发 `custom_tool_call`、还多一个内部请求头，上游不认时模型只能把工具调用当文本吐出来。
 

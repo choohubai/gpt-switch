@@ -52,7 +52,8 @@ export const validateModels = (models) => {
     ids.add(id);
     return {
       id,
-      displayName: parseDisplayName(model.displayName, index),
+      // 面板没填显示名就存模型 ID：客户端按显示名渲染选择器，留空会在列表里变成「自定义」。
+      displayName: parseDisplayName(model.displayName, index) || id,
       context: parseContextK(model.context, index),
       inputModalities: parseModalities(model.inputModalities, index),
     };

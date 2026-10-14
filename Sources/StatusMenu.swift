@@ -1120,6 +1120,8 @@ struct ModelCard: View {
                 .disabled(store.busy)
             }
             LabeledField(title: "模型 ID", placeholder: "gpt-6-astra", text: model.id)
+            // 客户端按模型 ID 发请求、按显示名称渲染选择器：名字只影响列表里怎么显示。
+            LabeledField(title: "显示名称", placeholder: "留空就用模型 ID", text: model.displayName)
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("上下文窗口（k）")
