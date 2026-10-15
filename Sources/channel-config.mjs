@@ -76,6 +76,8 @@ export const validateChannels = (value) => {
       apiKey,
       headerName,
       headerValue,
+      // 渠道可以单独启用/禁用，新建的缺省是启用；选择器和转发都只看这个开关。
+      enabled: channel?.enabled !== false,
       models: validateModels(channel?.models ?? []),
     };
   });
@@ -141,10 +143,13 @@ const GLOBAL_KEYS = [
 
 /// 客户端把「当前默认模型」记在顶层 model 里。切换渠道后这个模型要是落不到新渠道的模型列表里，客户端的
 /// 选择器就只能显示「自定义」；这种时候换成渠道里的第一个模型。原来那行照旧记进 globalKeys，还原时放回去。
-export const channelDefaultModel = (text, channel) => {
+export const channelDefaultModel = (text, channel, knownModels = null) => {
   const ids = channel.models.map((entry) => entry.id);
   if (!ids.length) return null;
-  return ids.includes(modelFromToml(text)) ? null : ids[0];
+  const current = modelFromToml(text);
+  if (ids.includes(current)) return null;
+  // 走本地转发时选择器里还有别的渠道的模型（`gpts-<渠道>/<模型>`）：那也是用户选好的，别改掉。
+  return knownModels?.includes(current) ? null : ids[0];
 };
 
 const providerHeader = (id) => {
@@ -210,18 +215,45 @@ export const readProviderTable = (text, id) => {
   return table;
 };
 
-export const buildProviderBlock = (channel, id = channel.id) => {
+/// baseUrl 缺省就是渠道自己的地址；走本地转发时传转发端口，请求头改由转发层逐渠道补，
+/// 写进 provider 段会让所有渠道共用同一份。
+export const buildProviderBlock = (channel, id = channel.id, baseUrl = channel.baseUrl) => {
   const lines = [
     `[model_providers.${id}]`,
     `name = ${tomlString(channel.name || channel.id)}`,
-    `base_url = ${tomlString(channel.baseUrl)}`,
+    `base_url = ${tomlString(baseUrl)}`,
     'wire_api = "responses"',
     "requires_openai_auth = true",
   ];
-  if (channel.headerName && channel.headerValue) {
+  if (baseUrl === channel.baseUrl && channel.headerName && channel.headerValue) {
     lines.push(`http_headers = { ${tomlString(channel.headerName)} = ${tomlString(channel.headerValue)} }`);
   }
   return `${lines.join("\n")}\n`;
+};
+
+/// 上次启用渠道时写进 config.toml 的本地转发端口。
+/// 插件的客户端只认配置里那个端口，重启后要优先沿用，不然它不会知道端口换了。
+/// 渠道地址里的本地转发端口。只认 IPv4 回环：插件自己写的就是这个形状。
+const localProxyPortOf = (baseUrl) => {
+  const match = /^http:\/\/127\.0\.0\.1:(\d{1,5})(?=\/|$)/.exec(String(baseUrl ?? ""));
+  if (!match) return 0;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0;
+};
+
+/// 上次启用渠道时写进 config.toml 的转发端口。
+///
+/// 只认我们自己改写过的那个 provider 段。config.toml 里还可能有用户自己的本地服务
+/// （Ollama 的 11434、LM Studio 的 1234），按全文取第一处 `127.0.0.1` 会认成我们的端口：
+/// 要么客户端继续指着旧端口、要么转发服务把别人要用的端口占了。
+export const recordedProxyPort = ({ userConfigPath, recordPath }) => {
+  const id = readRecord(recordPath)?.appliedId;
+  if (typeof id !== "string" || !ID_PATTERN.test(id)) return 0;
+  try {
+    return localProxyPortOf(readProviderTable(fs.readFileSync(userConfigPath, "utf8"), id)?.base_url);
+  } catch {
+    return 0;
+  }
 };
 
 const replaceProviderTable = (text, id, block) => {
@@ -233,8 +265,8 @@ const replaceProviderTable = (text, id, block) => {
   return `${text.slice(0, span.start)}${block}${text.slice(span.end)}`;
 };
 
-export const upsertProviderTable = (text, channel) =>
-  replaceProviderTable(text, channel.id, buildProviderBlock(channel));
+export const upsertProviderTable = (text, channel, baseUrl = channel.baseUrl) =>
+  replaceProviderTable(text, channel.id, buildProviderBlock(channel, channel.id, baseUrl));
 
 export const removeProviderTable = (text, id) => {
   const span = providerSpan(text, id);
@@ -280,8 +312,34 @@ const providerIdsToRepoint = ({ channel, channelIds, record }) => {
   return ids;
 };
 
+/// 转发端口换了以后，把配置里我们写过的 provider 段重新指到新地址。
+///
+/// 客户端只认 config.toml 里的 `base_url`：转发服务换端口后不改这里，它的请求会一直发到
+/// 没人监听的旧端口，直到用户手动点一次重启。只动 `base_url` 那一行——全局键、密钥和其它
+/// provider 键都不碰，这是修地址，不是重新应用一次渠道。
+export const repointProxyUrl = ({ userConfigPath, recordPath, baseUrl }) => {
+  if (!baseUrl) return false;
+  const record = readRecord(recordPath);
+  if (!record) return false;
+  let text = fs.readFileSync(userConfigPath, "utf8");
+  let changed = false;
+  for (const id of providerIdsToRepoint({ channel: { id: record.appliedId }, channelIds: [], record })) {
+    const span = providerSpan(text, id);
+    if (!span) continue;
+    const before = text.slice(span.start, span.end);
+    const after = before.replace(/^([ \t]*base_url[ \t]*=[ \t]*)["'][^"']*["']/m, `$1${tomlString(baseUrl)}`);
+    if (after === before) continue;
+    text = text.slice(0, span.start) + after + text.slice(span.end);
+    changed = true;
+  }
+  if (changed) atomicWrite(userConfigPath, text);
+  return changed;
+};
+
 /// 切换渠道：密钥进 auth.json，地址和 provider 段进 config.toml，原值记下来供还原。
-export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userConfigPath, recordPath }) => {
+export const applyChannelToCodex = ({
+  channel, channelIds = [], authPath, userConfigPath, recordPath, proxyUrl = "", knownModels = null,
+}) => {
   if (!channel.baseUrl) throw new Error(`渠道「${channel.name}」还没填地址`);
   const record = readRecord(recordPath) ?? { auth: null, modelProvider: null, tablesAdded: [] };
   if (!Array.isArray(record.tablesAdded)) record.tablesAdded = [];
@@ -299,7 +357,7 @@ export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userCo
     };
   }
   if (!record.globalKeys || typeof record.globalKeys !== "object") record.globalKeys = {};
-  const defaultModel = channelDefaultModel(text, channel);
+  const defaultModel = channelDefaultModel(text, channel, knownModels);
   const globalKeys = defaultModel
     ? [...GLOBAL_KEYS, { name: "model", value: tomlString(defaultModel) }]
     : GLOBAL_KEYS;
@@ -328,7 +386,7 @@ export const applyChannelToCodex = ({ channel, channelIds = [], authPath, userCo
         record.tablesAdded.push(id);
       }
     }
-    text = replaceProviderTable(text, id, buildProviderBlock(channel, id));
+    text = replaceProviderTable(text, id, buildProviderBlock(channel, id, proxyUrl || channel.baseUrl));
   }
   record.appliedId = channel.id;
   // 备份先落盘再动 auth.json 和 config.toml：中间崩掉也还留得住还原信息。
@@ -456,10 +514,11 @@ export const loadChannelState = (configPath, importOptions) => {
   }
 };
 
+/// 面板送来的是输入框原文（可能带首尾空格），而落盘前会 trim 成合法的渠道 ID：
+/// 这里按 trim 后的值比，改 ID 之后「运行中」那条才不会掉。
 const keepCurrent = (channels, requested, previous) => {
-  if (channels.some((channel) => channel.id === requested)) return requested;
-  if (channels.some((channel) => channel.id === previous)) return previous;
-  return null;
+  const find = (value) => channels.find((channel) => channel.id === (typeof value === "string" ? value.trim() : value));
+  return find(requested)?.id ?? find(previous)?.id ?? null;
 };
 
 const positiveInt = (...candidates) => {
@@ -602,7 +661,7 @@ export const handlePanelRequest = async (request, {
       } catch {
         // 还没有渠道文件时只清 Codex 侧。
       }
-      if (restart) await restart([]);
+      if (restart) await restart();
       return { ok: true, cleared: true, restarted: true, channels: kept.channels, current: null };
     }
     if (request?.action !== "save" && request?.action !== "switch") throw new Error("无效的面板操作");
@@ -615,18 +674,25 @@ export const handlePanelRequest = async (request, {
       previous = null;
     }
     let current = keepCurrent(channels, request.current, previous);
+    const enabledChannels = channels.filter((channel) => channel.enabled !== false);
+    // 当前这条被禁用或删掉时换成第一条启用的：留着它会让选择器一个裸模型名都没有，
+    // 旧会话的裸名请求也会被转发层丢给别的渠道。本来就没有当前渠道（还没应用/刚还原）时不动。
+    if (current && !enabledChannels.some((channel) => channel.id === current)) {
+      current = enabledChannels[0]?.id ?? current;
+    }
     if (request.action === "switch") {
-      if (!channels.some((channel) => channel.id === request.current)) throw new Error("请选择要切换的渠道");
-      current = request.current;
+      // 「重启」是把整份配置和全部启用渠道的模型重新写一遍，不针对某一条渠道：优先沿用当前这条，
+      // 它被禁用了或者面板没给认得出的渠道时，换成第一条启用的。
+      current = (enabledChannels.find((channel) => channel.id === current) ?? enabledChannels[0] ?? channels[0])?.id ?? null;
     }
     savedState = writeChannelState(configPath, { channels, current });
     if (request.action === "save") {
       return { ok: true, saved: true, channels: savedState.channels, current: savedState.current };
     }
     const active = savedState.channels.find((channel) => channel.id === savedState.current);
-    if (applyCodex) await applyCodex(active, savedState.channels.map((item) => item.id));
-    if (applyCatalog) await applyCatalog(active.models);
-    if (request.restart && restart) await restart(active.models);
+    if (active && applyCodex) await applyCodex(active, savedState.channels.map((item) => item.id));
+    if (active && applyCatalog) await applyCatalog(active.models);
+    if (request.restart && restart) await restart();
     return {
       ok: true, saved: true, restarted: request.restart,
       channels: savedState.channels, current: savedState.current,

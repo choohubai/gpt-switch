@@ -171,10 +171,11 @@ generate_release_notes() {
     printf '# GPT Switch %s\n\n' "$version"
     printf '> 构建提交：`%s`。\n\n' "$commit"
     printf '## 更新内容\n\n'
-    printf '%s\n' '- 在模型配置面板里维护模型 ID 与上下文窗口（单位 k），保存后写入 Codex 模型目录。'
-    printf '%s\n' '- 通过本机 CDP 把自定义模型注入模型选择器，选中后按该模型 ID 发起请求。'
-    printf '%s\n' '- Windows 版提供桌面面板（模型列表、保存、保存并重启、清空并重启、检查更新），安装包不再内置 Node.js。'
-    printf '%s\n' '- macOS 版继续使用菜单栏面板，DMG 与 Windows 安装包一起发布。'
+    printf '%s\n' '- 面板里维护多个渠道（地址、密钥、自定义请求头、各自的模型列表），每条渠道单独启用或禁用，多个渠道可以同时启用。'
+    printf '%s\n' '- 请求走本机 127.0.0.1 上的转发服务，按模型 ID 送回所属渠道，换渠道不用改客户端指向。'
+    printf '%s\n' '- 模型选择器按渠道分组折叠，只列插件里配置的渠道模型；同一个模型 ID 出现在多个渠道时各算一组。'
+    printf '%s\n' '- 右上角「重启 ChatGPT」把配置写进客户端；左下角「初始化配置」还原插件写过的配置并清理模型目录，渠道列表保留。'
+    printf '%s\n' '- macOS 菜单栏面板与 Windows 桌面面板行为一致，DMG 与 Windows 安装包一起发布。'
     printf '\n## 模型配置\n\n'
     printf '%s\n' '`id` 是客户端使用的模型标识，`context` 是上下文窗口（单位 k，1000k = 1M）。'
   } > "$output"

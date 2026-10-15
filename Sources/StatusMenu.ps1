@@ -52,10 +52,10 @@ $script:checkingUpdate = $false
 $script:quitting = $false
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
-$script:enablingIndex = -1
 $script:deleteKind = ""
 $script:deleteIndex = -1
 $script:fetchingModels = $false
+$script:editingCurrent = $false
 $script:discoveredModels = @()
 $script:discoveredSelection = @{}
 $script:discovering = $false
@@ -260,11 +260,11 @@ function Convert-Context([int]$k) {
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0">
           <TextBlock Text="渠道" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
-          <TextBlock Text="点「启用」立即写进 ChatGPT 配置并重启；改完当前渠道点右上角「重启」生效"
+          <TextBlock Text="渠道可以单独启用/禁用，开关立刻生效；点右上角「重启 ChatGPT」把配置写进 ChatGPT"
                      FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
         </StackPanel>
         <!-- 「重启生效」原来是当前渠道那行上的按钮；它是全局动作，挪到这里只留一个入口。 -->
-        <Button x:Name="RestartButton" Grid.Column="1" Style="{StaticResource Pill}" Content="重启"
+        <Button x:Name="RestartButton" Grid.Column="1" Style="{StaticResource Pill}" Content="重启 ChatGPT"
                 VerticalAlignment="Top"/>
       </Grid>
       <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
@@ -378,7 +378,7 @@ function Convert-Context([int]$k) {
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <Button x:Name="ClearButton" Grid.Column="0" Style="{StaticResource Link}" Content="还原 ChatGPT 配置并重启"
+      <Button x:Name="ClearButton" Grid.Column="0" Style="{StaticResource Link}" Content="初始化配置"
               VerticalAlignment="Center" Margin="0,0,12,0"/>
       <TextBlock x:Name="Feedback" Grid.Column="1" FontSize="13" Foreground="#656667"
                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,12,0"/>
@@ -586,11 +586,10 @@ function Update-ChannelList {
     $channelPanel.Children.Clear()
     for ($index = 0; $index -lt $script:channels.Count; $index++) {
       $channel = $script:channels[$index]
-      $isCurrent = $script:currentChannelId -and [string]$channel.id -eq $script:currentChannelId
       $border = New-Object System.Windows.Controls.Border
       $border.BorderThickness = "1"
-      $border.BorderBrush = if ($isCurrent) { "#212327" } else { "#E4E4E7" }
-      $border.Background = if ($isCurrent) { "#F4F4F5" } else { "#FFFFFF" }
+      $border.BorderBrush = "#E4E4E7"
+      $border.Background = "#FFFFFF"
       $border.CornerRadius = "12"
       $border.Padding = "18,0"
       $border.Margin = "0,0,0,10"
@@ -621,53 +620,42 @@ function Update-ChannelList {
       [void]$texts.Children.Add($idText)
       [void]$texts.Children.Add($urlText)
 
-      # 当前渠道显示状态文字，其余渠道直接显示「启用」；两者都带按钮：
-      # 「保存」只写渠道文件，当前渠道也得有入口把改动写进 ChatGPT 并重启。
+      # 每条渠道一个开关：禁用只影响这一条，别的渠道照常用。
       $trailing = New-Object System.Windows.Controls.StackPanel
       $trailing.Orientation = "Horizontal"
       $trailing.VerticalAlignment = "Center"
-      if ($isCurrent) {
-        $dot = New-Object System.Windows.Controls.Ellipse
-        $dot.Width = 6
-        $dot.Height = 6
-        $dot.Fill = "#212327"
-        $dot.Margin = "0,0,6,0"
-        $dot.VerticalAlignment = "Center"
-        $statusText = New-Object System.Windows.Controls.TextBlock
-        $statusText.Text = "使用中"
-        $statusText.FontSize = 13
-        $statusText.FontWeight = "Medium"
-        $statusText.Foreground = "#212327"
-        $statusText.VerticalAlignment = "Center"
-        [void]$trailing.Children.Add($dot)
-        [void]$trailing.Children.Add($statusText)
-      }
-      # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
-      if (-not $isCurrent) {
-        $switchButton = New-Object System.Windows.Controls.Button
-        $switchButton.Style = $window.FindResource("Pill")
-        $switchButton.Content = if ($index -eq $script:enablingIndex) { "启用中" } else { "启用" }
-        $switchButton.Tag = $index
-        $switchButton.Add_Click({
-          param($sender, $eventArgs)
-          $eventArgs.Handled = $true
-          if ($script:busy) { return }
-          $target = [int]$sender.Tag
-          if ($target -lt 0 -or $target -ge $script:channels.Count) { return }
-          # 点下去就会重启客户端，先说清楚再动手。
-          $answer = [System.Windows.MessageBox]::Show(
-            $window,
-            "会把它写进 ChatGPT 配置并更新模型目录；客户端只在启动时读配置，重启后才生效。",
-            "启用「$(Get-ChannelLabel $script:channels[$target])」会重启 ChatGPT",
-            "OKCancel", "Warning")
-          if ($answer -ne "OK") { return }
-          $script:channelIndex = $target
-          # 重启要等一会儿：这一行先显示「启用中」，返回后由 Receive-Response 清掉。
-          $script:enablingIndex = $target
-          Submit "switch"
-        })
-        [void]$trailing.Children.Add($switchButton)
-      }
+      $isEnabled = $channel.enabled -ne $false
+      $statusText = New-Object System.Windows.Controls.TextBlock
+      $statusText.Text = if ($isEnabled) { "已启用" } else { "已禁用" }
+      $statusText.FontSize = 13
+      $statusText.FontWeight = "Medium"
+      $statusText.Foreground = if ($isEnabled) { "#212327" } else { "#8A8A8E" }
+      $statusText.VerticalAlignment = "Center"
+      [void]$trailing.Children.Add($statusText)
+      $toggleButton = New-Object System.Windows.Controls.Button
+      $toggleButton.Style = $window.FindResource("Pill")
+      $toggleButton.Content = if ($isEnabled) { "禁用" } else { "启用" }
+      $toggleButton.Tag = $index
+      $toggleButton.Margin = "10,0,0,0"
+      $toggleButton.Add_Click({
+        param($sender, $eventArgs)
+        $eventArgs.Handled = $true
+        if ($script:busy) { return }
+        $target = [int]$sender.Tag
+        if ($target -lt 0 -or $target -ge $script:channels.Count) { return }
+        # 单条渠道的启用/禁用：只翻这一条的开关并落盘，不碰别的渠道，也不重启客户端。
+        # 整份渠道列表一起校验，别的渠道有问题时这一条也会被拒：先留一份原文，存盘失败退回原样。
+        $script:pendingDeleteRestore = Copy-Channels $script:channels
+        $script:channels[$target].enabled = $script:channels[$target].enabled -eq $false
+        if ($script:channels[$target].enabled) {
+          $script:pendingDeleteNote = "已启用渠道「$([string]$script:channels[$target].id)」"
+          Submit "save" "正在启用渠道…"
+        } else {
+          $script:pendingDeleteNote = "已禁用渠道「$([string]$script:channels[$target].id)」"
+          Submit "save" "正在禁用渠道…"
+        }
+      })
+      [void]$trailing.Children.Add($toggleButton)
 
       [System.Windows.Controls.Grid]::SetColumn($texts, 0)
       [System.Windows.Controls.Grid]::SetColumn($trailing, 1)
@@ -703,11 +691,6 @@ function Update-ChannelList {
       $deleteButton.ToolTip = "删除渠道"
       $deleteButton.Tag = $index
       $deleteButton.Margin = "4,0,0,0"
-      # 使用中的渠道不能删：先启用别的渠道。
-      if ($isCurrent) {
-        $deleteButton.IsEnabled = $false
-        $deleteButton.ToolTip = "使用中的渠道不能删除：先启用别的渠道"
-      }
       $deleteButton.Add_Click({
         param($sender, $eventArgs)
         $eventArgs.Handled = $true
@@ -727,6 +710,8 @@ function Update-ChannelList {
 function Show-List-Page {
   $listPage.Visibility = "Visible"
   $detailPage.Visibility = "Collapsed"
+  # 离开编辑页这个标记就不成立了：列表上的动作（删渠道等）不能拿它去改「运行中」是谁。
+  $script:editingCurrent = $false
   # 回到列表就等于离开编辑页，编辑页的未保存提示不能挂到这里。
   Set-Feedback ""
   Update-ChannelList
@@ -736,6 +721,10 @@ function Show-List-Page {
 function Show-Detail-Page {
   $listPage.Visibility = "Collapsed"
   $detailPage.Visibility = "Visible"
+  # 进编辑页这一刻记下「这条是不是正在运行的那条」：后面把 Provider ID 改掉之后就比不出来了。
+  $active = Get-ActiveChannel
+  $script:editingCurrent = $null -ne $active -and -not [string]::IsNullOrWhiteSpace([string]$active.id) -and `
+    [string]$active.id -eq [string]$script:currentChannelId
   Update-ChannelFields
   Rebuild-Rows
   Update-Controls
@@ -746,18 +735,17 @@ function Update-Controls {
   $models = Get-ActiveModels
   $addButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   $addChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -lt 50
-  $editingCurrent = $hasChannel -and [string](Get-ActiveChannel).id -eq [string]$script:currentChannelId
-  $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel -and -not $editingCurrent
-  $deleteChannelButton.ToolTip = if ($editingCurrent) { "使用中的渠道不能删除：先启用别的渠道" } else { "删除渠道" }
+  $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
+  $deleteChannelButton.ToolTip = "删除渠道"
   $backButton.IsEnabled = -not $script:busy
   foreach ($field in @($channelIdField, $channelBaseUrlField, $channelApiKeyField, $channelHeaderNameField, $channelHeaderValueField)) {
     $field.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
-  $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and -not [string]::IsNullOrWhiteSpace([string]$script:currentChannelId)
+  $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -gt 0
   $dirty = Compare-Channels $script:channels $script:savedChannels
-  # 改的是正在用的渠道：存盘要顺手写进 ChatGPT 并重启，按钮就写清楚。
-  $saveButton.Content = if ($dirty -and $editingCurrent) { "保存并重启" } else { "保存" }
+  # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事，按钮文案不再跟着变。
+  $saveButton.Content = "保存"
   $saveButton.IsEnabled = $script:loaded -and -not $script:busy -and $dirty
   # 没填地址就问不动端点，所以按钮跟着地址一起灰。
   $fetchModelsButton.Content = if ($script:fetchingModels) { "获取中…" } else { "获取可用模型" }
@@ -768,7 +756,7 @@ function Update-Controls {
 function Compare-Channels($Left, $Right) {
   if ($Left.Count -ne $Right.Count) { return $true }
   for ($index = 0; $index -lt $Left.Count; $index++) {
-    foreach ($field in @("id", "name", "baseUrl", "apiKey", "headerName", "headerValue")) {
+    foreach ($field in @("id", "name", "baseUrl", "apiKey", "headerName", "headerValue", "enabled")) {
       if ([string]$Left[$index].$field -ne [string]$Right[$index].$field) { return $true }
     }
     if (Compare-Models $Left[$index].models $Right[$index].models) { return $true }
@@ -1051,19 +1039,11 @@ function Get-ChannelLabel($Channel) {
   return "$name ($id)"
 }
 
-# 正在使用的渠道不能删：客户端那边还指着它，删完面板和 ChatGPT 就对不上了。
-function Test-CurrentChannel([int]$Index) {
-  if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return $false }
-  return -not [string]::IsNullOrWhiteSpace([string]$script:currentChannelId) -and `
-    [string]$script:channels[$Index].id -eq [string]$script:currentChannelId
-}
-
 # 列表页、编辑页和模型卡片的删除都先弹这张卡片，确认后才真正删。
 function Request-Delete([string]$Kind, [int]$Index) {
   if ($script:busy) { return }
   if ($Kind -eq "channel") {
     if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
-    if (Test-CurrentChannel $Index) { return }
     $label = Get-ChannelLabel $script:channels[$Index]
     $confirmTitle.Text = "删除 $label?"
     $confirmMessage.Text = "删除 $label 会移除其配置和存储的 API 密钥。"
@@ -1214,7 +1194,6 @@ function Remove-Model([int]$Index) {
 function Remove-Channel([int]$Index) {
   if ($script:busy) { return }
   if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
-  if (Test-CurrentChannel $Index) { return }
   $channel = $script:channels[$Index]
   $script:pendingDeleteRestore = Copy-Channels $script:channels
   $script:pendingDeleteNote = if ([string]::IsNullOrWhiteSpace([string]$channel.id)) { "已删除渠道" } else { "已删除渠道「$($channel.id)」" }
@@ -1232,6 +1211,8 @@ function Update-ChannelField([string]$Field, [string]$Value) {
   if ($script:rendering -or $script:busy) { return }
   $channel = Get-ActiveChannel
   if (-not $channel) { return }
+  # 渠道 ID 落盘前会被 trim，面板里也按 trim 后的值存：不然后台认不出「运行中」还是同一条。
+  if ($Field -eq "id") { $Value = $Value.Trim() }
   $channel[$Field] = $Value
   if ($Field -eq "id") {
     $pageTitle.Text = if ([string]::IsNullOrWhiteSpace($Value)) { "添加渠道" } else { $Value }
@@ -1263,7 +1244,6 @@ function Receive-Response($Response) {
     return
   }
   $script:busy = $false
-  $script:enablingIndex = -1
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
   if ($ok -or $Response.saved -eq $true -or $cleared) {
@@ -1279,6 +1259,7 @@ function Receive-Response($Response) {
           apiKey = [string]$_.apiKey
           headerName = [string]$_.headerName
           headerValue = [string]$_.headerValue
+          enabled = $_.enabled -ne $false
           models = @($_.models | ForEach-Object {
             @{
               id = [string]$_.id; displayName = [string]$_.displayName
@@ -1318,9 +1299,9 @@ function Receive-Response($Response) {
   } elseif ($cleared) {
     Set-Feedback "已清空并重启 ChatGPT"
   } elseif ($Response.restarted -eq $true) {
-    Set-Feedback "已启用渠道，ChatGPT 已重启"
+    Set-Feedback "配置已写入，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
-    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点列表里的「启用」才会生效" })
+    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点右上角「重启 ChatGPT」才会生效" })
   } else {
     Set-Feedback ""
   }
@@ -1368,23 +1349,23 @@ function Finish-UpdateCheck($Response) {
   $updateButton.IsEnabled = $true
 }
 
-function Submit([string]$Action, [string]$Note = "") {
+function Submit([string]$Action, [string]$Note = "", [string]$Current = "") {
   if (-not $script:loaded -or $script:busy) { return }
   $channel = Get-ActiveChannel
-  # 保存整份列表不需要当前渠道（删掉最后一个之后也要能存），只有切换渠道才必须有。
-  if ($Action -eq "switch" -and -not $channel) { return }
+  # 保存整份列表不需要当前渠道（删掉最后一个之后也要能存）；「重启」也一样，后台自己挑渠道。
   $script:busy = $true
-  Set-Feedback $(if ($Note) { $Note } elseif ($Action -eq "switch") { "正在启用渠道并重启 ChatGPT…" } else { "正在保存…" })
+  Set-Feedback $(if ($Note) { $Note } elseif ($Action -eq "switch") { "正在重启 ChatGPT…" } else { "正在保存…" })
   Rebuild-Rows
   Update-Controls
   Send-Request @{
     action = $Action
     restart = ($Action -eq "switch")
-    current = $(if ($Action -eq "switch") { [string]$channel.id } else { [string]$script:currentChannelId })
+    current = $(if ($Current) { $Current } else { [string]$script:currentChannelId })
     channels = @($script:channels | ForEach-Object {
       @{
         id = [string]$_.id; name = [string]$_.name; baseUrl = [string]$_.baseUrl
         apiKey = [string]$_.apiKey; headerName = [string]$_.headerName; headerValue = [string]$_.headerValue
+        enabled = $_.enabled -ne $false
         models = @($_.models | ForEach-Object {
           @{
             id = [string]$_.id; displayName = [string]$_.displayName
@@ -1412,12 +1393,10 @@ $addButton.Add_Click({
 
 $saveButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
+  # 保存只写渠道列表：写进 ChatGPT 是右上角「重启」的事。改的是正在用的那条时 current
+  # 要跟着新 ID 走，否则把渠道 ID 改掉之后「运行中」就掉了。
   $channel = Get-ActiveChannel
-  # 改的是正在用的渠道：存盘后还得写进 ChatGPT 才生效，一步做完。
-  if ($null -ne $channel -and [string]$channel.id -eq [string]$script:currentChannelId) {
-    Submit "switch"
-    return
-  }
+  if ($script:editingCurrent -and $null -ne $channel) { Submit "save" "" ([string]$channel.id); return }
   Submit "save"
 })
 
@@ -1449,7 +1428,7 @@ $addChannelButton.Add_Click({
   if (-not $script:loaded -or $script:busy -or $script:channels.Count -ge 50) { return }
   $script:channels = @($script:channels) + @{
     id = ""; name = ""; baseUrl = ""; apiKey = ""
-    headerName = ""; headerValue = ""; models = @()
+        headerName = ""; headerValue = ""; enabled = $true; models = @()
   }
   $script:channelIndex = $script:channels.Count - 1
   Show-Detail-Page
@@ -1486,14 +1465,12 @@ $channelApiKeyField.Add_PasswordChanged({ Update-ChannelField "apiKey" $channelA
 $channelHeaderNameField.Add_TextChanged({ Update-ChannelField "headerName" $channelHeaderNameField.Text })
 $channelHeaderValueField.Add_TextChanged({ Update-ChannelField "headerValue" $channelHeaderValueField.Text })
 
-# 右上角「重启」：用正在使用的渠道重新写一遍配置再重启，和「启用」一样先问一句。
+# 右上角「重启」：重新写一遍 ChatGPT 配置和全部启用渠道的模型目录，先问一句再动手。
 $restartButton.Add_Click({
-  if (-not $script:loaded -or $script:busy) { return }
-  $channel = Get-ActiveChannel
-  if (-not $channel) { return }
+  if (-not $script:loaded -or $script:busy -or $script:channels.Count -eq 0) { return }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "会用「$(Get-ChannelLabel $channel)」重新写一遍 ChatGPT 配置，然后重启客户端。",
+    "会重新写入 ChatGPT 配置和全部启用渠道的模型目录，然后重启客户端。",
     "重启 ChatGPT？",
     "OKCancel", "Warning")
   if ($answer -ne "OK") { return }

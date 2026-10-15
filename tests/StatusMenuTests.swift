@@ -46,43 +46,61 @@ struct StatusMenuTests {
         assert(controller.window?.isVisible == false, "退出请求只关窗口，菜单栏进程要留着")
         assert(NSApp.activationPolicy() == .accessory, "关掉窗口就缩回菜单栏")
 
-        // 首页「启用」：存盘 + 切渠道 + 重启。
-        store.enableChannel(at: 1)
+        // 右上角「重启」：重新写一遍配置和全部渠道的模型目录，然后重启客户端。
+        store.requestRestart()
+        store.confirmRestart()
         assert(requests.last?["action"] as? String == "switch")
         assert(requests.last?["restart"] as? Bool == true)
-        assert(requests.last?["current"] as? String == "relay")
+        assert(requests.last?["current"] as? String == "OpenAI")
         store.apply(["ok": true, "saved": true, "restarted": true, "channels": [
             ["id": "OpenAI", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已启用渠道，ChatGPT 已重启")
+        assert(store.feedback == "配置已写入，ChatGPT 已重启")
 
-        // 「启用」会重启客户端，所以先弹一句：取消什么都不做，确认才发 switch。
-        store.requestEnable(at: 0)
-        assert(store.restartPromptText?.title == "启用「OpenAI」会重启 ChatGPT")
-        assert(store.restartPromptText?.confirm == "启用并重启")
+        // 「重启」会重启客户端，所以先弹一句：取消什么都不做，确认才发 switch。
+        store.requestRestart()
+        assert(store.restartPrompt)
         let sentBeforePrompt = requests.count
         store.cancelRestart()
-        assert(store.restartPromptText == nil)
+        assert(!store.restartPrompt)
         assert(requests.count == sentBeforePrompt, "取消不能发请求")
-        store.requestEnable(at: 0)
-        store.confirmRestart()
-        assert(store.restartPromptText == nil, "确认之后要收起提示")
-        assert(store.enablingIndex == 0, "等重启这段时间那一行要显示「启用中」")
-        assert(requests.last?["action"] as? String == "switch")
-        assert(requests.last?["restart"] as? Bool == true)
-        assert(requests.last?["current"] as? String == "OpenAI")
-        store.busy = false
-
-        // 右上角「重启」写的是正在使用的那条渠道，确认后才动手。
         store.requestRestart()
-        assert(store.restartPromptText?.title == "重启 ChatGPT？")
-        assert(store.restartPromptText?.message == "会用「relay」重新写一遍 ChatGPT 配置，然后重启客户端。")
         store.confirmRestart()
+        assert(!store.restartPrompt, "确认之后要收起提示")
         assert(requests.last?["action"] as? String == "switch")
         assert(requests.last?["restart"] as? Bool == true)
         assert(requests.last?["current"] as? String == "relay")
         store.busy = false
+
+        // 每条渠道一个启用开关：禁用只翻这一条并落盘，别的渠道不动，也不重启客户端。
+        store.showList()
+        assert(store.channels.allSatisfy { $0.enabled }, "刚读进来的渠道都是启用状态")
+        store.toggleChannel(at: 1)
+        assert(!store.channels[1].enabled, "点禁用只翻这一条")
+        assert(store.channels[0].enabled, "不能顺手把别的渠道也禁了")
+        assert(requests.last?["action"] as? String == "save")
+        assert(requests.last?["restart"] as? Bool == false, "开关渠道不重启客户端")
+        let toggled = (requests.last?["channels"] as? [[String: Any]])?.first { $0["id"] as? String == "relay" }
+        assert(toggled?["enabled"] as? Bool == false, "开关要跟着落盘")
+        store.busy = false
+        // 落盘成功：反馈说的是这条开关自己，别再提「点重启才生效」。
+        store.apply(["ok": true, "saved": true, "current": "relay", "channels": store.channels.map(\.payload)])
+        assert(store.feedback == "已禁用渠道「relay」")
+        // 整份渠道列表一起校验，别的渠道不合格（比如有条新渠道还没填 ID）这条也会被拒：要退回原样。
+        store.toggleChannel(at: 1)
+        assert(store.channels[1].enabled, "再点一次就启用回来")
+        store.busy = false
+        store.apply(["ok": false, "error": "渠道 ID 只能用字母数字、- 和 _"])
+        assert(!store.channels[1].enabled, "存盘失败要把开关退回上一次落盘的样子")
+        assert(store.feedback == "渠道 ID 只能用字母数字、- 和 _")
+        store.busy = false
+        store.toggleChannel(at: 1)
+        store.busy = false
+        store.apply(["ok": true, "saved": true, "current": "relay", "channels": store.channels.map(\.payload)])
+        store.addChannel()
+        assert(store.channels.last?.enabled == true, "新建渠道默认是启用")
+        store.requestLeaveEditor()
 
         // 进编辑页改模型：显示名称、窗口、输入类型都要落到渠道里。
         store.editChannel(at: 0)
@@ -124,25 +142,23 @@ struct StatusMenuTests {
                          "inputModalities": ["text", "image"]]]],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已保存，点列表里的「启用」才会生效")
+        assert(store.feedback == "已保存，点右上角「重启 ChatGPT」才会生效")
         assert(!store.isDirty)
 
-        // 改的是正在用的渠道：按钮写成「保存并重启」，点一下就是存盘 + 写进 ChatGPT + 重启。
+        // 改的是正在用的渠道也只存盘：写进 ChatGPT 是右上角「重启」的事，编辑完不重启客户端。
         store.showList()
         store.editChannel(at: 1)
         store.channels[1].baseUrl = "https://relay.example/v2"
-        assert(store.saveButtonTitle == "保存并重启", "当前渠道有改动时按钮要说明会重启")
         store.save()
-        assert(requests.last?["action"] as? String == "switch", "当前渠道保存要顺手写进 ChatGPT")
-        assert(requests.last?["restart"] as? Bool == true)
+        assert(requests.last?["action"] as? String == "save", "保存一律只写渠道列表")
+        assert(requests.last?["restart"] as? Bool == false, "保存不重启客户端")
         assert(requests.last?["current"] as? String == "relay")
-        store.apply(["ok": true, "saved": true, "restarted": true, "channels": [
+        store.apply(["ok": true, "saved": true, "channels": [
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v2", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已启用渠道，ChatGPT 已重启")
+        assert(store.feedback == "已保存，点右上角「重启 ChatGPT」才会生效")
         assert(!store.isDirty)
-        assert(store.saveButtonTitle == "保存", "存完不脏了，按钮回到「保存」")
 
         // 新增渠道进编辑页；删除立刻落盘并回列表页。
         store.showList()
@@ -192,10 +208,8 @@ struct StatusMenuTests {
 
         // 错误响应要落到反馈里，并解除 busy。
         store.busy = true
-        store.enablingIndex = 0
         store.apply(["ok": false, "error": "测试用失败"])
         assert(store.feedback == "测试用失败" && store.feedbackIsError && !store.busy)
-        assert(store.enablingIndex == nil, "启用失败要放回「启用」")
 
         // 返回列表直接丢弃没保存的改动，不弹确认框。
         store.editChannel(at: 0)
@@ -223,17 +237,15 @@ struct StatusMenuTests {
         store.addModel()
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.models.count == 1)
-        // 正在使用的渠道不能删：编辑页那个按钮禁用，直接调也不动。
+        // 没有「当前渠道不能删」这条限制：对着哪条点垃圾桶都先弹确认卡片。
         store.showList()
         store.editChannel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        assert(store.editingActiveChannel, "这条就是「使用中」")
-        store.deleteChannel(at: 1)
-        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        assert(store.channels.count == 2 && store.channels[1].id == "relay", "使用中的渠道删不掉")
-        assert(!store.busy, "挡下来就不该发请求")
+        assert(store.editingActiveChannel, "这条就是客户端当前指向的那条")
         store.requestDelete(at: 1)
-        assert(store.deletePrompt == nil, "使用中的渠道连删除确认卡片都不弹")
+        assert(store.deletePrompt == .channel(1), "当前指向的那条也能删，先弹确认")
+        store.cancelDelete()
+        assert(store.channels.count == 2 && !store.busy, "取消就什么都不做")
 
         // 删别的渠道：立刻落盘、并且回到列表页，不能停在编辑页等用户再点一次返回。
         store.editChannel(at: 0)
@@ -262,11 +274,13 @@ struct StatusMenuTests {
         assert(store.channels.count == 2, "存盘失败要把渠道放回去")
         assert(store.feedbackIsError)
 
-        // 列表页的垃圾桶：使用中的那条不能删，别的先弹确认卡片，取消不删，确认后走同一条删除 + 落盘。
+        // 列表页的垃圾桶：哪条都先弹确认卡片，取消不删，确认后走同一条删除 + 落盘。
         store.showList()
         store.channels[1].id = "spare"
         store.requestDelete(at: 0)
-        assert(store.deletePrompt == nil, "使用中的渠道不能删")
+        assert(store.deletePrompt == .channel(0), "客户端当前指向的那条也能删")
+        store.cancelDelete()
+        assert(store.channels.count == 2, "取消不能删掉")
         store.requestDelete(at: 1)
         assert(store.deletePrompt == .channel(1), "点垃圾桶要先确认")
         assert(store.deletePromptText?.title == "删除 spare?", "确认卡片要有标题")
@@ -311,7 +325,6 @@ struct StatusMenuTests {
         // 改的要不是当前渠道，当前渠道就不能被顺手改掉。
         store.editChannel(at: 0)
         store.channels[0].id = "choohub-2"
-        assert(store.saveButtonTitle == "保存", "改的不是当前渠道，不说重启")
         store.save()
         assert(requests.last?["action"] as? String == "save", "改别的渠道只存盘")
         assert(requests.last?["current"] as? String == "relay-2", "改别的渠道不能动当前渠道")

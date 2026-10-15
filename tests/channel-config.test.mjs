@@ -7,7 +7,7 @@ import {
   validateChannels, writeChannelState, readChannelState, loadChannelState,
   modelProviderFromToml, readProviderTable, upsertProviderTable, setModelProvider,
   applyChannelToCodex, restoreCodexConfig, importChannelsFromCodex, handlePanelRequest,
-  discoverChannelModels, modelFromToml,
+  discoverChannelModels, modelFromToml, recordedProxyPort, repointProxyUrl,
 } from "../Sources/channel-config.mjs";
 
 const CONFIG = [
@@ -33,7 +33,7 @@ const model = (over = {}) => ({
 
 const channel = (over = {}) => ({
   id: "relay", name: "Relay", baseUrl: "https://relay.example/v1",
-  apiKey: "sk-relay", headerName: "", headerValue: "",
+  apiKey: "sk-relay", headerName: "", headerValue: "", enabled: true,
   models: [model({ id: "m-one", context: 128 })],
   ...over,
 });
@@ -291,7 +291,8 @@ const panelOptions = (paths, over = {}) => {
     restoreCodex: () => { calls.restored += 1; },
     applyCatalog: (models) => { calls.catalogs.push(models); },
     clearCatalog: () => { calls.cleared += 1; },
-    restart: (models) => { calls.restarts.push(models); },
+    // 注入什么由渠道列表决定，所以这里记的是「重启那一刻 current 是谁」：注入器就按它判断。
+    restart: () => { calls.restarts.push(readChannelState(paths.configPath).current); },
     ...over,
   };
   return { options, calls };
@@ -328,11 +329,15 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.deepEqual(calls.repointed, [["a", "b"]], "切换要把渠道列表的 ID 一起交给写入");
   const expectedModels = [model({ id: "m-b", context: 64 })];
   assert.deepEqual(calls.catalogs, [expectedModels]);
-  assert.deepEqual(calls.restarts, [expectedModels]);
+  assert.deepEqual(calls.restarts, ["b"], "重启前 current 已经落盘：注入器按它决定注入哪些渠道的模型");
 
+  // 「重启」不针对某一条渠道：面板给的 current 认不出来时沿用上一条，再不然用第一条。
   const missing = await handlePanelRequest({ action: "switch", restart: true, channels, current: "nope" }, options);
-  assert.equal(missing.ok, false);
-  assert.match(missing.error, /请选择要切换的渠道/);
+  assert.equal(missing.ok, true);
+  assert.equal(missing.current, "b", "认不出就沿用上一次生效的那条");
+  const blank = await handlePanelRequest({ action: "switch", restart: true, channels, current: "" }, options);
+  assert.equal(blank.ok, true);
+  assert.equal(blank.current, "b");
   assert.equal((await handlePanelRequest({ action: "switch", restart: "yes", channels, current: "a" }, options)).ok, false);
 
   const failed = await handlePanelRequest({ action: "switch", restart: true, channels, current: "a" },
@@ -340,9 +345,19 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.equal(failed.ok, false);
   assert.equal(failed.saved, true);
   assert.match(failed.error, /配置已保存，但未能生效：测试用失败/);
+
+  // 面板送来的是输入框原文，可能带首尾空格：落盘的 ID 会 trim，比对时也要按 trim 后的值。
+  const renamed = [
+    channel({ id: "b-2 ", name: "B", models: [{ id: "m-b", context: 64 }] }),
+    channel({ id: "a", name: "A" }),
+  ];
+  const keep = await handlePanelRequest({ action: "save", restart: false, channels: renamed, current: "b-2 " }, options);
+  assert.equal(keep.ok, true);
+  assert.equal(keep.current, "b-2", "改了运行中渠道的 ID（带空格）之后「运行中」要跟着新 ID");
+  assert.equal(readChannelState(paths.configPath).current, "b-2");
 });
 
-test("panel clear restores codex config, keeps the channels and restarts empty", async (context) => {
+test("panel clear restores codex config, keeps the channels and restarts with no current", async (context) => {
   const paths = sandbox(context);
   const { options, calls } = panelOptions(paths);
   const channels = [channel({ id: "a", name: "A" })];
@@ -355,7 +370,7 @@ test("panel clear restores codex config, keeps the channels and restarts empty",
   assert.equal(cleared.channels.length, 1);
   assert.equal(calls.restored, 1);
   assert.equal(calls.cleared, 1);
-  assert.deepEqual(calls.restarts.at(-1), []);
+  assert.deepEqual(calls.restarts.at(-1), null, "没有当前渠道时注入器什么都不注入");
   assert.equal(readChannelState(paths.configPath).current, null);
 
   const failed = await handlePanelRequest({ action: "clear" },
@@ -536,4 +551,56 @@ test("switching picks the channel's first model when config has no model", (cont
   assert.match(fs.readFileSync(userConfigPath, "utf8"), /^model = "m-one"$/m);
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), "# user config\n", "用户没写过 model 就删掉");
+});
+
+test("recordedProxyPort only trusts the provider table we wrote", (context) => {
+  const { userConfigPath, recordPath } = sandbox(context);
+  // 用户自己的本地服务排在我们前面：全文取第一处 127.0.0.1 会认成我们的转发端口。
+  fs.writeFileSync(userConfigPath, [
+    "[model_providers.ollama]",
+    'base_url = "http://127.0.0.1:11434/v1"',
+    "",
+    "[model_providers.relay]",
+    'base_url = "http://127.0.0.1:47123/v1"',
+    "",
+  ].join("\n"));
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 0, "没有写入记录时当没配过");
+  fs.writeFileSync(recordPath, JSON.stringify({ appliedId: "relay" }));
+  assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 47123,
+    "只认我们自己那段 provider 的地址，不能拿 Ollama 的端口");
+  fs.writeFileSync(userConfigPath, '[model_providers.relay]\nbase_url = "https://relay.example/v1"\n');
+  assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 0, "直连渠道不算本地转发端口");
+});
+
+test("repointProxyUrl moves only base_url when the forward port changed", (context) => {
+  const { userConfigPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, [
+    'model = "m-one"',
+    'web_search = "disabled"',
+    "",
+    "[model_providers.ollama]",
+    'base_url = "http://127.0.0.1:11434/v1"',
+    "",
+    "[model_providers.relay]",
+    'name = "relay"',
+    'base_url = "http://127.0.0.1:47123/v1"',
+    'wire_api = "responses"',
+    "",
+    "[model_providers.old]",
+    'base_url = "http://127.0.0.1:47123/v1"',
+    "",
+  ].join("\n"));
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, JSON.stringify({ appliedId: "relay", tablesAdded: ["old"] }));
+  const baseUrl = "http://127.0.0.1:47124/v1";
+  assert.equal(repointProxyUrl({ userConfigPath, recordPath, baseUrl }), true);
+  const text = fs.readFileSync(userConfigPath, "utf8");
+  assert.equal(text.split(`base_url = "${baseUrl}"`).length - 1, 2, "我们写过的两段都改到新端口");
+  assert.match(text, /^model = "m-one"$/m, "全局键不动");
+  assert.match(text, /^wire_api = "responses"$/m, "段里别的键保留");
+  assert.match(text, /\[model_providers\.ollama\]\nbase_url = "http:\/\/127\.0\.0\.1:11434\/v1"/,
+    "用户自己的本地服务不许碰");
+  assert.equal(repointProxyUrl({ userConfigPath, recordPath, baseUrl }), false, "已经是新地址就不用再写一次");
+  assert.equal(repointProxyUrl({ userConfigPath, recordPath, baseUrl: "" }), false);
 });

@@ -13,10 +13,14 @@ import {
 } from "./model-config.mjs";
 import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
-  modelProviderFromToml, modelFromToml, channelDefaultModel,
+  modelProviderFromToml, modelFromToml, channelDefaultModel, recordedProxyPort, repointProxyUrl,
 } from "./channel-config.mjs";
+import {
+  startProxy, proxyBaseUrl, pickerModelsFromState, pickerGroupNameFromState,
+  pickerChannelNamesFromState, DEFAULT_PROXY_PORT, MODEL_PREFIX,
+} from "./proxy.mjs";
 
-const VERSION = "0.1.43";
+const VERSION = "0.1.44";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -41,6 +45,10 @@ const WINDOWS_PANEL_PATH = path.join(SCRIPT_DIR, "StatusMenu.ps1");
 const WINDOWS_PANEL_ICON = path.join(SCRIPT_DIR, "AppIcon.ico");
 const BUNDLE_ID = "com.openai.codex";
 let statusMenuProcess = null;
+let proxyServer = null;
+let proxyPort = 0;
+/// 客户端 config.toml 里 provider 的 base_url 会写成它；代理没起来时留空，退回直连。
+const proxyUrl = () => (proxyPort ? proxyBaseUrl(proxyPort) : "");
 
 fs.mkdirSync(SUPPORT_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
@@ -518,11 +526,22 @@ const getFreePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const buildInjectionSource = (models) => {
+const buildInjectionSource = (models, groupName = "", groupNames = []) => {
   const template = fs.readFileSync(path.join(SCRIPT_DIR, "injection.js"), "utf8");
-  const marker = "const BOOT_MODELS = [];";
-  if (!template.includes(marker)) throw new Error("Injection template marker is missing");
-  return template.replace(marker, `const BOOT_MODELS = ${JSON.stringify(models)};`);
+  const modelMarker = "const BOOT_MODELS = [];";
+  const groupMarker = 'const DEFAULT_GROUP_NAME = "";';
+  const groupNamesMarker = "const KNOWN_GROUP_NAMES = [];";
+  const prefixMarker = 'const MODEL_ID_PREFIX = "";';
+  if (!template.includes(modelMarker)) throw new Error("Injection template marker is missing");
+  if (!template.includes(groupMarker)) throw new Error("Injection group marker is missing");
+  if (!template.includes(groupNamesMarker)) throw new Error("Injection group names marker is missing");
+  if (!template.includes(prefixMarker)) throw new Error("Injection model prefix marker is missing");
+  // 用函数式替换：模型名和渠道名是用户内容，直接当替换串时 `$&` 这类片段会被当成替换模式。
+  return template
+    .replace(modelMarker, () => `const BOOT_MODELS = ${JSON.stringify(models)};`)
+    .replace(groupMarker, () => `const DEFAULT_GROUP_NAME = ${JSON.stringify(groupName)};`)
+    .replace(groupNamesMarker, () => `const KNOWN_GROUP_NAMES = ${JSON.stringify(groupNames)};`)
+    .replace(prefixMarker, () => `const MODEL_ID_PREFIX = ${JSON.stringify(MODEL_PREFIX)};`);
 };
 
 const fetchJson = async (url, timeoutMs = 1500, headers = null) => {
@@ -811,9 +830,18 @@ const channelImportOptions = () => ({
   modelPaths: [LEGACY_MODELS, path.join(LEGACY_SUPPORT_DIR, "models.json")],
 });
 
-const currentChannelModels = () => {
-  const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
-  return state.channels.find((channel) => channel.id === state.current)?.models ?? [];
+const pickerState = () => loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+/// 选择器和模型目录里该出现哪些渠道。转发服务没起来时只能直连，带 `gpts-` 前缀的模型上游不认，
+/// 所以那种情况退回只留当前渠道。
+const visiblePickerState = () => {
+  const state = pickerState();
+  if (proxyPort) return state;
+  return { ...state, channels: state.channels.filter((channel) => channel.id === state.current) };
+};
+
+const pickerModels = () => {
+  const state = visiblePickerState();
+  return state.current ? pickerModelsFromState(state) : [];
 };
 
 const readCodexCatalog = (binary) => {
@@ -929,6 +957,35 @@ const main = async () => {
     return;
   }
 
+  // 本地转发端口：客户端只连它，由它按模型 id 把请求送回所属渠道，切渠道不用重启客户端。
+  // --once 是给检查用的单次模式，起了服务就退不出去，所以只在常驻模式启动。
+  if (!runOnce) {
+    try {
+      // 端口优先沿用客户端配置里那个：base_url 是写死在 config.toml 里的，换端口它不会知道。
+      const recordedPort = recordedProxyPort({ userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD });
+      const started = await startProxy({
+        loadState: () => loadChannelState(CHANNELS_CONFIG, channelImportOptions()),
+        log,
+        port: recordedPort || DEFAULT_PROXY_PORT,
+      });
+      proxyServer = started.server;
+      proxyPort = started.port;
+      if (recordedPort && started.port !== recordedPort) {
+        // 端口被别人占了往后顺延时，客户端还指着旧端口：把配置里的地址改过来，
+        // 不然它的请求会一直发到没人监听的地方，直到用户手动点一次重启。
+        const repaired = repointProxyUrl({
+          userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD, baseUrl: proxyBaseUrl(started.port),
+        });
+        log("proxy_port_changed", { recorded: recordedPort, actual: started.port, repaired });
+      }
+    } catch (error) {
+      // 起不来就退回直连：applyCodex 拿不到转发地址时会写渠道自己的 base_url。
+      log("proxy_failed", String(error?.message || error));
+      proxyServer = null;
+      proxyPort = 0;
+    }
+  }
+
   // 客户端定位要跑 PowerShell（约 1~2 秒），所以懒执行：面板先出来，
   // 只有真的要读写模型目录或重启客户端时才去找。
   let appPath;
@@ -995,7 +1052,7 @@ const main = async () => {
     }
   };
 
-  const restart = async (nextModels, existingPort = 0) => {
+  const restart = async (existingPort = 0) => {
     let target = appPath;
     if (!existingPort) {
       target = clientPath();
@@ -1008,8 +1065,13 @@ const main = async () => {
     sessions.clear();
     port = 0;
     appMissingSince = null;
-    models = nextModels;
-    source = models.length ? buildInjectionSource(models) : "";
+    // 选择器里要出现的是全部启用渠道的模型（见 pickerModels）；没有当前渠道说明刚「还原」，
+    // 那就一个都别注入。面板送回的那份模型列表只用来落盘，不决定注入内容。
+    const state = visiblePickerState();
+    models = state.current ? pickerModelsFromState(state) : [];
+    source = models.length
+      ? buildInjectionSource(models, pickerGroupNameFromState(state), pickerChannelNamesFromState(state))
+      : "";
     const nextPort = existingPort || await getFreePort();
     if (!existingPort) await launchApp(target, nextPort);
     const targets = await waitForTargets(nextPort);
@@ -1042,7 +1104,8 @@ const main = async () => {
     }
     const provider = modelProviderFromToml(text);
     if (provider !== active.id) log("codex_config_mismatch", { expected: active.id, found: provider });
-    const expectedModel = channelDefaultModel(text, active);
+    // 和 applyCodex 用同一份「认识的模型」：用户选的是别的渠道的模型（gpts- 前缀）时不该当成被盖回去。
+    const expectedModel = channelDefaultModel(text, active, pickerModels().map((model) => model.id));
     if (expectedModel) {
       log("codex_config_model_mismatch", { expected: expectedModel, found: modelFromToml(text) });
     }
@@ -1065,34 +1128,42 @@ const main = async () => {
       restart,
       applyCodex: (channel, channelIds) => applyChannelToCodex({
         channel, channelIds, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
+        proxyUrl: proxyUrl(), knownModels: pickerModels().map((model) => model.id),
       }),
       restoreCodex: () => restoreCodexConfig({
         authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
       }),
-      applyCatalog: async (nextModels) => {
+      applyCatalog: async () => {
         const target = clientPath();
         if (!target) throw appMissing();
         const dest = resolveCatalogPath();
         const fileCreated = !fs.existsSync(dest);
-        writeCatalog(dest, buildCatalog(readBundledCatalog(target), nextModels));
+        // 目录里放全部渠道的模型：当前渠道裸名，其他带 gpts- 前缀，选择器才分得出组。
+        const catalogModels = pickerModels();
+        writeCatalog(dest, buildCatalog(readBundledCatalog(target), catalogModels));
         const pointerAdded = ensureCatalogPointer(dest) || dest === DEFAULT_CATALOG_PATH;
         writeCatalogRecord(CATALOG_RECORD, {
           path: dest,
           pointerAdded,
           fileCreated: fileCreated || dest === DEFAULT_CATALOG_PATH,
         });
-        log("catalog_written", { path: dest, models: nextModels.map((model) => model.id) });
+        log("catalog_written", { path: dest, models: catalogModels.map((model) => model.id) });
       },
       clearCatalog: () => clearCatalog(clientPath()),
     });
     // 等客户端把自己的那份配置写完（实测启动后约 8 秒）再看一眼，只记录不修改。
     if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
+    // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
+    // 不能 await：客户端没在跑时 waitForTargets 要等满 30 秒，面板会一直转圈。
+    if (request?.action === "save" && answer?.ok && port) {
+      restart(port).catch((error) => log("panel_refresh_failed", String(error?.message || error)));
+    }
     return { ...answer, version: VERSION };
   };
 
   if (attachPort) {
     try {
-      await restart(currentChannelModels(), attachPort);
+      await restart(attachPort);
     } catch (error) {
       if (!statusMenuProcess || runOnce) throw error;
       showError(error.message);
@@ -1149,6 +1220,8 @@ const shutdown = () => {
   shuttingDown = true;
   try { statusMenuProcess?.kill("SIGTERM"); } catch {}
   statusMenuProcess = null;
+  try { proxyServer?.close(); } catch { /* 已经关了就算了 */ }
+  proxyServer = null;
   cleanupState();
   releaseLock();
 };

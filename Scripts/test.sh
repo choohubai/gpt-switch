@@ -22,6 +22,13 @@ fi
 "$NODE" --check "$SOURCE_DIR/channel-config.mjs"
 "$NODE" --test "$ROOT_DIR"/tests/*.test.mjs
 /bin/zsh "$SCRIPT_DIR/swiftc.sh" -parse-as-library -target "$(uname -m)-apple-macosx13.0" -framework SwiftUI -typecheck "$SOURCE_DIR/StatusMenu.swift"
+# 面板状态机（开关、删除、保存跟随 current）只写在这份用例里：必须真的编译并跑起来，
+# 只 typecheck 拦不住「存盘失败没回滚」这类回归。
+PANEL_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-panel.XXXXXX")"
+/bin/zsh "$SCRIPT_DIR/swiftc.sh" -D STATUS_MENU_TEST -parse-as-library -target "$(uname -m)-apple-macosx13.0" -framework SwiftUI \
+  "$SOURCE_DIR/StatusMenu.swift" "$ROOT_DIR/tests/StatusMenuTests.swift" -o "$PANEL_TEST_DIR/panel-tests"
+"$PANEL_TEST_DIR/panel-tests" "$RESOURCE_DIR/MenuBarIcon.png"
+rm -rf "$PANEL_TEST_DIR"
 /bin/zsh -n "$SCRIPT_DIR/GPTSwitch"
 /bin/zsh -n "$SCRIPT_DIR/build.sh"
 /bin/zsh -n "$SCRIPT_DIR/swiftc.sh"
@@ -36,6 +43,16 @@ for payload in "${WINDOWS_PAYLOADS[@]}"; do
     print -u2 -- "缺少 Windows 打包文件：$payload"
     exit 1
   fi
+done
+
+# 打包脚本要带上注入器 import 的每个本地模块：漏一个，装出来的客户端一启动就报找不到模块。
+for module in $(sed -n 's/.*from "\.\/\([^"]*\.mjs\)".*/\1/p' "$SOURCE_DIR"/*.mjs | sort -u); do
+  for packager in "$SCRIPT_DIR/build.sh" "$SCRIPT_DIR/package-windows.sh"; do
+    if ! grep -qF "\$SOURCE_DIR/$module" "$packager"; then
+      print -u2 -- "$(basename "$packager") 没有把 $module 打进包里"
+      exit 1
+    fi
+  done
 done
 
 # 面板显示的版本来自 injector.mjs，必须和 Info.plist 一致。

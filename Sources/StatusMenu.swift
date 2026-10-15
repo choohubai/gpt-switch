@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// 面板强调色：跟 AppIcon 的青蓝渐变一致。系统 accent 被改成石墨色时界面也不会走样。
+private let accentTop = Color(red: 0.05, green: 0.60, blue: 0.91)
+private let accentBottom = Color(red: 0.06, green: 0.72, blue: 0.55)
+private var accentGradient: LinearGradient {
+    LinearGradient(colors: [accentTop, accentBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+}
+
 // MARK: - 数据模型
 
 struct ModelRow: Codable, Equatable {
@@ -50,20 +57,23 @@ struct ChannelRow: Codable, Equatable {
     var apiKey: String
     var headerName: String
     var headerValue: String
+    /// 这条渠道能不能用：面板里单独开关，新建的缺省启用。
+    var enabled: Bool
     var models: [ModelRow]
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, baseUrl, apiKey, headerName, headerValue, models
+        case id, name, baseUrl, apiKey, headerName, headerValue, enabled, models
     }
 
     init(id: String = "", name: String = "", baseUrl: String = "", apiKey: String = "",
-         headerName: String = "", headerValue: String = "", models: [ModelRow] = []) {
+         headerName: String = "", headerValue: String = "", enabled: Bool = true, models: [ModelRow] = []) {
         self.id = id
         self.name = name
         self.baseUrl = baseUrl
         self.apiKey = apiKey
         self.headerName = headerName
         self.headerValue = headerValue
+        self.enabled = enabled
         self.models = models
     }
 
@@ -75,12 +85,13 @@ struct ChannelRow: Codable, Equatable {
         apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         headerName = try container.decodeIfPresent(String.self, forKey: .headerName) ?? ""
         headerValue = try container.decodeIfPresent(String.self, forKey: .headerValue) ?? ""
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         models = try container.decodeIfPresent([ModelRow].self, forKey: .models) ?? []
     }
 
     var payload: [String: Any] {
         ["id": id, "name": name, "baseUrl": baseUrl, "apiKey": apiKey,
-         "headerName": headerName, "headerValue": headerValue,
+         "headerName": headerName, "headerValue": headerValue, "enabled": enabled,
          "models": models.map(\.payload)]
     }
 }
@@ -107,12 +118,6 @@ func channelDisplayLabel(_ channel: ChannelRow) -> String {
 enum DeletePrompt: Equatable {
     case channel(Int)
     case model(Int)
-}
-
-/// 点「启用」和右上角「重启」都会重启客户端，只是说法不同：这里只记「写哪条、按哪个说法问」。
-enum RestartPrompt: Equatable {
-    case enable(Int)
-    case restart(Int)
 }
 
 /// 「获取可用模型」拿回来的行：id 一定有，显示名和窗口只在端点给出时才有。
@@ -155,10 +160,8 @@ final class PanelStore: ObservableObject {
     @Published var discoveredSelection: Set<String> = []
     @Published var discoveryFilter = ""
     @Published var confirmingClear = false
-    /// 「启用」和「重启」都会重启客户端，先弹一句说明；这里记着要写哪一条。
-    @Published var restartPrompt: RestartPrompt?
-    /// 正在启用哪一条：重启要等一会儿，这一行先显示「启用中」；返回或失败后清掉。
-    @Published var enablingIndex: Int?
+    /// 右上角「重启」会重启客户端，先弹一句说明。
+    @Published var restartPrompt = false
     @Published var deletePrompt: DeletePrompt?
 
     var send: ([String: Any]) -> Void = { _ in }
@@ -166,7 +169,7 @@ final class PanelStore: ObservableObject {
     private var checkingUpdate = false
     /// 进编辑页时这条渠道是不是正在用的那条：保存时按它决定「使用中」跟谁走。
     private(set) var editingActiveChannel = false
-    /// 删除要落盘，存盘失败时把刚拿掉的那条放回去，别让面板和文件对不上。
+    /// 要落盘的改动（删渠道、翻开关）先在这里留一份原文，存盘失败时放回去，别让面板和文件对不上。
     private var pendingDelete: (restore: [ChannelRow], note: String)?
 
     var activeIndex: Int { editingIndex ?? 0 }
@@ -212,18 +215,13 @@ final class PanelStore: ObservableObject {
     func editChannel(at index: Int) {
         guard channels.indices.contains(index) else { return }
         editingIndex = index
-        editingActiveChannel = isCurrentChannel(at: index)
+        editingActiveChannel = channels[index].id == currentChannelID
     }
 
     /// 列表页和编辑页的垃圾桶都先问一句，删的动作还是走 deleteChannel。
     func requestDelete(at index: Int) {
-        guard channels.indices.contains(index), !busy, !isCurrentChannel(at: index) else { return }
+        guard channels.indices.contains(index), !busy else { return }
         deletePrompt = .channel(index)
-    }
-
-    /// 正在使用的渠道不能删：客户端那边还指着它，删完面板和 ChatGPT 就对不上了。
-    func isCurrentChannel(at index: Int) -> Bool {
-        channels.indices.contains(index) && channels[index].id == currentChannelID
     }
 
     func requestModelDelete(at index: Int) {
@@ -272,7 +270,7 @@ final class PanelStore: ObservableObject {
 
     /// 删除立刻落盘并回列表页：只从内存里拿掉、人还留在编辑页，等于没删成。
     func deleteChannel(at index: Int) {
-        guard channels.indices.contains(index), !busy, !isCurrentChannel(at: index) else { return }
+        guard channels.indices.contains(index), !busy else { return }
         let removed = channels[index]
         let restore = channels
         channels.remove(at: index)
@@ -315,83 +313,58 @@ final class PanelStore: ObservableObject {
 
     // MARK: 请求
 
-    /// 保存不动「使用中」：编辑页里改了什么（渠道 ID 也一样）都只是这条渠道自己。
-    /// 例外是改正在用的那条：存盘后还得写进 ChatGPT 才生效，顺手做完并重启。
+    /// 保存只写渠道列表，不重启客户端：写进 ChatGPT 是右上角「重启」的事。改的是正在用的
+    /// 那条时 current 要跟着走，否则把渠道 ID 改掉之后「运行中」就掉了。
     func save() {
-        if editingActiveChannel, let index = editingIndex, channels.indices.contains(index) {
-            submit(action: "switch", currentID: channels[index].id)
+        if editingActiveChannel, channels.indices.contains(activeIndex) {
+            submit(action: "save", currentID: channels[activeIndex].id)
             return
         }
         submit(action: "save", currentID: currentChannelID ?? "")
     }
 
-    /// 改的是正在用的渠道且有改动时，按钮要说清楚它还会重启客户端。
-    var saveButtonTitle: String {
-        isDirty && editingActiveChannel ? "保存并重启" : "保存"
+    /// 右上角的「重启」：重新写一遍 ChatGPT 配置和全部渠道的模型目录，然后重启。
+    func applyAndRestart() {
+        guard loaded, !busy, !channels.isEmpty else { return }
+        submit(action: "switch", currentID: currentChannelID ?? "")
     }
 
-    func enableChannel(at index: Int) {
+    /// 单条渠道的启用/禁用：只改这条的开关并落盘，不碰别的渠道，也不重启客户端。
+    func toggleChannel(at index: Int) {
         guard channels.indices.contains(index), loaded, !busy else { return }
-        enablingIndex = index
-        submit(action: "switch", currentID: channels[index].id)
+        // 整份渠道列表一起校验，别的渠道有问题（比如有条新渠道还没填 ID）这一条也会被拒，
+        // 所以先留一份原文：存盘失败要退回原样，不能让面板显示一个没落盘的状态。
+        let restore = channels
+        channels[index].enabled.toggle()
+        let enabled = channels[index].enabled
+        pendingDelete = (restore, "\(enabled ? "已启用" : "已禁用")渠道「\(channelDisplayLabel(channels[index]))」")
+        submit(action: "save", currentID: currentChannelID ?? "",
+               note: enabled ? "正在启用渠道…" : "正在禁用渠道…")
     }
 
-    /// 点某条渠道的「启用」：先问一句，确认后才写配置并重启。
-    func requestEnable(at index: Int) {
-        guard channels.indices.contains(index), loaded, !busy else { return }
-        restartPrompt = .enable(index)
-    }
-
-    /// 右上角的「重启」：用正在使用的渠道重新写一遍配置再重启。
     func requestRestart() {
-        guard loaded, !busy, let index = currentChannelIndex else { return }
-        restartPrompt = .restart(index)
+        guard loaded, !busy, !channels.isEmpty else { return }
+        restartPrompt = true
     }
 
     func confirmRestart() {
-        guard let prompt = restartPrompt else { return }
-        restartPrompt = nil
-        switch prompt {
-        case .enable(let index), .restart(let index): enableChannel(at: index)
-        }
+        guard restartPrompt else { return }
+        restartPrompt = false
+        applyAndRestart()
     }
 
     func cancelRestart() {
-        restartPrompt = nil
-    }
-
-    /// 正在使用的那条渠道：右上角的「重启」写的就是它。
-    var currentChannelIndex: Int? {
-        guard let currentChannelID else { return nil }
-        return channels.firstIndex { $0.id == currentChannelID }
+        restartPrompt = false
     }
 
     var canRestart: Bool {
-        loaded && !busy && currentChannelIndex != nil
-    }
-
-    /// 重启说明的标题、正文和确认按钮文案。
-    var restartPromptText: (title: String, message: String, confirm: String)? {
-        switch restartPrompt {
-        case .enable(let index):
-            guard channels.indices.contains(index) else { return nil }
-            return ("启用「\(channelDisplayLabel(channels[index]))」会重启 ChatGPT",
-                    "会把它写进 ChatGPT 配置并更新模型目录；客户端只在启动时读配置，重启后才生效。",
-                    "启用并重启")
-        case .restart(let index):
-            guard channels.indices.contains(index) else { return nil }
-            return ("重启 ChatGPT？",
-                    "会用「\(channelDisplayLabel(channels[index]))」重新写一遍 ChatGPT 配置，然后重启客户端。",
-                    "重启")
-        case nil:
-            return nil
-        }
+        loaded && !busy && !channels.isEmpty
     }
 
     private func submit(action: String, currentID: String, note: String? = nil) {
         guard loaded, !busy else { return }
         busy = true
-        feedback = note ?? (action == "switch" ? "正在启用渠道并重启 ChatGPT…" : "正在保存…")
+        feedback = note ?? (action == "switch" ? "正在重启 ChatGPT…" : "正在保存…")
         feedbackIsError = false
         send([
             "action": action,
@@ -462,7 +435,6 @@ final class PanelStore: ObservableObject {
             return
         }
         busy = false
-        enablingIndex = nil
         let ok = response["ok"] as? Bool == true
         let cleared = response["cleared"] as? Bool == true
         let pending = pendingDelete
@@ -491,10 +463,10 @@ final class PanelStore: ObservableObject {
             feedback = "已清空并重启 ChatGPT"
             feedbackIsError = false
         } else if response["restarted"] as? Bool == true {
-            feedback = "已启用渠道，ChatGPT 已重启"
+            feedback = "配置已写入，ChatGPT 已重启"
             feedbackIsError = false
         } else if response["saved"] as? Bool == true {
-            feedback = pending?.note ?? "已保存，点列表里的「启用」才会生效"
+            feedback = pending?.note ?? "已保存，点右上角「重启 ChatGPT」才会生效"
             feedbackIsError = false
         } else {
             feedback = ""
@@ -651,6 +623,9 @@ struct PanelView: View {
                                         Color(nsColor: .underPageBackgroundColor).opacity(0.42),
                                         Color.accentColor.opacity(0.03)],
                                startPoint: .top, endPoint: .bottomTrailing)
+                // 右上角一团强调色光晕，纯平面的底色看着太死。
+                RadialGradient(colors: [accentTop.opacity(0.14), .clear],
+                               center: UnitPoint(x: 0.9, y: -0.15), startRadius: 1, endRadius: 340)
             }
             .ignoresSafeArea()
         }
@@ -662,18 +637,17 @@ struct PanelView: View {
             Text("会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
         }
         .confirmationDialog(restartPromptTitle, isPresented: restartPromptPresented, titleVisibility: .visible) {
-            Button(store.restartPromptText?.confirm ?? "重启") { store.confirmRestart() }
+            Button("重启") { store.confirmRestart() }
             Button("取消", role: .cancel) { store.cancelRestart() }
         } message: {
-            Text(store.restartPromptText?.message ?? "")
+            Text("会重新写入 ChatGPT 配置和全部渠道的模型目录，然后重启客户端。")
         }
     }
 
-    /// 「启用」和「重启」都会重启客户端，先弹一句再动手。
-    private var restartPromptTitle: String { store.restartPromptText?.title ?? "" }
+    private let restartPromptTitle = "重启 ChatGPT？"
 
     private var restartPromptPresented: Binding<Bool> {
-        Binding(get: { store.restartPromptText != nil },
+        Binding(get: { store.restartPrompt },
                 set: { presented in if !presented { store.cancelRestart() } })
     }
 
@@ -872,23 +846,43 @@ struct ChannelListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("渠道").font(.system(size: 20, weight: .semibold))
-                    Text("点「启用」写入 ChatGPT 并重启客户端")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                // 强调条挂在标题左侧，副标题跟着一起缩进，两行左边缘才能对齐。
+                HStack(alignment: .top, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(accentGradient)
+                        .frame(width: 4, height: 16)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("渠道").font(.system(size: 17, weight: .semibold))
+                        Text("渠道可以单独启用/禁用，开关立刻生效；点右上角「重启」把配置写进 ChatGPT")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 12)
                 // 「重启生效」原来挂在当前渠道那行；它是全局动作，挪到这里只留一个入口。
-                Button("重启") { store.requestRestart() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .pointingHand()
-                    .disabled(!store.canRestart)
+                Button { store.requestRestart() } label: {
+                    Text("重启 ChatGPT")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 14)
+                        .frame(height: 30)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(.ultraThinMaterial))
+                        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                        .contentShape(RoundedRectangle(cornerRadius: 9))
+                }
+                .buttonStyle(.plain)
+                .withoutFocusRing()
+                .pointingHand()
+                .opacity(store.canRestart ? 1 : 0.45)
+                .disabled(!store.canRestart)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 22)
+            .padding(.top, 20)
             .padding(.bottom, 14)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+            }
 
             OverlayScrollView {
                 LazyVStack(spacing: 10) {
@@ -899,6 +893,7 @@ struct ChannelListView: View {
                         .disabled(!store.loaded || store.busy || store.channels.count >= 50)
                 }
                 .padding(.horizontal, 24)
+                .padding(.top, 16)
                 .padding(.bottom, 20)
             }
         }
@@ -908,12 +903,19 @@ struct ChannelListView: View {
 struct ChannelCard: View {
     @ObservedObject var store: PanelStore
     let index: Int
+    @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     /// 删渠道后 SwiftUI 也会用旧下标再求一次 body，越界会崩掉面板进程。
     private var channel: ChannelRow {
         store.channels.indices.contains(index) ? store.channels[index] : ChannelRow()
     }
-    private var isCurrent: Bool { !channel.id.isEmpty && channel.id == store.currentChannelID }
+
+    /// 深色底上要用亮绿，浅色底上要用深绿，同一个绿两边都糊。
+    private var badgeInk: Color {
+        channel.enabled ? (colorScheme == .dark ? accentBottom : Color(red: 0.05, green: 0.47, blue: 0.34))
+                        : Color.primary.opacity(0.55)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -927,39 +929,40 @@ struct ChannelCard: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            // 三个控件等高才看着齐：胶囊比图标按钮矮一截就会显得没对齐。
-            HStack(spacing: 8) {
-                if isCurrent {
-                    Text("使用中")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.primary.opacity(0.75))
-                        .padding(.horizontal, 10)
-                        // 中文字形落在行框偏下的位置，补 2pt 下内边距才在这个胶囊里看着居中。
-                        .padding(.bottom, 2)
-                        .frame(height: 28)
-                        .background(Capsule().fill(Color.primary.opacity(0.07)))
-                }
-                // 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事。
-                if !isCurrent {
-                    // 照系统设置那种按钮：浅底 + 细描边 + 深色文字，整块面板不用强调色。
-                    Button { store.requestEnable(at: index) } label: {
-                        Text(store.enablingIndex == index ? "启用中" : "启用")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.primary)
-                            .padding(.horizontal, 14)
-                            // 和「使用中」同一个原因：中文字形偏下，补 2pt 才在胶囊里居中。
-                            .padding(.bottom, 2)
-                            .frame(height: 28)
-                            .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.14)))
-                            .contentShape(Capsule())
+            // 每条渠道一个开关：禁用只是这条不能用，别的渠道照常。
+            HStack(spacing: 10) {
+                Text(channel.enabled ? "已启用" : "已禁用")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(badgeInk)
+                    // 中文字形落在行框偏下，补 1.5pt 下内边距才在这个小徽标里居中。
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 1.5)
+                    .frame(height: 20)
+                    .background(RoundedRectangle(cornerRadius: 6)
+                        .fill(channel.enabled ? accentBottom.opacity(0.14) : Color.primary.opacity(0.07)))
+                Button { store.toggleChannel(at: index) } label: {
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(channel.enabled ? AnyShapeStyle(accentGradient)
+                                                        : AnyShapeStyle(Color.primary.opacity(0.16)))
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 14, height: 14)
+                            .shadow(color: .black.opacity(0.25), radius: 1, y: 1)
+                            .padding(2)
+                            .offset(x: channel.enabled ? 14 : 0)
                     }
-                    .buttonStyle(.plain)
-                    .withoutFocusRing()
-                    .pointingHand()
-                    .opacity(store.busy ? 0.5 : 1)
-                    .disabled(store.busy)
+                    .frame(width: 32, height: 18)
+                    .contentShape(Capsule())
+                    .animation(.easeOut(duration: 0.16), value: channel.enabled)
                 }
+                .buttonStyle(.plain)
+                .withoutFocusRing()
+                .pointingHand()
+                .help(channel.enabled ? "禁用这条渠道" : "启用这条渠道")
+                // 自绘形状里没有文字，读屏走到这儿得知道这是哪条渠道的什么开关。
+                .accessibilityLabel("\(channelDisplayLabel(channel)) \(channel.enabled ? "已启用" : "已禁用")")
+                .opacity(store.busy ? 0.5 : 1)
+                .disabled(store.busy)
                 Button { store.editChannel(at: index) } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 14))
@@ -980,24 +983,24 @@ struct ChannelCard: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .pointingHand()
-                .disabled(store.busy || isCurrent)
-                .help(isCurrent ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
+                .disabled(store.busy)
+                .help("删除渠道")
             }
             .frame(height: 28)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        // 选中态只靠底色区分：描边和未选中一样细，不然一行比一行重，看着像另一套控件。
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(isCurrent ? AnyShapeStyle(Color.primary.opacity(0.07))
-                                : AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.7)))
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(hovering ? 1 : 0.7))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.primary.opacity(0.07))
         )
-        .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
+        .shadow(color: .black.opacity(hovering ? 0.07 : 0.05), radius: hovering ? 12 : 6, y: hovering ? 4 : 1)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.14), value: hovering)
     }
 }
 
@@ -1019,8 +1022,8 @@ struct ChannelDetailView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()
-                    .disabled(!store.hasChannel || store.busy || store.editingActiveChannel)
-                    .help(store.editingActiveChannel ? "使用中的渠道不能删除：先启用别的渠道" : "删除渠道")
+                    .disabled(!store.hasChannel || store.busy)
+                    .help("删除渠道")
             }
             .padding(.horizontal, 24)
             .padding(.top, 22)
@@ -1058,7 +1061,7 @@ struct ChannelDetailView: View {
 
             HStack(spacing: 8) {
                 Spacer()
-                Button(store.saveButtonTitle) { store.save() }
+                Button("保存") { store.save() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()
@@ -1306,7 +1309,7 @@ struct DashedRowButton: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.primary.opacity(0.07))
+                .strokeBorder(Color.primary.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         )
     }
 }
@@ -1316,12 +1319,13 @@ struct BottomBar: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            Button("还原 ChatGPT 配置并重启") { store.confirmingClear = true }
-                .buttonStyle(.link)
+            Button("初始化配置") { store.confirmingClear = true }
+                .buttonStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(Color.red)
+                .foregroundStyle(.secondary)
                 .withoutFocusRing()
                 .pointingHand()
+                .opacity(store.loaded && !store.busy ? 1 : 0.45)
                 .disabled(!store.loaded || store.busy)
             Text(store.feedback)
                 .font(.system(size: 13))
