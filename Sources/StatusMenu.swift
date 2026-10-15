@@ -955,6 +955,7 @@ struct ChannelCard: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .withoutFocusRing()
                     .pointingHand()
                     .opacity(store.busy ? 0.5 : 1)
                     .disabled(store.busy)
@@ -1040,6 +1041,7 @@ struct ChannelDetailView: View {
                         Button(store.fetchingModels ? "获取中…" : "获取可用模型") { store.fetchModels() }
                             .buttonStyle(.link)
                             .font(.system(size: 12))
+                            .withoutFocusRing()
                             .pointingHand()
                             .disabled(!store.canFetchModels)
                     }
@@ -1271,6 +1273,10 @@ extension View {
     func pointingHand() -> some View { modifier(CursorPush(cursor: .pointingHand)) }
     /// 输入框整框都要 I 型光标：系统只在文字区弹，左右内边距上还是箭头，鼠标划过去会来回跳。
     func fieldCursor() -> some View { modifier(CursorPush(cursor: .iBeam)) }
+    /// 自绘的 flat 按钮不要系统焦点环：Tab 照样能选中它，只是不再套一圈蓝框。
+    @ViewBuilder func withoutFocusRing() -> some View {
+        if #available(macOS 14.0, *) { focusEffectDisabled() } else { self }
+    }
 }
 
 struct DashedRowButton: View {
@@ -1291,6 +1297,7 @@ struct DashedRowButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .withoutFocusRing()
         .pointingHand()
         .opacity(isEnabled ? 1 : 0.45)
         .background(
@@ -1313,6 +1320,7 @@ struct BottomBar: View {
                 .buttonStyle(.link)
                 .font(.system(size: 12))
                 .foregroundStyle(Color.red)
+                .withoutFocusRing()
                 .pointingHand()
                 .disabled(!store.loaded || store.busy)
             Text(store.feedback)
