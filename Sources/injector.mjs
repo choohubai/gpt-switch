@@ -20,7 +20,7 @@ import {
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, MODEL_PREFIX,
 } from "./proxy.mjs";
 
-const VERSION = "0.1.44";
+const VERSION = "0.1.45";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";

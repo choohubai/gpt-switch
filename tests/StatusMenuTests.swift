@@ -52,11 +52,13 @@ struct StatusMenuTests {
         assert(requests.last?["action"] as? String == "switch")
         assert(requests.last?["restart"] as? Bool == true)
         assert(requests.last?["current"] as? String == "OpenAI")
+        assert(store.restarting, "重启期间右上角按钮要变成「重启中」")
         store.apply(["ok": true, "saved": true, "restarted": true, "channels": [
             ["id": "OpenAI", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "配置已写入，ChatGPT 已重启")
+        assert(!store.restarting && !store.restartNeeded, "重启完成后按钮恢复，也不再提示重启")
+        assert(store.feedback.isEmpty, "重启不留提示")
 
         // 「重启」会重启客户端，所以先弹一句：取消什么都不做，确认才发 switch。
         store.requestRestart()
@@ -84,9 +86,9 @@ struct StatusMenuTests {
         let toggled = (requests.last?["channels"] as? [[String: Any]])?.first { $0["id"] as? String == "relay" }
         assert(toggled?["enabled"] as? Bool == false, "开关要跟着落盘")
         store.busy = false
-        // 落盘成功：反馈说的是这条开关自己，别再提「点重启才生效」。
+        // 落盘成功：开关立刻生效，底栏既不说这条开关，也不提「点重启才生效」。
         store.apply(["ok": true, "saved": true, "current": "relay", "channels": store.channels.map(\.payload)])
-        assert(store.feedback == "已禁用渠道「relay」")
+        assert(store.feedback.isEmpty && !store.restartNeeded, "翻开关不需要重启，底栏不能提示")
         // 整份渠道列表一起校验，别的渠道不合格（比如有条新渠道还没填 ID）这条也会被拒：要退回原样。
         store.toggleChannel(at: 1)
         assert(store.channels[1].enabled, "再点一次就启用回来")
@@ -142,7 +144,8 @@ struct StatusMenuTests {
                          "inputModalities": ["text", "image"]]]],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已保存，点右上角「重启 ChatGPT」才会生效")
+        assert(store.restartNeeded && store.feedback.isEmpty, "改了配置要提示重启，话由底栏自己画")
+        assert(store.editingIndex == nil, "存盘成功要回列表页，重启入口在那边")
         assert(!store.isDirty)
 
         // 改的是正在用的渠道也只存盘：写进 ChatGPT 是右上角「重启」的事，编辑完不重启客户端。
@@ -157,7 +160,7 @@ struct StatusMenuTests {
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v2", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已保存，点右上角「重启 ChatGPT」才会生效")
+        assert(store.restartNeeded && store.feedback.isEmpty, "改了配置要提示重启，话由底栏自己画")
         assert(!store.isDirty)
 
         // 新增渠道进编辑页；删除立刻落盘并回列表页。
@@ -176,7 +179,7 @@ struct StatusMenuTests {
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已删除渠道「gateway」")
+        assert(store.feedback.isEmpty && store.restartNeeded, "删除立刻生效，底栏只剩前面那条「配置有更新」")
 
         // 清空：不动面板里的渠道列表，只发 clear。
         store.clearAndRestart()
@@ -185,7 +188,7 @@ struct StatusMenuTests {
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": NSNull()])
-        assert(store.feedback == "已清空并重启 ChatGPT")
+        assert(store.feedback.isEmpty && !store.restartNeeded, "清空也重启了客户端，等重启的提示跟着清掉")
         assert(store.channels.count == 2, "清空只还原 Codex 侧，渠道列表要留着")
         assert(store.currentChannelID == nil)
 
@@ -205,6 +208,14 @@ struct StatusMenuTests {
         assert(requests.last?["action"] as? String == "check-update")
         store.apply(["ok": true, "latest": "0.1.33", "url": "https://example.com/release"])
         assert(store.updateTitle == "去下载 v0.1.33")
+        // 忙碌期间（例如正在重启）不能再发一条请求：先回来的那条会被当成检查更新的响应吃掉，
+        // busy 与「重启中」就再也复位不了。
+        store.busy = true
+        let beforeBusyCheck = requests.count
+        store.checkForUpdates()
+        assert(requests.count == beforeBusyCheck, "忙碌期间点检查更新不能发请求")
+        assert(!store.updateChecking, "被挡下就不要进检查中状态")
+        store.busy = false
 
         // 错误响应要落到反馈里，并解除 busy。
         store.busy = true
@@ -259,7 +270,7 @@ struct StatusMenuTests {
         store.apply(["ok": true, "saved": true, "channels": [
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已删除渠道「choohub」", "删除成功要给出明确的反馈")
+        assert(store.feedback.isEmpty, "删除立刻生效，底栏不留提示")
         assert(!store.isDirty)
 
         // 存盘失败时，刚删掉的那条要放回去，不能只在面板里消失。
@@ -297,7 +308,7 @@ struct StatusMenuTests {
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
             ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
         ], "current": "relay"])
-        assert(store.feedback == "已删除渠道「spare」")
+        assert(store.feedback.isEmpty, "删除立刻生效，底栏不留提示")
 
         // 删模型也要先确认，取消不删。
         store.editChannel(at: 0)
@@ -389,6 +400,57 @@ struct StatusMenuTests {
         store.apply(["ok": false, "error": "连不上 https://choohub.net/api-proxy/v1/models"])
         assert(store.feedback == "连不上 https://choohub.net/api-proxy/v1/models")
         assert(store.feedbackIsError && !store.busy && !store.fetchingModels)
+
+        // 存盘失败就留在编辑页：把人踢回列表页，改的东西看着就没了。
+        store.busy = true
+        store.apply(["ok": false, "error": "测试用失败"])
+        store.editChannel(at: 0)
+        store.channels[0].baseUrl = "https://typo.example/v1"
+        store.save()
+        store.apply(["ok": false, "error": "渠道地址不合法"])
+        assert(store.editingIndex == 0, "存盘失败要留在编辑页")
+        assert(store.feedback == "渠道地址不合法" && store.feedbackIsError)
+        // 失败后重试成功：回列表页这个标记不能因为上一次失败就丢了。
+        store.save()
+        store.apply(["ok": true, "saved": true, "current": "relay", "channels": [
+            ["id": "choohub-2", "baseUrl": "https://typo.example/v1", "models": []],
+            ["id": "relay-2", "baseUrl": "https://relay.example/v1", "models": []],
+        ]])
+        assert(store.editingIndex == nil, "失败后重试成功仍然要回列表页")
+        assert(store.restartNeeded, "这时候配置和客户端还是不一致")
+        store.requestLeaveEditor()
+
+        // 重启失败也要把「重启中」放回来，否则按钮永远回不到可点状态。
+        store.showList()
+        store.requestRestart()
+        store.confirmRestart()
+        assert(store.restarting, "重启请求发出后按钮要进「重启中」")
+        store.apply(["ok": false, "error": "客户端没能正常退出"])
+        assert(!store.restarting && !store.busy, "重启失败要把按钮放回来")
+        assert(store.feedback == "客户端没能正常退出" && store.feedbackIsError)
+
+        // 提示的含义是「文件里的配置和客户端里的不一样」：改回原值就该自己消失。
+        let baseline: [[String: Any]] = [
+            ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
+        ]
+        store.requestRestart()
+        store.confirmRestart()
+        store.apply(["ok": true, "saved": true, "restarted": true, "channels": baseline, "current": "relay"])
+        assert(!store.restartNeeded, "刚重启过就不该提示重启")
+        store.editChannel(at: 0)
+        store.channels[0].baseUrl = "https://changed.example/v1"
+        store.save()
+        store.apply(["ok": true, "saved": true, "current": "relay", "channels": [
+            ["id": "choohub", "baseUrl": "https://changed.example/v1", "models": []],
+            ["id": "relay", "baseUrl": "https://relay.example/v1", "models": []],
+        ]])
+        assert(store.restartNeeded, "改成别的值要提示重启")
+        store.editChannel(at: 0)
+        store.channels[0].baseUrl = "https://choohub.net/api-proxy/v1"
+        store.save()
+        store.apply(["ok": true, "saved": true, "current": "relay", "channels": baseline])
+        assert(!store.restartNeeded, "改回原值就不该再提示重启")
 
         if CommandLine.arguments.count > 2 {
             try render(controller, store: store, directory: URL(fileURLWithPath: CommandLine.arguments[2]))

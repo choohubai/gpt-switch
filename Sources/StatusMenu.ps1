@@ -260,7 +260,7 @@ function Convert-Context([int]$k) {
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0">
           <TextBlock Text="渠道" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
-          <TextBlock Text="渠道可以单独启用/禁用，开关立刻生效；点右上角「重启 ChatGPT」把配置写进 ChatGPT"
+          <TextBlock Text="聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。"
                      FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
         </StackPanel>
         <!-- 「重启生效」原来是当前渠道那行上的按钮；它是全局动作，挪到这里只留一个入口。 -->

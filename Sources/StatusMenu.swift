@@ -160,6 +160,10 @@ final class PanelStore: ObservableObject {
     @Published var discoveredSelection: Set<String> = []
     @Published var discoveryFilter = ""
     @Published var confirmingClear = false
+    /// 改过的配置还没写进客户端（右上角「重启」才会写）：底栏只在这时候提示重启。
+    @Published var restartNeeded = false
+    /// 正在重启客户端：右上角那个按钮变成「重启中」并置灰。
+    @Published var restarting = false
     /// 右上角「重启」会重启客户端，先弹一句说明。
     @Published var restartPrompt = false
     @Published var deletePrompt: DeletePrompt?
@@ -170,7 +174,12 @@ final class PanelStore: ObservableObject {
     /// 进编辑页时这条渠道是不是正在用的那条：保存时按它决定「使用中」跟谁走。
     private(set) var editingActiveChannel = false
     /// 要落盘的改动（删渠道、翻开关）先在这里留一份原文，存盘失败时放回去，别让面板和文件对不上。
-    private var pendingDelete: (restore: [ChannelRow], note: String)?
+    private var pendingRestore: [ChannelRow]?
+    /// 编辑页点「保存」：落盘成功后回列表页（重启入口在那边），失败就留在原地。
+    private var leaveEditorAfterSave = false
+    /// 上一次写进客户端的那份渠道列表（读完配置时、重启或清空成功后各记一次）。
+    /// 用来判断「文件里的配置和客户端里的到底一样不一样」，改回原值就不该再提示重启。
+    private var appliedChannels: [ChannelRow] = []
 
     var activeIndex: Int { editingIndex ?? 0 }
 
@@ -271,12 +280,11 @@ final class PanelStore: ObservableObject {
     /// 删除立刻落盘并回列表页：只从内存里拿掉、人还留在编辑页，等于没删成。
     func deleteChannel(at index: Int) {
         guard channels.indices.contains(index), !busy else { return }
-        let removed = channels[index]
         let restore = channels
         channels.remove(at: index)
-        pendingDelete = (restore, removed.id.isEmpty ? "已删除渠道" : "已删除渠道「\(removed.id)」")
+        pendingRestore = restore
         showList()
-        submit(action: "save", currentID: currentChannelID ?? "", note: "正在删除渠道…")
+        submit(action: "save", currentID: currentChannelID ?? "")
     }
 
     // MARK: 模型编辑
@@ -316,6 +324,8 @@ final class PanelStore: ObservableObject {
     /// 保存只写渠道列表，不重启客户端：写进 ChatGPT 是右上角「重启」的事。改的是正在用的
     /// 那条时 current 要跟着走，否则把渠道 ID 改掉之后「运行中」就掉了。
     func save() {
+        guard loaded, !busy else { return }
+        leaveEditorAfterSave = true
         if editingActiveChannel, channels.indices.contains(activeIndex) {
             submit(action: "save", currentID: channels[activeIndex].id)
             return
@@ -336,10 +346,8 @@ final class PanelStore: ObservableObject {
         // 所以先留一份原文：存盘失败要退回原样，不能让面板显示一个没落盘的状态。
         let restore = channels
         channels[index].enabled.toggle()
-        let enabled = channels[index].enabled
-        pendingDelete = (restore, "\(enabled ? "已启用" : "已禁用")渠道「\(channelDisplayLabel(channels[index]))」")
-        submit(action: "save", currentID: currentChannelID ?? "",
-               note: enabled ? "正在启用渠道…" : "正在禁用渠道…")
+        pendingRestore = restore
+        submit(action: "save", currentID: currentChannelID ?? "")
     }
 
     func requestRestart() {
@@ -361,10 +369,12 @@ final class PanelStore: ObservableObject {
         loaded && !busy && !channels.isEmpty
     }
 
-    private func submit(action: String, currentID: String, note: String? = nil) {
+    /// 面板不为「正在启用/正在重启」这类过程刷提示：底栏留给报错和「配置有更新」。
+    private func submit(action: String, currentID: String) {
         guard loaded, !busy else { return }
         busy = true
-        feedback = note ?? (action == "switch" ? "正在重启 ChatGPT…" : "正在保存…")
+        restarting = action == "switch"
+        feedback = ""
         feedbackIsError = false
         send([
             "action": action,
@@ -377,7 +387,8 @@ final class PanelStore: ObservableObject {
     func clearAndRestart() {
         guard loaded, !busy else { return }
         busy = true
-        feedback = "正在清空并重启 ChatGPT…"
+        restarting = true
+        feedback = ""
         feedbackIsError = false
         send(["action": "clear"])
     }
@@ -387,7 +398,9 @@ final class PanelStore: ObservableObject {
             NSWorkspace.shared.open(pendingUpdateURL)
             return
         }
-        guard !checkingUpdate else { return }
+        // 面板一次只挂一条在途请求（load/save/switch 都靠 busy 串起来）：忙碌期间再发一条，
+        // 先回来的那条会被当成检查更新的响应吃掉，busy 和「重启中」就再也复位不了。
+        guard !checkingUpdate, !busy else { return }
         checkingUpdate = true
         updateTitle = "检查中…"
         updateEnabled = false
@@ -435,10 +448,13 @@ final class PanelStore: ObservableObject {
             return
         }
         busy = false
+        restarting = false
         let ok = response["ok"] as? Bool == true
         let cleared = response["cleared"] as? Bool == true
-        let pending = pendingDelete
-        pendingDelete = nil
+        let pending = pendingRestore
+        pendingRestore = nil
+        let leaveEditor = leaveEditorAfterSave
+        leaveEditorAfterSave = false
         if ok || response["saved"] as? Bool == true || cleared {
             if let value = response["channels"],
                let data = try? JSONSerialization.data(withJSONObject: value),
@@ -456,21 +472,28 @@ final class PanelStore: ObservableObject {
             }
         }
         if !ok {
-            if let pending { channels = pending.restore }
+            if let pending { channels = pending }
             feedback = response["error"] as? String ?? "操作失败"
             feedbackIsError = true
-        } else if cleared {
-            feedback = "已清空并重启 ChatGPT"
+        } else if cleared || response["restarted"] as? Bool == true {
+            // 清空和重启都把配置写进了客户端：底栏那句「等重启」到此为止。
+            feedback = ""
             feedbackIsError = false
-        } else if response["restarted"] as? Bool == true {
-            feedback = "配置已写入，ChatGPT 已重启"
-            feedbackIsError = false
+            restartNeeded = false
+            appliedChannels = channels
         } else if response["saved"] as? Bool == true {
-            feedback = pending?.note ?? "已保存，点右上角「重启 ChatGPT」才会生效"
+            // 只存盘有两种：改配置要重启才写进客户端；翻开关、删渠道立刻生效，不留提示。
+            // 后一种客户端手里已经换成这份列表了（注入器会重推一次），基线跟着走，
+            // 免得改动再改回原值还挂着「配置有更新」让人白重启一次。
+            feedback = ""
             feedbackIsError = false
+            if pending == nil { restartNeeded = channels != appliedChannels } else { appliedChannels = channels }
+            if leaveEditor { showList() }
         } else {
             feedback = ""
             feedbackIsError = false
+            // 读配置：面板刚打开时按「文件里的就是客户端里的」算。
+            appliedChannels = channels
         }
     }
 
@@ -854,7 +877,7 @@ struct ChannelListView: View {
                         .padding(.top, 2)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("渠道").font(.system(size: 17, weight: .semibold))
-                        Text("渠道可以单独启用/禁用，开关立刻生效；点右上角「重启」把配置写进 ChatGPT")
+                        Text("聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -862,9 +885,9 @@ struct ChannelListView: View {
                 Spacer(minLength: 12)
                 // 「重启生效」原来挂在当前渠道那行；它是全局动作，挪到这里只留一个入口。
                 Button { store.requestRestart() } label: {
-                    Text("重启 ChatGPT")
+                    Text(store.restarting ? "重启中" : "重启 ChatGPT")
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(store.canRestart ? Color.primary : Color.secondary)
                         .padding(.horizontal, 14)
                         .frame(height: 30)
                         .background(RoundedRectangle(cornerRadius: 9).fill(.ultraThinMaterial))
@@ -1316,20 +1339,42 @@ struct DashedRowButton: View {
 
 struct BottomBar: View {
     @ObservedObject var store: PanelStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// 提醒重启那行字：跟原来那档灰一个明度，只把色相换成红，所以看着是淡红不是正红。
+    private var restartInk: Color {
+        colorScheme == .dark ? Color(red: 0.93, green: 0.72, blue: 0.71)
+                             : Color(red: 0.87, green: 0.55, blue: 0.54)
+    }
+
+    /// 这行只说两件事：操作失败的原文，和「配置改了还没写进客户端」。
+    private var hint: String {
+        if store.feedbackIsError { return store.feedback }
+        return store.restartNeeded ? "配置有更新，点右上角「重启 ChatGPT」生效" : store.feedback
+    }
+
+    private var hintInk: AnyShapeStyle {
+        if store.feedbackIsError { return AnyShapeStyle(Color.red) }
+        if store.restartNeeded { return AnyShapeStyle(restartInk) }
+        return AnyShapeStyle(.tertiary)
+    }
 
     var body: some View {
         HStack(spacing: 18) {
             Button("初始化配置") { store.confirmingClear = true }
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                // 它是个能点的按钮，字色跟「重启 ChatGPT」「添加渠道」一样用 primary，
+                // 别和右边那行提示一样淡（提示要淡才不像按钮）。
+                .foregroundStyle(.primary)
                 .withoutFocusRing()
                 .pointingHand()
                 .opacity(store.loaded && !store.busy ? 1 : 0.45)
                 .disabled(!store.loaded || store.busy)
-            Text(store.feedback)
-                .font(.system(size: 13))
-                .foregroundStyle(store.feedbackIsError ? Color.red : Color.secondary)
+            // 提示和左边的按钮都是灰字：比按钮小一号、颜色再淡一档，才分得清哪个能点。
+            Text(hint)
+                .font(.system(size: 11))
+                .foregroundStyle(hintInk)
                 .lineLimit(1)
             Spacer(minLength: 12)
             if !store.version.isEmpty {
@@ -1355,7 +1400,7 @@ struct BottomBar: View {
             .buttonStyle(.borderless)
             .focusable(false)
             .pointingHand()
-            .disabled(!store.updateEnabled)
+            .disabled(!store.updateEnabled || store.busy)
             .help(store.updateTitle)
         }
         .padding(.horizontal, 24)

@@ -546,7 +546,7 @@
   // 聚合渠道下原生选择器是一维列表：非默认渠道的模型只能靠展示名尾部的 `（渠道名）`
   // 标归属，几十个模型平铺下来很难找。这里按渠道把行分组，在每组第一行前插一个可点
   // 表头，折叠时只给该组行加类隐藏，行的点击与键盘选中仍然完全交给原生逻辑。
-  // 只有一个分组（直连渠道）时完全不碰原生列表。
+  // 一个分组都没有时只还原补丁、藏掉外来行，不插表头。
 
   /** 自己插入的节点标记；刷新逻辑靠它把自己产生的 DOM 变化排除在外。 */
   const MODEL_GROUP_EXT = "model-picker-groups";
@@ -871,7 +871,9 @@
   /** 同步折叠状态：行只加/去类，不增删原生节点，React 的对账不受影响。 */
   const applyPickerGroups = (list, groups) => {
     for (const group of groups) {
-      const collapsed = modelGroupState.collapsed.has(group.name);
+      // 只剩一个分组时不沿用折叠状态：禁用掉另一条渠道后整份列表会只剩一个表头，
+      // 看着像模型全没了。单分组也没有别的组需要折叠开。
+      const collapsed = groups.length > 1 && modelGroupState.collapsed.has(group.name);
       for (const item of group.rows) {
         item.row.classList.add(MODEL_GROUP_ROW_CLASS);
         item.row.classList.toggle(MODEL_GROUP_HIDDEN_CLASS, collapsed);
@@ -978,8 +980,9 @@
     const groups = collectPickerGroups(list);
     installPickerGroupStyle();
     observePickerGroupList(list);
-    // 只有一个分组时不插表头，并把之前可能打上的补丁还原掉；但还是只留我们注入的模型。
-    if (groups.length < 2) {
+    // 一个分组都没有时没得插表头，把之前可能打上的补丁还原掉；但还是只留我们注入的模型。
+    // 只剩一个渠道也照样插表头，显示方式跟多渠道一致。
+    if (!groups.length) {
       resetPickerGroups(panel);
       hideForeignPickerRows(list, groups);
       return;

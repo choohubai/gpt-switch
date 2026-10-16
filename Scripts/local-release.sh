@@ -175,7 +175,7 @@ generate_release_notes() {
     printf '%s\n' '- 请求走本机 127.0.0.1 上的转发服务，按模型 ID 送回所属渠道，换渠道不用改客户端指向。'
     printf '%s\n' '- 模型选择器按渠道分组折叠，只列插件里配置的渠道模型；同一个模型 ID 出现在多个渠道时各算一组。'
     printf '%s\n' '- 右上角「重启 ChatGPT」把配置写进客户端；左下角「初始化配置」还原插件写过的配置并清理模型目录，渠道列表保留。'
-    printf '%s\n' '- macOS 菜单栏面板与 Windows 桌面面板行为一致，DMG 与 Windows 安装包一起发布。'
+    printf '%s\n' '- macOS 菜单栏面板与 Windows 桌面面板共用同一套渠道配置与转发协议，DMG 与 Windows 安装包一起发布。'
     printf '\n## 模型配置\n\n'
     printf '%s\n' '`id` 是客户端使用的模型标识，`context` 是上下文窗口（单位 k，1000k = 1M）。'
   } > "$output"
