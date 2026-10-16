@@ -204,18 +204,19 @@ struct StatusMenuTests {
         // 版本比较和更新按钮。
         assert(isVersion("0.1.33", newerThan: "0.1.32"))
         assert(!isVersion("0.1.31", newerThan: "0.1.32"))
-        store.checkForUpdates()
-        assert(requests.last?["action"] as? String == "check-update")
-        store.apply(["ok": true, "latest": "0.1.33", "url": "https://example.com/release"])
-        assert(store.updateTitle == "去下载 v0.1.33")
         // 忙碌期间（例如正在重启）不能再发一条请求：先回来的那条会被当成检查更新的响应吃掉，
-        // busy 与「重启中」就再也复位不了。
+        // busy 与「重启中」就再也复位不了。这条要在「有待下载版本」之前测——那时点更新是打开
+        // 浏览器，会把测试里那个 example.com 的假地址真弹出来。
         store.busy = true
         let beforeBusyCheck = requests.count
         store.checkForUpdates()
         assert(requests.count == beforeBusyCheck, "忙碌期间点检查更新不能发请求")
         assert(!store.updateChecking, "被挡下就不要进检查中状态")
         store.busy = false
+        store.checkForUpdates()
+        assert(requests.last?["action"] as? String == "check-update")
+        store.apply(["ok": true, "latest": "0.1.33", "url": "https://example.com/release"])
+        assert(store.updateTitle == "去下载 v0.1.33")
 
         // 错误响应要落到反馈里，并解除 busy。
         store.busy = true
