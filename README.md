@@ -31,6 +31,17 @@ GPT Switch 是面向 ChatGPT / Codex 桌面应用的本地模型渠道管理工�
 
 感谢以下赞助商对项目的支持。服务范围、价格与活动以各平台官网说明为准。
 
+<p align="center">
+  <a href="https://choohub.net">
+    <img src="docs/images/choo-hub.png" alt="ChooHub" height="110">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://choohub.net/"><strong>统一 AI 网关，稳定转发调用</strong></a><br>
+  ChooHub 为开发者提供统一的 AI 模型接入服务，通过一套配置即可在 ChatGPT/Codex 工作流中灵活切换所需模型，减少重复接入和环境维护成本，适合个人开发、团队协作与长期项目使用。
+</p>
+
 | 赞助商 | 介绍 |
 | --- | --- |
 | [<img src="docs/images/choo-hub.png" alt="ChooHub" height="80">](https://choohub.net) | [**ChooHub**](https://choohub.net)<br>统一的 AI API 网关，兼容 OpenAI 风格接口，支持多模型路由、会话保持、配额控制与用量统计。 |
