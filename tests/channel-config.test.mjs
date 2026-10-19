@@ -489,13 +489,13 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   assert.match(bad.error, /请先填渠道地址/);
 });
 
-test("switching keeps web search off and shows raw reasoning, clearing removes them again", (context) => {
+test("switching enables live web search and shows raw reasoning, clearing removes them again", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
   fs.writeFileSync(userConfigPath, CONFIG);
   fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
   applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
   let written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^web_search = "disabled"$/m);
+  assert.match(written, /^web_search = "live"$/m);
   assert.match(written, /^show_raw_agent_reasoning = true$/m);
   assert.match(written, /^compact_prompt = ".*继续使用该语言.*"$/m, "压缩提示要求跟着用户的语言走");
   applyChannelToCodex({
@@ -508,14 +508,14 @@ test("switching keeps web search off and shows raw reasoning, clearing removes t
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "用户没写过的键还原时删掉");
 });
 
-test("switching sets web search off and clearing restores the user's value", (context) => {
+test("switching overrides the user's web search value and clearing restores it", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
-  const original = `web_search = "live"\n${CONFIG}`;
+  const original = `web_search = "disabled"\n${CONFIG}`;
   fs.writeFileSync(userConfigPath, original);
   fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
   applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
   const written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^web_search = "disabled"$/m);
+  assert.match(written, /^web_search = "live"$/m);
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原放回用户原来的值");
 });
@@ -577,7 +577,7 @@ test("repointProxyUrl moves only base_url when the forward port changed", (conte
   const { userConfigPath, recordPath } = sandbox(context);
   fs.writeFileSync(userConfigPath, [
     'model = "m-one"',
-    'web_search = "disabled"',
+    'web_search = "live"',
     "",
     "[model_providers.ollama]",
     'base_url = "http://127.0.0.1:11434/v1"',

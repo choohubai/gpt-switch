@@ -135,11 +135,11 @@ const removeTopLevelLine = (text, name) => {
 const COMPACT_PROMPT = "你正在进行上下文压缩检查点。请为接手这个任务的另一个 LLM 写一份交接摘要："
   + "用用户当前使用的语言写，并在摘要开头注明「后续回复与推理继续使用该语言」。";
 
-/// 模型能不能用网页搜索由目录里的 supports_search_tool 决定，所以全局保持关闭，
-/// 避免不支持搜索的模型也收到搜索工具；第三方模型的推理是裸文本，不开这个桌面端看不到。
+/// 当前渠道模型都支持网页搜索，统一使用 live 实时抓取；第三方模型的推理是裸文本，
+/// 不开这个桌面端看不到。
 /// 这几个键都是全局的，启用时写入、还原时放回原值。
 const GLOBAL_KEYS = [
-  { name: "web_search", value: '"disabled"' },
+  { name: "web_search", value: '"live"' },
   { name: "show_raw_agent_reasoning", value: "true" },
   { name: "compact_prompt", value: tomlString(COMPACT_PROMPT) },
 ];
