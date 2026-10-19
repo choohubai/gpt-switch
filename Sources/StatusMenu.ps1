@@ -277,7 +277,6 @@ function Convert-Context([int]$k) {
         <Button x:Name="RestartButton" Grid.Column="1" Style="{StaticResource Pill}" Content="重启 ChatGPT"
                 VerticalAlignment="Top"/>
       </Grid>
-      </Grid>
       <Border x:Name="ModelsCard" Grid.Row="2" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
         <Grid>
         <Grid.RowDefinitions>

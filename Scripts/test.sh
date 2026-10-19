@@ -38,6 +38,14 @@ rm -rf "$PANEL_TEST_DIR"
 /bin/zsh -n "$SCRIPT_DIR/package-windows.sh"
 /usr/bin/plutil -lint "$RESOURCE_DIR/Info.plist"
 
+# Windows probe 会真的加载 XAML；本地发布门禁也先按 XML 解析一遍，
+# 否则开闭标签错位会直到 Windows CI 才暴露。
+PANEL_XAML="$(mktemp "${TMPDIR:-/tmp}/gpt-switch-panel-xaml.XXXXXX")"
+"$NODE" -e 'const fs = require("fs"); const source = fs.readFileSync(process.argv[1], "utf8"); const match = /\[xml\]\$xaml = @"([\s\S]*?)"@/.exec(source); if (!match) throw new Error("StatusMenu.ps1 里找不到 XAML"); fs.writeFileSync(process.argv[2], match[1]);' \
+  "$SOURCE_DIR/StatusMenu.ps1" "$PANEL_XAML"
+xmllint --noout "$PANEL_XAML"
+rm -f "$PANEL_XAML"
+
 # Windows 面板没有 WPF 运行环境；至少守住保存回包不能把空 ID 渠道回填到界面。
 for marker in "function Test-ResponseChannels" "if (Test-ResponseChannels \$Response.channels)" \
   "插件返回的渠道列表不完整，已保留当前配置"; do
