@@ -6,7 +6,7 @@ $source = Get-Content -LiteralPath $sourcePath -Raw
 function Get-FunctionBlock([string]$Name) {
   $match = [regex]::Match(
     $source,
-    "(?ms)^function\s+$([regex]::Escape($Name))\s*\{.*?^\}",
+    '(?ms)^function\s+' + [regex]::Escape($Name) + '\s*\{.*?^\}',
   )
   if (-not $match.Success) { throw "找不到函数：$Name" }
   return $match.Value
