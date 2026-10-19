@@ -38,12 +38,29 @@ $detailed = @'
 '@ | ConvertFrom-Json
 
 if (-not (Test-ResponseChannels $normal.channels)) { throw "正常渠道回包被拒绝" }
-$converted = @(Convert-ResponseChannels $normal.channels)
+$converted = Convert-ResponseChannels $normal.channels
 if ($converted.Count -ne 2 -or $converted[0].id -ne "ChooHub" -or $converted[1].id -ne "feiyu") {
   throw "正常渠道回包被改写"
 }
 if (Test-ResponseChannels $empty.channels) { throw "空 ID 渠道回包没有被拦住" }
-$converted = @(Convert-ResponseChannels $detailed.channels)
+$single = @'
+{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","models":[]}]}
+'@ | ConvertFrom-Json
+$singleConverted = Convert-ResponseChannels $single.channels
+if ($singleConverted -isnot [array] -or $singleConverted.Count -ne 1 -or
+    $singleConverted[0].id -ne "relay") {
+  throw "单渠道响应被折叠或转换错误"
+}
+$singleSnapshot = Copy-Channels $singleConverted
+if ($singleSnapshot -isnot [array] -or $singleSnapshot.Count -ne 1 -or
+    $singleSnapshot[0].id -ne "relay") {
+  throw "单渠道快照被折叠"
+}
+$draft = Copy-Channels $singleConverted
+$draft[0].id = ""
+$drawable = @($draft | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.id) })
+if ($drawable.Count -ne 0) { throw "空 ID 草稿泄漏到了渠道列表" }
+$converted = Convert-ResponseChannels $detailed.channels
 if ($converted[0].baseUrl -ne "https://relay.example/v1" -or $converted[0].headerName -ne "x-actor" -or
     $converted[0].enabled -ne $false -or $converted[0].models[0].context -ne 128 -or
     (@($converted[0].models[0].inputModalities) -join ",") -ne "text,image") {
@@ -52,14 +69,14 @@ if ($converted[0].baseUrl -ne "https://relay.example/v1" -or $converted[0].heade
 $noEnabled = @'
 {"channels":[{"id":"relay","models":[]}]}
 '@ | ConvertFrom-Json
-if (@(Convert-ResponseChannels $noEnabled.channels)[0].enabled -ne $true) {
+if ((Convert-ResponseChannels $noEnabled.channels)[0].enabled -ne $true) {
   throw "渠道没写 enabled 时应当按启用处理"
 }
 # 快照（Copy-Channels）必须逐字段复制：漏了 enabled 会让「返回」把禁用过的渠道复活，
 # 也会让面板一加载就被判成「有未保存的更改」。
-$snapshot = @(Copy-Channels @(Convert-ResponseChannels $detailed.channels))
+$snapshot = Copy-Channels (Convert-ResponseChannels $detailed.channels)
 if ($snapshot[0].enabled -ne $false) { throw "复制渠道快照时丢了 enabled" }
-if (Compare-Channels @(Convert-ResponseChannels $detailed.channels) $snapshot) {
+if (Compare-Channels (Convert-ResponseChannels $detailed.channels) $snapshot) {
   throw "原样复制的快照被判成了有改动"
 }
 
