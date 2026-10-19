@@ -219,7 +219,8 @@ prepare_release() {
   rm -rf "$APP_PATH"
   artifact_sha256="$(shasum -a 256 "$artifact_tmp" | awk '{print $1}')"
   info "打包 Windows 安装包"
-  OUTPUT_DIR="$ARTIFACT_DIR" "$SCRIPT_DIR/package-windows.sh" "$version" >/dev/null
+  # 发布包必须带版本号（GitHub Release 的资产名），所以这里显式覆盖本地默认的固定名。
+  OUTPUT_DIR="$ARTIFACT_DIR" EXE_NAME="$(exe_name "$version")" "$SCRIPT_DIR/package-windows.sh" "$version" >/dev/null
   exe="$(exe_path "$version")"
   exe_checksum="$(exe_checksum_path "$version")"
   [[ -s "$exe" ]] || die "构建后没有找到 Windows 安装包：$exe"
@@ -268,6 +269,7 @@ verify_prepared_artifact() {
   local version="$1"
   local artifact metadata checksum notes expected_commit artifact_commit expected_sha256 actual_sha256
   local exe exe_checksum expected_exe_sha256 actual_exe_sha256
+  local checksum_name checksum_sha256 exe_checksum_name exe_checksum_sha256
 
   artifact="$(artifact_path "$version")"
   metadata="$(metadata_path "$version")"
@@ -289,18 +291,36 @@ verify_prepared_artifact() {
   actual_exe_sha256="$(shasum -a 256 "$exe" | awk '{print $1}')"
   [[ -n "$expected_exe_sha256" && "$expected_exe_sha256" == "$actual_exe_sha256" ]] || \
     die "Windows 安装包 SHA256 校验失败"
+  read -r checksum_sha256 checksum_name < "$checksum"
+  [[ "$checksum_sha256" == "$expected_sha256" && "$checksum_name" == "$(basename "$artifact")" ]] || \
+    die "macOS 校验文件的摘要或文件名不对"
+  read -r exe_checksum_sha256 exe_checksum_name < "$exe_checksum"
+  [[ "$exe_checksum_sha256" == "$expected_exe_sha256" && "$exe_checksum_name" == "$(basename "$exe")" ]] || \
+    die "Windows 校验文件的摘要或文件名不对"
 }
 
+# 只核对远端资产名不够：仓库可能已经上传了别的内容。这里按 GitHub 返回的摘要逐个比对本地文件。
 verify_release_assets() {
   local repository="$1"
   local tag="$2"
   shift 2
-  local asset names
+  local asset name remote_digest local_digest
+  local names digests name_count digest_count
 
   names="$(gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].name')"
+  digests="$(gh release view "$tag" --repo "$repository" --json assets --jq '.assets[].digest')"
+  name_count="$(printf '%s\n' "$names" | awk 'NF' | wc -l | tr -d ' ')"
+  digest_count="$(printf '%s\n' "$digests" | awk 'NF' | wc -l | tr -d ' ')"
+  [[ "$name_count" -eq "$digest_count" ]] || die "GitHub Release 资产清单不完整"
   for asset in "$@"; do
-    grep -Fqx "$(basename "$asset")" <<< "$names" || \
+    name="$(basename "$asset")"
+    remote_digest="$(paste <(printf '%s\n' "$names") <(printf '%s\n' "$digests") \
+      | awk -v name="$name" '$1 == name { print $2; exit }')"
+    [[ -n "$remote_digest" ]] || \
       die "GitHub Release 缺少资产：$(basename "$asset")"
+    local_digest="sha256:$(shasum -a 256 "$asset" | awk '{print $1}')"
+    [[ "$remote_digest" == "$local_digest" ]] || \
+      die "GitHub Release 资产内容不一致：$(basename "$asset")"
   done
 }
 

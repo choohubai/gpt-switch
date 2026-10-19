@@ -64,7 +64,7 @@ Windows 版不额外打包 Node.js：插件优先使用客户端自带的 Node �
 
 模型选择器里只列插件里配置的渠道模型，客户端自带的模型和「默认推荐模型集」不再出现（它们走不到你配置的渠道上）。列表按渠道分组：每个启用的渠道一个可折叠的表头（带条数），点表头折叠或展开这一组，折叠状态只在本次会话里有效；表头名字就是渠道名。只剩一个渠道时照样有表头，显示方式不随渠道数量变。每个渠道的模型在模型目录和输入框上都显示成「模型名（渠道名）」，选择器列表里那一行换成裸模型名（渠道名由表头体现）；客户端当前指向的那条渠道 ID 保持裸名，其它渠道的 ID 带 `gpts-<渠道 ID>/` 前缀。同一个模型 ID 出现在多个渠道时按渠道各算一组，不合并。禁用的渠道不参与分组，它的模型不出现在选择器里。
 
-写进模型目录时，渠道模型一律按「非 Responses Lite」的第三方形状声明：`use_responses_lite = false`、`tool_mode = null`、`shell_type = "shell_command"`、`web_search_tool_type = "text"`、`supports_parallel_tool_calls = true`，并且不带 Fast 这类加速档，取值照 DeepSeek 官方 Codex 接入文档里的 `models.json`。照抄内置模型模板（GPT-5.x 那批是 Lite 形状）会让上游收到它不认识的请求：工具声明被塞进 `input[0].additional_tools`、工具调用改发 `custom_tool_call`、还多一个内部请求头，上游不认时模型只能把工具调用当文本吐出来。
+写进模型目录时，渠道模型一律按「非 Responses Lite」的第三方形状声明：`use_responses_lite = false`、`tool_mode = null`、`shell_type = "shell_command"`、`web_search_tool_type = "text"`、`supports_search_tool = true`、`supports_parallel_tool_calls = true`，并且不带 Fast 这类加速档，取值照 DeepSeek 官方 Codex 接入文档里的 `models.json`。搜索能力统一声明为支持（配合全局 `web_search = "live"`），不再按模型开关。照抄内置模型模板（GPT-5.x 那批是 Lite 形状）会让上游收到它不认识的请求：工具声明被塞进 `input[0].additional_tools`、工具调用改发 `custom_tool_call`、还多一个内部请求头，上游不认时模型只能把工具调用当文本吐出来。
 
 “模型目录”右边的「获取可用模型」会带着这个渠道的地址、密钥和自定义请求头去问端点的 `GET {地址}/models`，把返回的清单列进「选择要添加的模型」：可以搜索、全选、逐个勾，点「添加所选」才补进当前渠道（已经在目录里的不重复加），点「取消」什么都不动。标准 `data` 数组和部分网关的 `models` 对象都认，显示名取 `name`／`display_name`，窗口取 `context_length`／`context_window` 等字段（token 折成 k）。添加进来的模型只是面板里的编辑内容，点「保存」才落盘。
 

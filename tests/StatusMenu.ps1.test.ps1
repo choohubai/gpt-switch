@@ -1,32 +1,30 @@
 $ErrorActionPreference = "Stop"
 
 $sourcePath = Join-Path $PSScriptRoot "..\Sources\StatusMenu.ps1"
-$source = Get-Content -LiteralPath $sourcePath -Raw
+
+# 从源码里取真实函数体来执行，不复制一份实现：副本会和源码漂移，测试就变成假绿。
+# 取到的文本必须点源到脚本作用域执行：在函数里 Invoke-Expression 定义的函数，出了那个作用域就没了。
+function Get-SourceFunctionText([string]$Name) {
+  $tokens = $null
+  $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -gt 0) { throw "解析 $sourcePath 失败：$($errors[0].Message)" }
+  $found = $null
+  foreach ($node in $ast.FindAll({
+    param($astNode) $astNode -is [System.Management.Automation.Language.FunctionDefinitionAst]
+  }, $true)) {
+    if ($node.Name -eq $Name) { $found = $node; break }
+  }
+  if ($null -eq $found) { throw "找不到函数：$Name" }
+  return $found.Extent.Text
+}
 
 # 这是源码片段的行为测试：WPF 面板本身由 Windows probe 的解析步骤覆盖。
-function Convert-ResponseChannels($Source) {
-  return @($Source | ForEach-Object {
-    @{
-      id = [string]$_.id
-      name = [string]$_.name
-      models = @($_.models | ForEach-Object {
-        @{
-          id = [string]$_.id; displayName = [string]$_.displayName
-          context = [int]$_.context
-        }
-      })
-    }
-  })
-}
-
-function Test-ResponseChannels($Source) {
-  if ($null -eq $Source) { return $false }
-  $items = @($Source)
-  foreach ($item in $items) {
-    if ($null -eq $item -or [string]::IsNullOrWhiteSpace([string]$item.id)) { return $false }
-  }
-  return $true
-}
+. ([scriptblock]::Create((Get-SourceFunctionText "Convert-ResponseChannels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Test-ResponseChannels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Copy-Channels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Compare-Models")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Compare-Channels")))
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}
@@ -34,12 +32,34 @@ $normal = @'
 $empty = @'
 {"channels":[{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""}]}
 '@ | ConvertFrom-Json
+$detailed = @'
+{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","apiKey":"sk-relay","headerName":"x-actor","headerValue":"token","enabled":false,"models":[{"id":"m-one","displayName":"M One","context":128,"inputModalities":["text","image"]}]}]}
+'@ | ConvertFrom-Json
 
 if (-not (Test-ResponseChannels $normal.channels)) { throw "正常渠道回包被拒绝" }
-$converted = Convert-ResponseChannels $normal.channels
+$converted = @(Convert-ResponseChannels $normal.channels)
 if ($converted.Count -ne 2 -or $converted[0].id -ne "ChooHub" -or $converted[1].id -ne "feiyu") {
   throw "正常渠道回包被改写"
 }
 if (Test-ResponseChannels $empty.channels) { throw "空 ID 渠道回包没有被拦住" }
+$converted = @(Convert-ResponseChannels $detailed.channels)
+if ($converted[0].baseUrl -ne "https://relay.example/v1" -or $converted[0].headerName -ne "x-actor" -or
+    $converted[0].enabled -ne $false -or $converted[0].models[0].context -ne 128 -or
+    (@($converted[0].models[0].inputModalities) -join ",") -ne "text,image") {
+  throw "渠道回包转换丢了字段"
+}
+$noEnabled = @'
+{"channels":[{"id":"relay","models":[]}]}
+'@ | ConvertFrom-Json
+if (@(Convert-ResponseChannels $noEnabled.channels)[0].enabled -ne $true) {
+  throw "渠道没写 enabled 时应当按启用处理"
+}
+# 快照（Copy-Channels）必须逐字段复制：漏了 enabled 会让「返回」把禁用过的渠道复活，
+# 也会让面板一加载就被判成「有未保存的更改」。
+$snapshot = @(Copy-Channels @(Convert-ResponseChannels $detailed.channels))
+if ($snapshot[0].enabled -ne $false) { throw "复制渠道快照时丢了 enabled" }
+if (Compare-Channels @(Convert-ResponseChannels $detailed.channels) $snapshot) {
+  throw "原样复制的快照被判成了有改动"
+}
 
 Write-Output "Windows 面板渠道响应检查通过"

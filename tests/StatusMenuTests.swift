@@ -34,7 +34,6 @@ struct StatusMenuTests {
         assert(store.editingIndex == nil, "读完配置应该停在列表页")
         assert(store.channels[0].models.first?.displayName == "", "老配置没有显示名称时留空")
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
-        assert(store.channels[0].models.first?.webSearch == nil, "老配置没有网页搜索字段时留给保存阶段统一归一")
 
         // 程序坞图标要能把面板叫回来；从程序坞或 ⌘Q 来的退出请求只关窗口，不能把菜单栏图标带走。
         controller.window?.orderOut(nil)
@@ -111,14 +110,9 @@ struct StatusMenuTests {
         store.channels[0].models = [ModelRow(id: "deepseek-v4-pro", context: 1000)]
         store.models[0].displayName = "DeepSeek V4"
         store.models[0].context = 10000
-        assert(store.models[0].webSearch == nil, "新建模型先保持未选择")
         store.models[0].id = "deepseek-v4-pro"
-        assert(store.models[0].webSearch == nil, "模型对象本身不负责 UI 的默认勾选")
-        store.models[0].webSearch = true
         assert(store.models[0].displayName == "DeepSeek V4")
         assert(store.models[0].context == 10000)
-        assert(store.models[0].webSearch == true, "模型卡片的网页搜索开关要落到模型上")
-        store.models[0].webSearch = false
         assert(contextConversionLabel(10000) == "10M")
         store.toggleModality(at: 0, modality: "image", on: false)
         assert(store.models[0].inputModalities == ["text"])
@@ -133,6 +127,7 @@ struct StatusMenuTests {
         assert(store.models.count == 1)
 
         store.channels[0].id = "choohub"
+        store.channels[0].enabled = false
         assert(store.isDirty)
         store.save()
         assert(requests.last?["action"] as? String == "save")
@@ -144,7 +139,7 @@ struct StatusMenuTests {
         assert(submittedModels[0]["context"] as? Int == 10000)
         assert(submittedModels[0]["displayName"] as? String == "DeepSeek V4")
         assert(submittedModels[0]["inputModalities"] as? [String] == ["text", "image"])
-        assert(submittedModels[0]["webSearch"] as? Bool == false, "用户显式取消后保存 payload 要保持 false")
+        assert(submitted[0]["enabled"] as? Bool == false, "在编辑页改渠道内容不能改动启用状态")
 
         store.apply(["ok": true, "saved": true, "channels": [
             ["id": "choohub", "baseUrl": "https://choohub.net/api-proxy/v1",
@@ -387,22 +382,20 @@ struct StatusMenuTests {
         assert(store.models.count == 1, "已经在目录里的不重复加")
         assert(store.feedback == "勾选的模型都已经在目录里")
 
-        store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: nil, webSearch: nil)]
+        store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: nil)]
         store.discoveredSelection = ["brand-new"]
         store.cancelDiscovery()
         assert(!store.discovering && store.models.count == 1, "取消不动目录")
 
         store.discoveredModels = [
-            DiscoveredModel(id: "brand-new", displayName: "Brand New", context: 128, webSearch: nil),
-            DiscoveredModel(id: "deepseek-v4.1-flash", displayName: nil, context: nil, webSearch: true),
+            DiscoveredModel(id: "brand-new", displayName: "Brand New", context: 128),
+            DiscoveredModel(id: "deepseek-v4.1-flash", displayName: nil, context: nil),
         ]
         store.discoveredSelection = ["brand-new", "deepseek-v4.1-flash"]
         store.addSelectedModels()
         assert(store.models.map(\.id) == ["kept", "brand-new", "deepseek-v4.1-flash"], "勾上的补进目录")
         assert(store.models[1].displayName == "Brand New")
         assert(store.models[1].context == 128)
-        assert(store.models[1].webSearch == nil, "没有后端值的发现结果保持未选择")
-        assert(store.models[2].webSearch == true, "后端按白名单发现的结果要保留")
         assert(store.models[1].inputModalities == ["text", "image"], "新加进来的模型默认文本+图片")
         assert(store.models[0].displayName == "手动改的名字", "已有的那条不动")
         assert(store.feedback == "已添加 2 个模型，点「保存」后生效")
@@ -495,9 +488,9 @@ struct StatusMenuTests {
         shoot("confirm.png")
         store.cancelDelete()
         store.discoveredModels = [
-            DiscoveredModel(id: "deepseek-v4-flash-vision-exp", displayName: nil, context: nil, webSearch: true),
-            DiscoveredModel(id: "deepseek-v4-pro", displayName: nil, context: nil, webSearch: true),
-            DiscoveredModel(id: "glm-5.3", displayName: nil, context: nil, webSearch: false),
+            DiscoveredModel(id: "deepseek-v4-flash-vision-exp", displayName: nil, context: nil),
+            DiscoveredModel(id: "deepseek-v4-pro", displayName: nil, context: nil),
+            DiscoveredModel(id: "glm-5.3", displayName: nil, context: nil),
         ]
         store.discoveredSelection = ["deepseek-v4-pro"]
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))

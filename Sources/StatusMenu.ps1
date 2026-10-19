@@ -773,14 +773,11 @@ function Compare-Models($Left, $Right) {
     $leftModalities = @($Left[$index].inputModalities) -join ","
     $rightModalities = @($Right[$index].inputModalities) -join ","
     if ($leftModalities -ne $rightModalities) { return $true }
-    if (($null -ne $Left[$index].webSearch) -ne ($null -ne $Right[$index].webSearch)) { return $true }
-    if ($null -ne $Left[$index].webSearch -and
-        ($Left[$index].webSearch -eq $true) -ne ($Right[$index].webSearch -eq $true)) { return $true }
   }
   return $false
 }
 
-/// 把注入器返回的渠道数组转成面板使用的哈希表。
+# 把注入器返回的渠道数组转成面板使用的哈希表。
 function Convert-ResponseChannels($Source) {
   return @($Source | ForEach-Object {
     @{
@@ -795,14 +792,13 @@ function Convert-ResponseChannels($Source) {
         @{
           id = [string]$_.id; displayName = [string]$_.displayName
           context = [int]$_.context; inputModalities = @($_.inputModalities)
-          webSearch = $(if ($null -ne $_.webSearch) { [bool]$_.webSearch } else { $null })
         }
       })
     }
   })
 }
 
-/// 成功响应里的渠道必须有非空 ID；结构不对时保留当前面板，不让空 ID 卡片覆盖正常列表。
+# 成功响应里的渠道必须有非空 ID；结构不对时保留当前面板，不让空 ID 卡片覆盖正常列表。
 function Test-ResponseChannels($Source) {
   if ($null -eq $Source) { return $false }
   $items = @($Source)
@@ -818,11 +814,12 @@ function Copy-Channels($Source) {
     @{
       id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
       headerName = $_.headerName; headerValue = $_.headerValue
+      # 少了这一项，复制出来的快照会丢掉禁用状态：返回后禁用过的渠道会被当成启用。
+      enabled = $_.enabled -ne $false
       models = @($_.models | ForEach-Object {
         @{
           id = $_.id; displayName = $_.displayName
           context = $_.context; inputModalities = @($_.inputModalities)
-          webSearch = $(if ($null -ne $_.webSearch) { [bool]$_.webSearch } else { $null })
         }
       })
     }
@@ -1008,16 +1005,6 @@ function Rebuild-Rows {
       [void]$modalityRow.Children.Add($check)
     }
     [void]$content.Children.Add($modalityRow)
-    $webSearch = New-Object System.Windows.Controls.CheckBox
-    $webSearch.Content = "网页搜索"
-    $webSearch.ToolTip = "白名单内的模型默认勾选，可手动取消"
-    $webSearch.FontSize = 14
-    $webSearch.IsEnabled = $enabled
-    $webSearch.IsChecked = $model.webSearch -eq $true
-    $webSearch.Margin = "0,6,0,0"
-    $webSearch.Tag = $index
-    $webSearch.Add_Click({ param($sender, $eventArgs) Toggle-WebSearch $sender })
-    [void]$content.Children.Add($webSearch)
 
     $card.Child = $content
     [void]$rowsPanel.Children.Add($card)
@@ -1069,16 +1056,6 @@ function Toggle-Modality($Sender) {
     $current = $remaining
   }
   $channel.models[$index].inputModalities = $current
-  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
-  Update-Controls
-}
-
-function Toggle-WebSearch($Sender) {
-  if ($script:rendering -or $script:busy) { return }
-  $channel = Get-ActiveChannel
-  $index = [int]$Sender.Tag
-  if (-not $channel -or $index -lt 0 -or $index -ge $channel.models.Count) { return }
-  $channel.models[$index].webSearch = $Sender.IsChecked -eq $true
   Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
 }
@@ -1221,7 +1198,6 @@ function Add-SelectedModels {
       displayName = [string]$row.displayName
       context = $(if ($null -ne $row.context) { [int]$row.context } else { 272 })
       inputModalities = @("text", "image")
-      webSearch = $(if ($null -ne $row.webSearch) { [bool]$row.webSearch } else { $null })
     }
     $existing[$id] = $true
     $added += 1
@@ -1413,7 +1389,6 @@ function Submit([string]$Action, [string]$Note = "", [string]$Current = "") {
           @{
             id = [string]$_.id; displayName = [string]$_.displayName
             context = [int]$_.context; inputModalities = @($_.inputModalities)
-            webSearch = $(if ($null -ne $_.webSearch) { [bool]$_.webSearch } else { $null })
           }
         })
       }
@@ -1426,8 +1401,7 @@ $addButton.Add_Click({
   $channel = Get-ActiveChannel
   if (-not $channel) { return }
   $channel.models = @($channel.models) + @{
-    # 留空（null）表示尚未选择，保存时由共享白名单归一；用户手动改勾后会成为显式布尔值。
-    id = ""; displayName = ""; context = 272; inputModalities = @("text", "image"); webSearch = $null
+    id = ""; displayName = ""; context = 272; inputModalities = @("text", "image")
   }
   Rebuild-Rows
   Set-Feedback "有未保存的更改"

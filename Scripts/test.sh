@@ -50,6 +50,14 @@ if ! grep -Fq "StatusMenu.ps1.test.ps1" "$ROOT_DIR/.github/workflows/windows-pro
   exit 1
 fi
 
+# PowerShell 的注释只有 # 和 <# #>：C / Swift 风格的整行注释会被当成命令，脚本在第 8 行的
+# $ErrorActionPreference = "Stop" 下直接中止，而 CI 的 ParseFile 检查报 0 错误、拦不住。
+if grep -rnE '^[[:space:]]*(///|//|/\*)' "$SOURCE_DIR" "$SCRIPT_DIR" "$ROOT_DIR/tests" \
+  --include='*.ps1' 2>/dev/null; then
+  print -u2 -- "PowerShell 脚本里出现了 C / Swift 风格的整行注释，运行时会当成命令执行"
+  exit 1
+fi
+
 # Windows 安装包的载荷：面板、启动器和打包脚本都要在。
 WINDOWS_PAYLOADS=("$SOURCE_DIR/StatusMenu.ps1" "$SOURCE_DIR/channel-config.mjs" "$SCRIPT_DIR/GPTSwitch.ps1" "$SCRIPT_DIR/package-windows.sh" "$SCRIPT_DIR/windows-installer.nsi")
 for payload in "${WINDOWS_PAYLOADS[@]}"; do

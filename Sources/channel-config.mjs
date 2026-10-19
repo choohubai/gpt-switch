@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import {
-  atomicWrite, MAX_LABEL_LENGTH, validateModels, defaultWebSearchForModel,
+  atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
@@ -573,8 +573,6 @@ const readModelListing = (body) => {
       id,
       ...(displayName ? { displayName } : {}),
       ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
-      // 端点清单里没有这个选项；按前缀白名单预选，用户仍可在模型卡片里改。
-      webSearch: defaultWebSearchForModel(id),
     });
   }
   return models;
@@ -648,19 +646,7 @@ export const handlePanelRequest = async (request, {
   try {
     if (request?.action === "load") {
       const state = loadChannelState(configPath, importOptions);
-      // 老渠道文件没有布尔值时按同一份白名单给面板默认值；显式保存过的值保持原样。
-      return {
-        ok: true,
-        ...state,
-        channels: state.channels.map((channel) => ({
-          ...channel,
-          models: channel.models.map((model) => (
-            typeof model.webSearch === "boolean"
-              ? model
-              : { ...model, webSearch: defaultWebSearchForModel(model.id) }
-          )),
-        })),
-      };
+      return { ok: true, ...state };
     }
     if (request?.action === "list-models") {
       return { ok: true, models: await discoverChannelModels(request) };

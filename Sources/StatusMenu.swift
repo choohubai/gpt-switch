@@ -15,20 +15,17 @@ struct ModelRow: Codable, Equatable {
     var displayName: String
     var context: Int
     var inputModalities: [String]
-    /// 这个模型能不能使用网页搜索；nil 表示尚未选择，保存时按白名单归一。
-    var webSearch: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case id, displayName, context, inputModalities, webSearch
+        case id, displayName, context, inputModalities
     }
 
     init(id: String = "", displayName: String = "", context: Int = 272,
-         inputModalities: [String] = ["text", "image"], webSearch: Bool? = nil) {
+         inputModalities: [String] = ["text", "image"]) {
         self.id = id
         self.displayName = displayName
         self.context = context
         self.inputModalities = inputModalities
-        self.webSearch = webSearch
     }
 
     init(from decoder: Decoder) throws {
@@ -38,7 +35,6 @@ struct ModelRow: Codable, Equatable {
         context = try container.decodeIfPresent(Int.self, forKey: .context) ?? 272
         inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities)
             ?? ["text", "image"]
-        webSearch = try container.decodeIfPresent(Bool.self, forKey: .webSearch)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -47,15 +43,12 @@ struct ModelRow: Codable, Equatable {
         try container.encode(displayName, forKey: .displayName)
         try container.encode(context, forKey: .context)
         try container.encode(inputModalities, forKey: .inputModalities)
-        try container.encodeIfPresent(webSearch, forKey: .webSearch)
     }
 
     var payload: [String: Any] {
-        var value: [String: Any] = [
+        [
             "id": id, "displayName": displayName, "context": context, "inputModalities": inputModalities,
         ]
-        if let webSearch { value["webSearch"] = webSearch }
-        return value
     }
 }
 
@@ -134,7 +127,6 @@ struct DiscoveredModel: Decodable {
     let id: String
     let displayName: String?
     let context: Int?
-    let webSearch: Bool?
 }
 
 func isVersion(_ candidate: String, newerThan base: String) -> Bool {
@@ -548,7 +540,6 @@ final class PanelStore: ObservableObject {
             var model = ModelRow(id: row.id)
             model.displayName = row.displayName ?? ""
             if let context = row.context { model.context = context }
-            model.webSearch = row.webSearch ?? model.webSearch
             return model
         })
         let added = picked.count
@@ -1184,11 +1175,6 @@ struct ModelCard: View {
                 HStack(spacing: 16) {
                     Toggle("文本", isOn: modality("text"))
                     Toggle("图片", isOn: modality("image"))
-                    Toggle("网页搜索", isOn: Binding(
-                        get: { model.wrappedValue.webSearch ?? false },
-                        set: { model.wrappedValue.webSearch = $0 }
-                    ))
-                        .help("白名单内的模型默认勾选，可手动取消")
                 }
                 .toggleStyle(.checkbox)
                 .font(.system(size: 14))

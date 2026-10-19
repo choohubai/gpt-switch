@@ -1,7 +1,8 @@
 #!/bin/zsh
 # 在 macOS 上打 Windows 安装包：NSIS 的 makensis 是跨平台编译器（brew install makensis）。
 # 安装包只放脚本、面板和图标，运行时用客户端自带的 node，不打包 node.exe。
-# 产物：$OUTPUT_DIR/GPT-Switch-Setup-<version>.exe 和同名 .sha256
+# 产物：$OUTPUT_DIR/${EXE_NAME} 和同名 .sha256。
+# 本地测试用的安装包不带版本号：新包直接覆盖旧包，dist 里始终只有当前这一份（发布包的名字由 local-release.sh 定）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,6 +16,8 @@ if [[ -z "$VERSION" ]]; then
   print -u2 -- "用法：Scripts/package-windows.sh <version>"
   exit 2
 fi
+
+EXE_NAME="${EXE_NAME:-GPT-Switch-Setup.exe}"
 
 for command in makensis sips shasum; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -46,7 +49,7 @@ sips -z 256 256 "$RESOURCE_DIR/AppIcon.png" --out "$WORK_DIR/AppIcon-256.png" >/
 sips -s format ico "$WORK_DIR/AppIcon-256.png" --out "$ICON" >/dev/null
 cp "$ICON" "$PAYLOAD/AppIcon.ico"
 
-OUTFILE="$OUTPUT_DIR/GPT-Switch-Setup-$VERSION.exe"
+OUTFILE="$OUTPUT_DIR/$EXE_NAME"
 makensis -V2 \
   -DAPP_VERSION="$VERSION" \
   -DPAYLOAD="$PAYLOAD" \
