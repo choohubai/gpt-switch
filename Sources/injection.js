@@ -7,7 +7,7 @@
   const MODEL_ID_PREFIX = "";
   /// 注入模板自己的版本：模板改动（插的 DOM 形状变了）就抬一格，
   /// 已经开着的客户端会拆掉上一份重建，不至于把旧节点留在页面上。
-  const VERSION = "0.1.28";
+  const VERSION = "0.1.29";
   const GLOBAL_KEY = "__GPT_SWITCH__";
   const STATSIG_MODEL_CONFIG = "107580212";
   const modelListRequestIds = new Set();
@@ -559,6 +559,10 @@
   const MODEL_GROUP_OWN_LABEL_CLASS = "gpt-switch-group-own-label";
   const MODEL_GROUP_ROW_GROUP_ATTR = "data-gptswitch-group";
   const MODEL_GROUP_HEADER_GROUP_ATTR = "data-gptswitch-group-header";
+  const MODEL_PICKER_CONTENT_SELECTOR = '[class*="_ModelPickerDropdownContent_"]';
+  const MODEL_PICKER_MENU_SELECTOR = '[role="menu"]';
+  const MODEL_PICKER_LIST_SELECTOR = '[role="menuitemradio"]';
+  const MODEL_PICKER_ROW_SELECTOR = '[role^="menuitem"]';
   /** 列表 DOM 变化后的合并重扫延迟。 */
   const MODEL_GROUP_RESCAN_DELAY_MS = 60;
 
@@ -655,17 +659,24 @@
   // ---- 分组归属结束 ----
 
   /**
-   * 原生面板根节点。
+   * 定位原生模型选择器。
    *
-   * 菜单关闭后节点会从文档里摘除，`isConnected` 天然就是「开着/关着」的判据；
-   * 宫格视图没有折叠的意义，直接跳过。
+   * 版本更新会改内部 class 名，但弹层、菜单和可选项的语义结构比 hash class 稳定。
+   * 这里只返回确实含渠道模型行的菜单，避免误改其它下拉菜单。
    */
   const modelPickerPanel = () => {
-    for (const panel of document.querySelectorAll("[data-model-picker-view]")) {
-      if (panel.getAttribute("data-model-picker-view") === "grid") continue;
+    const panels = [
+      ...document.querySelectorAll(MODEL_PICKER_CONTENT_SELECTOR),
+      ...document.querySelectorAll(MODEL_PICKER_MENU_SELECTOR),
+    ];
+    for (const panel of panels) {
       if (!panel.isConnected) continue;
-      if (!panel.querySelector('[class*="_ModelList_"]')) continue;
-      return panel;
+      if (panel.closest('[data-model-picker-view="grid"]')) continue;
+      const view = panel.closest("[data-model-picker-view]");
+      if (view?.getAttribute("data-model-picker-view") === "grid") continue;
+      for (const menu of [panel, ...panel.querySelectorAll(MODEL_PICKER_MENU_SELECTOR)]) {
+        if (menu.querySelector(MODEL_PICKER_LIST_SELECTOR)) return menu;
+      }
     }
     return null;
   };
@@ -710,7 +721,7 @@
    */
   const collectPickerGroups = (list) => {
     const groups = new Map();
-    for (const row of list.querySelectorAll('[role="menuitemradio"]')) {
+    for (const row of list.querySelectorAll(MODEL_PICKER_LIST_SELECTOR)) {
       const content = row.querySelector("[data-menu-row-content]") || row;
       const nativeText = pickerRowNativeText(content);
       if (!nativeText) continue;
@@ -863,7 +874,7 @@
    */
   const hideForeignPickerRows = (list, groups) => {
     const ours = new Set(groups.flatMap((group) => group.rows.map((item) => item.row)));
-    for (const row of list.querySelectorAll('[role="menuitemradio"]')) {
+    for (const row of list.querySelectorAll(MODEL_PICKER_ROW_SELECTOR)) {
       row.classList.toggle(MODEL_GROUP_FOREIGN_CLASS, !ours.has(row));
     }
   };
@@ -916,8 +927,8 @@
       .gpt-switch-group-header-collapsed .gpt-switch-group-chevron{transform:rotate(0deg)}
       .gpt-switch-group-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .gpt-switch-group-count{flex:none;margin-left:auto;padding:0 6px;border-radius:999px;background:var(--color-token-bg-secondary,rgba(127,127,127,.14));color:var(--color-token-text-secondary,#6f6f7a);font-size:10px;font-weight:500}
-      [role="menuitemradio"].${MODEL_GROUP_HIDDEN_CLASS}{display:none!important}
-      [role="menuitemradio"].${MODEL_GROUP_FOREIGN_CLASS}{display:none!important}
+      [role^="menuitem"].${MODEL_GROUP_HIDDEN_CLASS}{display:none!important}
+      [role^="menuitem"].${MODEL_GROUP_FOREIGN_CLASS}{display:none!important}
       .${MODEL_GROUP_NATIVE_LABEL_CLASS}{display:none!important}
       .${MODEL_GROUP_OWN_LABEL_CLASS}{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     `;
@@ -967,6 +978,7 @@
     modelGroupState.observer.observe(list, { childList: true, subtree: true });
   };
 
+  /** 扫描模型选择器并同步分组；既有分组也会在这里同步折叠状态。 */
   const syncModelPickerGroups = () => {
     if (state.disposed) return;
     const panel = modelPickerPanel();
@@ -975,8 +987,11 @@
       modelGroupState.signature = "";
       return;
     }
-    const list = panel.querySelector('[class*="_ModelList_"]');
-    if (!list) return;
+    // 模型列表可能有独立滚动容器；实际表头应插在行的父节点里，而不是弹层根节点。
+    const firstRow = panel.querySelector(MODEL_PICKER_LIST_SELECTOR);
+    const list = firstRow?.parentElement?.closest?.('[class*="_ModelList_"]')
+      || firstRow?.parentElement
+      || panel;
     const groups = collectPickerGroups(list);
     installPickerGroupStyle();
     observePickerGroupList(list);

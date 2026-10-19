@@ -21,6 +21,8 @@ const MODEL_LIST_TIMEOUT_MS = 5_000;
 const MAX_LISTING_BYTES = 8 * 1024 * 1024;
 // shortcut: 只保留前 500 个模型，端点公布得更多时剩下的会被丢掉；真有人用到再分页或全量。
 const MAX_DISCOVERED_MODELS = 500;
+const PROXY_CONFIG_KEYS = new Set(["host", "port"]);
+const IPV4_PATTERN = /^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$/;
 
 const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 
@@ -83,6 +85,46 @@ export const validateChannels = (value) => {
       models: validateModels(channel?.models ?? []),
     };
   });
+};
+
+/// 读取代理页设置。配置单独存放，升级和还原 Codex 配置都不会覆盖它。
+export const readProxySettings = (configPath) => {
+  if (!fs.existsSync(configPath)) return { host: "127.0.0.1", port: 47123 };
+  const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("代理配置必须是对象");
+  }
+  for (const key of Object.keys(parsed)) {
+    if (!PROXY_CONFIG_KEYS.has(key)) throw new Error(`代理配置包含未知字段：${key}`);
+  }
+  const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
+  const port = Number(parsed.port);
+  if (!IPV4_PATTERN.test(host)) {
+    throw new Error("代理 IP 必须是合法的 IPv4 地址");
+  }
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("代理端口必须是 1024 到 65535 之间的整数");
+  }
+  return { host, port };
+};
+
+/// 校验代理页配置。端口占用不在这里拦截：启动或重启时占用会顺延，并把实际端口写回配置。
+export const validateProxySettings = (value) => {
+  const host = typeof value?.host === "string" ? value.host.trim() : "";
+  const port = Number(value?.port);
+  if (!IPV4_PATTERN.test(host)) {
+    throw new Error("代理 IP 必须是合法的 IPv4 地址");
+  }
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("代理端口必须是 1024 到 65535 之间的整数");
+  }
+  return { host, port };
+};
+
+export const writeProxySettings = (configPath, value) => {
+  const proxy = validateProxySettings(value);
+  atomicWrite(configPath, `${JSON.stringify(proxy, null, 2)}\n`);
+  return proxy;
 };
 
 export const readChannelState = (configPath) => {
@@ -256,6 +298,23 @@ export const recordedProxyPort = ({ userConfigPath, recordPath }) => {
     return localProxyPortOf(readProviderTable(fs.readFileSync(userConfigPath, "utf8"), id)?.base_url);
   } catch {
     return 0;
+  }
+};
+
+/// 上次写进 Codex 的本地转发地址。IPv4 代理页允许用户改监听地址，这里要和端口一起还原。
+export const recordedProxyAddress = ({ userConfigPath, recordPath }) => {
+  const id = readRecord(recordPath)?.appliedId;
+  if (typeof id !== "string" || !ID_PATTERN.test(id)) return null;
+  try {
+    const value = readProviderTable(fs.readFileSync(userConfigPath, "utf8"), id)?.base_url;
+    const match = /^http:\/\/((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})(?=\/|$)/.exec(String(value ?? ""));
+    if (!match || !IPV4_PATTERN.test(match[1])) return null;
+    const port = Number(match[2]);
+    return Number.isInteger(port) && port >= 1024 && port <= 65535
+      ? { host: match[1], port }
+      : null;
+  } catch {
+    return null;
   }
 };
 
@@ -635,10 +694,10 @@ export const discoverChannelModels = async (request = {}) => {
   return models;
 };
 
-/// 面板协议：load 读渠道，save 只落盘，switch 落盘后写 Codex 配置并重启，
+/// 面板协议：load 读渠道和代理设置，save 只落盘，switch 落盘后写 Codex 配置并重启，
 /// clear 把 Codex 侧还原（渠道列表保留）。
 export const handlePanelRequest = async (request, {
-  configPath, importOptions, applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
+  configPath, proxyConfigPath, importOptions, applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
 }) => {
   let savedState = null;
   let cleared = false;
@@ -646,7 +705,7 @@ export const handlePanelRequest = async (request, {
   try {
     if (request?.action === "load") {
       const state = loadChannelState(configPath, importOptions);
-      return { ok: true, ...state };
+      return { ok: true, ...state, proxy: readProxySettings(proxyConfigPath) };
     }
     if (request?.action === "list-models") {
       return { ok: true, models: await discoverChannelModels(request) };
@@ -670,6 +729,13 @@ export const handlePanelRequest = async (request, {
     }
     if (request?.action !== "save" && request?.action !== "switch") throw new Error("无效的面板操作");
     if (typeof request.restart !== "boolean") throw new Error("无效的面板操作");
+    if (request?.action === "save" && request?.scope === "proxy") {
+      if (!proxyConfigPath) throw new Error("代理配置路径未初始化");
+      const proxy = validateProxySettings(request.proxy);
+      writeProxySettings(proxyConfigPath, proxy);
+      // 保存只落盘；服务和 Codex 地址等右上角「重启 ChatGPT」时一起切换。
+      return { ok: true, saved: true, proxy, restartNeeded: true };
+    }
     const channels = validateChannels(request.channels ?? []);
     let previous = null;
     try {
@@ -694,12 +760,16 @@ export const handlePanelRequest = async (request, {
       return { ok: true, saved: true, channels: savedState.channels, current: savedState.current };
     }
     const active = savedState.channels.find((channel) => channel.id === savedState.current);
+    // 代理配置与新渠道配置一起生效：先检查代理，再启动新服务，最后才写 Codex 地址。
+    const proxy = request.action === "switch" && proxyConfigPath
+      ? validateProxySettings(readProxySettings(proxyConfigPath))
+      : null;
     if (active && applyCodex) await applyCodex(active, savedState.channels.map((item) => item.id));
     if (active && applyCatalog) await applyCatalog(active.models);
     if (request.restart && restart) await restart();
     return {
       ok: true, saved: true, restarted: request.restart,
-      channels: savedState.channels, current: savedState.current,
+      channels: savedState.channels, current: savedState.current, proxy,
     };
   } catch (error) {
     const prefix = restored ? "Codex 配置已还原，但清理或重启失败："

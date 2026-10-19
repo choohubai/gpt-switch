@@ -1,11 +1,55 @@
 import AppKit
 import SwiftUI
 
-/// 面板强调色：跟 AppIcon 的青蓝渐变一致。系统 accent 被改成石墨色时界面也不会走样。
-private let accentTop = Color(red: 0.05, green: 0.60, blue: 0.91)
-private let accentBottom = Color(red: 0.06, green: 0.72, blue: 0.55)
+/// 同一个颜色按系统外观取浅色或深色值，沿用原来的深浅色支持。
+private func appearanceColor(light: NSColor, dark: NSColor) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    })
+}
+
+/// 面板使用 WorkBuddy 同系的低饱和绿色；系统 accent 被改掉时界面也不会跟着走样。
+private let accentTop = appearanceColor(
+    light: NSColor(calibratedRed: 0.25, green: 0.49, blue: 0.30, alpha: 1),
+    dark: NSColor(calibratedRed: 0.39, green: 0.68, blue: 0.45, alpha: 1))
+private let accentBottom = appearanceColor(
+    light: NSColor(calibratedRed: 0.20, green: 0.42, blue: 0.25, alpha: 1),
+    dark: NSColor(calibratedRed: 0.30, green: 0.59, blue: 0.37, alpha: 1))
+private let panelBackground = appearanceColor(
+    light: NSColor(calibratedRed: 0.97, green: 0.98, blue: 0.96, alpha: 0.7),
+    dark: NSColor(calibratedRed: 0.07, green: 0.10, blue: 0.08, alpha: 0.82))
+private let panelTint = appearanceColor(
+    light: NSColor(calibratedRed: 0.95, green: 0.97, blue: 0.94, alpha: 0.84),
+    dark: NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.11, alpha: 0.88))
+private let sidebarBackground = appearanceColor(
+    light: NSColor(calibratedRed: 0.92, green: 0.95, blue: 0.91, alpha: 0.94),
+    dark: NSColor(calibratedRed: 0.06, green: 0.09, blue: 0.07, alpha: 0.96))
 private var accentGradient: LinearGradient {
     LinearGradient(colors: [accentTop, accentBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+}
+
+enum SidebarSection: String, CaseIterable, Hashable {
+    case models = "模型"
+    case proxy = "代理"
+    case general = "通用"
+    case appearance = "外观"
+    case agents = "Agents"
+    case about = "关于"
+    case help = "获取帮助"
+
+    static let settings: [SidebarSection] = [.models, .proxy, .general, .appearance, .agents]
+
+    var systemImage: String {
+        switch self {
+        case .models: return "cube"
+        case .proxy: return "network"
+        case .general: return "gearshape"
+        case .appearance: return "paintbrush"
+        case .agents: return "person.2"
+        case .about: return "info.circle"
+        case .help: return "questionmark.circle"
+        }
+    }
 }
 
 // MARK: - 数据模型
@@ -148,6 +192,11 @@ func isVersion(_ candidate: String, newerThan base: String) -> Bool {
 final class PanelStore: ObservableObject {
     @Published var channels: [ChannelRow] = []
     @Published var savedChannels: [ChannelRow] = []
+    @Published var proxyHost = "127.0.0.1"
+    @Published var proxyPort = "47123"
+    @Published var savedProxyHost = "127.0.0.1"
+    @Published var savedProxyPort = "47123"
+    @Published var savingProxy = false
     @Published var currentChannelID: String?
     @Published var editingIndex: Int?
     @Published var loaded = false
@@ -190,6 +239,8 @@ final class PanelStore: ObservableObject {
     }
 
     var hasChannel: Bool { activeChannel != nil }
+    /// 代理页也有自己的保存按钮；未保存的代理输入不能把模型页的「保存」和右上角重启拖住。
+    var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
     var isDirty: Bool { channels != savedChannels }
 
     var editingTitle: String {
@@ -335,6 +386,21 @@ final class PanelStore: ObservableObject {
         submit(action: "save", currentID: currentChannelID ?? "")
     }
 
+    /// 代理保存只落盘；实际监听和 Codex 地址在用户点右上角「重启 ChatGPT」时一起切换。
+    func saveProxy() {
+        guard loaded, !busy, proxyDirty else { return }
+        busy = true
+        savingProxy = true
+        feedback = ""
+        feedbackIsError = false
+        send([
+            "action": "save",
+            "restart": false,
+            "scope": "proxy",
+            "proxy": ["host": proxyHost, "port": Int(proxyPort) ?? -1],
+        ])
+    }
+
     /// 右上角的「重启」：重新写一遍 ChatGPT 配置和全部渠道的模型目录，然后重启。
     func applyAndRestart() {
         guard loaded, !busy, !channels.isEmpty else { return }
@@ -369,6 +435,10 @@ final class PanelStore: ObservableObject {
 
     var canRestart: Bool {
         loaded && !busy && !channels.isEmpty
+    }
+
+    var canSaveProxy: Bool {
+        loaded && !busy && proxyDirty
     }
 
     /// 面板不为「正在启用/正在重启」这类过程刷提示：底栏留给报错和「配置有更新」。
@@ -441,12 +511,39 @@ final class PanelStore: ObservableObject {
         if let value = response["version"] as? String, !value.isEmpty, value != version {
             version = value
         }
+        if let value = response["proxy"] as? [String: Any],
+           let host = value["host"] as? String,
+           let port = value["port"] as? Int {
+            proxyHost = host
+            proxyPort = String(port)
+            savedProxyHost = host
+            savedProxyPort = String(port)
+        }
         if checkingUpdate {
             finishUpdateCheck(response)
             return
         }
         if fetchingModels {
             finishModelFetch(response)
+            return
+        }
+        if savingProxy {
+            savingProxy = false
+            busy = false
+            if response["ok"] as? Bool == true,
+               let value = response["proxy"] as? [String: Any],
+               let host = value["host"] as? String,
+               let port = value["port"] as? Int {
+                proxyHost = host
+                proxyPort = String(port)
+                savedProxyHost = host
+                savedProxyPort = String(port)
+                feedback = "代理配置已保存，重启 ChatGPT 后生效"
+                feedbackIsError = false
+            } else {
+                feedback = response["error"] as? String ?? "保存代理配置失败"
+                feedbackIsError = true
+            }
             return
         }
         busy = false
@@ -626,31 +723,34 @@ struct OverlayScrollView<Content: View>: View {
 
 struct PanelView: View {
     @ObservedObject var store: PanelStore
+    @State private var selectedSection: SidebarSection
+
+    /// 初始页默认模型；指定其它页只用于预览和截图测试，复用同一套侧栏。
+    init(store: PanelStore, selectedSection: SidebarSection = .models) {
+        self.store = store
+        _selectedSection = State(initialValue: selectedSection)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if store.editingIndex == nil {
-                ChannelListView(store: store)
-            } else {
-                ChannelDetailView(store: store)
-            }
-            BottomBar(store: store)
+        HStack(spacing: 0) {
+            SidebarView(selection: $selectedSection)
+                .frame(width: 190)
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(width: 1)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // 卡片只挡鼠标挡不住键盘：不把底下的表单停下，打字还会进到被遮住的输入框。
         .disabled(store.deletePromptText != nil || store.discovering)
-        .frame(minWidth: 680, minHeight: 520)
-        // 毛玻璃底下压一层中性渐变（窗口白 → 页面灰，最后带一丝强调色）：不然底色完全跟着壁纸走，
-        // 桌面一花面板就散；纯中性又太死，留一点强调色托住。
+        .frame(minWidth: 820, minHeight: 560)
+        .tint(accentBottom)
         .background {
             ZStack {
                 Rectangle().fill(.ultraThinMaterial)
-                LinearGradient(colors: [Color(nsColor: .windowBackgroundColor).opacity(0.78),
-                                        Color(nsColor: .underPageBackgroundColor).opacity(0.42),
-                                        Color.accentColor.opacity(0.03)],
+                LinearGradient(colors: [Color(nsColor: .windowBackgroundColor).opacity(0.9),
+                                        panelTint],
                                startPoint: .top, endPoint: .bottomTrailing)
-                // 右上角一团强调色光晕，纯平面的底色看着太死。
-                RadialGradient(colors: [accentTop.opacity(0.14), .clear],
-                               center: UnitPoint(x: 0.9, y: -0.15), startRadius: 1, endRadius: 340)
             }
             .ignoresSafeArea()
         }
@@ -659,7 +759,7 @@ struct PanelView: View {
             Button("还原并重启", role: .destructive) { store.clearAndRestart() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。")
+            Text(clearPromptMessage)
         }
         .confirmationDialog(restartPromptTitle, isPresented: restartPromptPresented, titleVisibility: .visible) {
             Button("重启") { store.confirmRestart() }
@@ -667,6 +767,50 @@ struct PanelView: View {
         } message: {
             Text("会重新写入 ChatGPT 配置和全部渠道的模型目录，然后重启客户端。")
         }
+    }
+
+    /// 右侧只按当前侧栏项换内容，模型列表和编辑页仍沿用原来的页面切换。
+    @ViewBuilder
+    private var content: some View {
+        VStack(spacing: 0) {
+            Group {
+                switch selectedSection {
+                case .models:
+                    if store.editingIndex == nil {
+                        ChannelListView(store: store)
+                    } else {
+                        ChannelDetailView(store: store)
+                    }
+                case .proxy:
+                    ProxySettingsView(store: store)
+                case .about:
+                    AboutView(store: store)
+                case .general, .appearance, .agents, .help:
+                    EmptyPanelView(title: selectedSection.rawValue)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            PanelFeedbackBar(store: store, restartHint: restartHint)
+        }
+    }
+
+    /// 重启入口只在模型列表页；编辑页和其它分区要说清楚先回到哪个页面。
+    private var restartHint: String {
+        if selectedSection != .models {
+            return "配置有更新，回到「模型」后点右上角「重启 ChatGPT」生效"
+        }
+        if store.editingIndex != nil {
+            return "配置有更新，保存后回模型列表点右上角「重启 ChatGPT」生效"
+        }
+        return "配置有更新，点右上角「重启 ChatGPT」生效"
+    }
+
+    /// 有未保存编辑时必须在动手前说清楚，还原只会保留落盘的那份渠道列表。
+    private var clearPromptMessage: String {
+        if store.isDirty {
+            return "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；未保存的改动不会保留，已保存的渠道列表保留。"
+        }
+        return "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。"
     }
 
     private let restartPromptTitle = "重启 ChatGPT？"
@@ -688,6 +832,227 @@ struct PanelView: View {
     }
 }
 
+private struct SidebarView: View {
+    @Binding var selection: SidebarSection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("设置")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 48)
+                .padding(.bottom, 8)
+            ForEach(SidebarSection.settings, id: \.self) { section in
+                SidebarRow(section: section, selection: $selection)
+            }
+            Divider()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            SidebarRow(section: .about, selection: $selection)
+            SidebarRow(section: .help, selection: $selection)
+            Spacer(minLength: 20)
+        }
+        .background(sidebarBackground)
+    }
+}
+
+private struct SidebarRow: View {
+    let section: SidebarSection
+    @Binding var selection: SidebarSection
+
+    var body: some View {
+        Button { selection = section } label: {
+            HStack(spacing: 10) {
+                Image(systemName: section.systemImage)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 18)
+                Text(section.rawValue)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(selection == section ? accentBottom : Color.primary.opacity(0.78))
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(selection == section ? accentBottom.opacity(0.13) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .withoutFocusRing()
+        .pointingHand()
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1)
+        .accessibilityAddTraits(selection == section ? .isSelected : [])
+    }
+}
+
+private struct EmptyPanelView: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 20, weight: .semibold))
+                .padding(.horizontal, 28)
+                .padding(.top, 26)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(panelBackground)
+    }
+}
+
+/// 代理服务本身负责替换渠道密钥，只允许本机回环监听；端口范围与 CC Switch 保持一致。
+private struct ProxySettingsView: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("代理").font(.system(size: 20, weight: .semibold))
+                Text("控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("监听 IP").font(.system(size: 13, weight: .medium))
+                        TextField("127.0.0.1", text: $store.proxyHost)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13, design: .monospaced))
+                            .fieldBox()
+                        Text("必须是合法 IPv4。建议使用 127.0.0.1；开放到局域网会增加密钥暴露风险。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("监听端口").font(.system(size: 13, weight: .medium))
+                        TextField("47123", text: $store.proxyPort)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13, design: .monospaced))
+                            .fieldBox()
+                        Text("1024–65535；被占用时自动顺延并更新此端口。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack(spacing: 12) {
+                    Text("保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Button("保存") { store.saveProxy() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .tint(accentBottom)
+                        .disabled(!store.canSaveProxy)
+                        .pointingHand()
+                }
+            }
+            .padding(20)
+            .background(RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9)))
+            .overlay(RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.primary.opacity(0.07)))
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 26)
+        .background(panelBackground)
+        .disabled(store.busy)
+    }
+}
+
+private struct AboutView: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("关于")
+                .font(.system(size: 20, weight: .semibold))
+            VStack(spacing: 0) {
+                AboutRow(
+                    title: "当前版本",
+                    detail: store.version.isEmpty ? "" : "v\(store.version)",
+                    inlineDetail: true,
+                    buttonTitle: store.updateTitle
+                ) {
+                    store.checkForUpdates()
+                }
+                .disabled(!store.updateEnabled || store.busy)
+                Divider().padding(.leading, 18)
+                AboutRow(
+                    title: "还原配置",
+                    detail: "还原 ChatGPT 侧配置与模型目录，面板里的渠道列表保留。",
+                    buttonTitle: "还原配置"
+                ) {
+                    store.confirmingClear = true
+                }
+                .disabled(!store.loaded || store.busy)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.07))
+            )
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 26)
+        .background(panelBackground)
+    }
+}
+
+private struct AboutRow: View {
+    let title: String
+    let detail: String
+    var inlineDetail = false
+    let buttonTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                if inlineDetail {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .medium))
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Spacer(minLength: 16)
+            Button(buttonTitle, action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(accentBottom)
+                .foregroundStyle(accentBottom)
+                .pointingHand()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+    }
+}
+
 /// 搜索框按文字自适应高度：用写死的 38pt 框时，光标一进去 AppKit 的编辑区就把
 /// 文字顶到框顶，框里空出一大截。上下留白对称，编辑与否都居中。
 private struct SearchField: View {
@@ -704,7 +1069,7 @@ private struct SearchField: View {
             .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
             .overlay(
                 RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.16))
+                    .strokeBorder(focused ? accentBottom.opacity(0.6) : Color.primary.opacity(0.16))
             )
     }
 }
@@ -871,29 +1236,22 @@ struct ChannelListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                // 强调条挂在标题左侧，副标题跟着一起缩进，两行左边缘才能对齐。
-                HStack(alignment: .top, spacing: 8) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(accentGradient)
-                        .frame(width: 4, height: 16)
-                        .padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("渠道").font(.system(size: 17, weight: .semibold))
-                        Text("聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("模型").font(.system(size: 20, weight: .semibold))
+                    Text("聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
                 // 「重启生效」原来挂在当前渠道那行；它是全局动作，挪到这里只留一个入口。
                 Button { store.requestRestart() } label: {
                     Text(store.restarting ? "重启中" : "重启 ChatGPT")
                         .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(store.canRestart ? Color.primary : Color.secondary)
+                        .foregroundStyle(.white)
                         .padding(.horizontal, 14)
                         .frame(height: 30)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(.ultraThinMaterial))
-                        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(accentGradient))
+                        .shadow(color: accentBottom.opacity(0.18), radius: 6, y: 2)
                         .contentShape(RoundedRectangle(cornerRadius: 9))
                 }
                 .buttonStyle(.plain)
@@ -902,7 +1260,7 @@ struct ChannelListView: View {
                 .opacity(store.canRestart ? 1 : 0.45)
                 .disabled(!store.canRestart)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 28)
             .padding(.top, 20)
             .padding(.bottom, 14)
             .overlay(alignment: .bottom) {
@@ -917,11 +1275,12 @@ struct ChannelListView: View {
                     DashedRowButton(title: "添加渠道", systemImage: "plus") { store.addChannel() }
                         .disabled(!store.loaded || store.busy || store.channels.count >= 50)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 28)
                 .padding(.top, 16)
                 .padding(.bottom, 20)
             }
         }
+        .background(panelBackground)
     }
 }
 
@@ -929,17 +1288,15 @@ struct ChannelCard: View {
     @ObservedObject var store: PanelStore
     let index: Int
     @State private var hovering = false
-    @Environment(\.colorScheme) private var colorScheme
 
     /// 删渠道后 SwiftUI 也会用旧下标再求一次 body，越界会崩掉面板进程。
     private var channel: ChannelRow {
         store.channels.indices.contains(index) ? store.channels[index] : ChannelRow()
     }
 
-    /// 深色底上要用亮绿，浅色底上要用深绿，同一个绿两边都糊。
+    /// 启用状态沿用面板的绿色主题，深浅色由动态色自己切。
     private var badgeInk: Color {
-        channel.enabled ? (colorScheme == .dark ? accentBottom : Color(red: 0.05, green: 0.47, blue: 0.34))
-                        : Color.primary.opacity(0.55)
+        channel.enabled ? accentBottom : Color.primary.opacity(0.55)
     }
 
     var body: some View {
@@ -1050,7 +1407,7 @@ struct ChannelDetailView: View {
                     .disabled(!store.hasChannel || store.busy)
                     .help("删除渠道")
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 28)
             .padding(.top, 22)
             .padding(.bottom, 16)
 
@@ -1069,6 +1426,7 @@ struct ChannelDetailView: View {
                         Button(store.fetchingModels ? "获取中…" : "获取可用模型") { store.fetchModels() }
                             .buttonStyle(.link)
                             .font(.system(size: 12))
+                            .foregroundStyle(accentBottom)
                             .withoutFocusRing()
                             .pointingHand()
                             .disabled(!store.canFetchModels)
@@ -1080,7 +1438,7 @@ struct ChannelDetailView: View {
                     DashedRowButton(title: "添加模型", systemImage: "plus") { store.addModel() }
                         .disabled(!store.hasChannel || store.busy)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 28)
                 .padding(.bottom, 20)
             }
 
@@ -1092,9 +1450,10 @@ struct ChannelDetailView: View {
                     .pointingHand()
                     .disabled(!store.isDirty || store.busy || !store.hasChannel)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 28)
             .padding(.bottom, 18)
         }
+        .background(panelBackground)
     }
 
     @ViewBuilder
@@ -1260,7 +1619,7 @@ private struct FieldBox: ViewModifier {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 9)
-                    .strokeBorder(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.14))
+                    .strokeBorder(focused ? accentBottom.opacity(0.6) : Color.primary.opacity(0.14))
             )
             .fieldCursor()
     }
@@ -1339,8 +1698,9 @@ struct DashedRowButton: View {
     }
 }
 
-struct BottomBar: View {
+private struct PanelFeedbackBar: View {
     @ObservedObject var store: PanelStore
+    let restartHint: String
     @Environment(\.colorScheme) private var colorScheme
 
     /// 提醒重启那行字：跟原来那档灰一个明度，只把色相换成红，所以看着是淡红不是正红。
@@ -1352,7 +1712,8 @@ struct BottomBar: View {
     /// 这行只说两件事：操作失败的原文，和「配置改了还没写进客户端」。
     private var hint: String {
         if store.feedbackIsError { return store.feedback }
-        return store.restartNeeded ? "配置有更新，点右上角「重启 ChatGPT」生效" : store.feedback
+        guard store.restartNeeded else { return store.feedback }
+        return restartHint
     }
 
     private var hintInk: AnyShapeStyle {
@@ -1362,53 +1723,20 @@ struct BottomBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 18) {
-            Button("初始化配置") { store.confirmingClear = true }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                // 它是个能点的按钮，字色跟「重启 ChatGPT」「添加渠道」一样用 primary，
-                // 别和右边那行提示一样淡（提示要淡才不像按钮）。
-                .foregroundStyle(.primary)
-                .withoutFocusRing()
-                .pointingHand()
-                .opacity(store.loaded && !store.busy ? 1 : 0.45)
-                .disabled(!store.loaded || store.busy)
-            // 提示和左边的按钮都是灰字：比按钮小一号、颜色再淡一档，才分得清哪个能点。
+        HStack(spacing: 12) {
             Text(hint)
                 .font(.system(size: 11))
                 .foregroundStyle(hintInk)
                 .lineLimit(1)
             Spacer(minLength: 12)
-            if !store.version.isEmpty {
-                Text("v\(store.version)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
-            }
-            // 图标按钮：检查中转圈，有新版换成下载圈，平时是回形箭头；文字挪到 tooltip。
-            Button { store.checkForUpdates() } label: {
-                if store.updateChecking {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 24, height: 24)
-                } else {
-                    Image(systemName: store.updateAvailable ? "arrow.down.circle" : "arrow.clockwise")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(store.updateAvailable ? Color.primary : Color.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-            }
-            // borderless 才不画键盘焦点环；再关掉可聚焦，免得它进 Tab 链。
-            .buttonStyle(.borderless)
-            .focusable(false)
-            .pointingHand()
-            .disabled(!store.updateEnabled || store.busy)
-            .help(store.updateTitle)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 28)
+        .frame(height: 36)
+        .background(panelBackground)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+            if !hint.isEmpty {
+                Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+            }
         }
     }
 }
@@ -1516,7 +1844,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         store.send = { [weak self] message in self?.sendRequest(message) }
         self.store = store
         let hosting = NSHostingView(rootView: PanelView(store: store))
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 680),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                              backing: .buffered, defer: false)
         panel.title = "GPT Switch"
@@ -1526,7 +1854,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.contentView = hosting
-        panel.minSize = NSSize(width: 680, height: 520)
+        panel.minSize = NSSize(width: 820, height: 560)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.center()
@@ -1543,13 +1871,15 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         // 面板还没建过（没打开过面板就点退出）时没有可丢的改动，直接放行。
         guard let store else { return true }
         guard !store.busy else { return true }
-        guard store.isDirty else { return true }
+        guard store.isDirty || store.proxyDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "放弃未保存的更改？"
         alert.addButton(withTitle: "继续编辑")
         alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }
         store.channels = store.savedChannels
+        store.proxyHost = store.savedProxyHost
+        store.proxyPort = store.savedProxyPort
         store.editingIndex = nil
         return true
     }

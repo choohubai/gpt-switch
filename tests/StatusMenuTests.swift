@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 @main
 struct StatusMenuTests {
@@ -34,6 +35,7 @@ struct StatusMenuTests {
         assert(store.editingIndex == nil, "读完配置应该停在列表页")
         assert(store.channels[0].models.first?.displayName == "", "老配置没有显示名称时留空")
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
+        assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
         // 程序坞图标要能把面板叫回来；从程序坞或 ⌘Q 来的退出请求只关窗口，不能把菜单栏图标带走。
         controller.window?.orderOut(nil)
@@ -74,6 +76,17 @@ struct StatusMenuTests {
         assert(requests.last?["restart"] as? Bool == true)
         assert(requests.last?["current"] as? String == "relay")
         store.busy = false
+
+        // 代理保存只落盘；端口变化后提示重启，不会在路上动当前服务。
+        store.proxyPort = "47124"
+        assert(store.proxyDirty)
+        store.saveProxy()
+        assert(requests.last?["scope"] as? String == "proxy")
+        assert((requests.last?["proxy"] as? [String: Any])?["port"] as? Int == 47124)
+        store.busy = false
+        store.apply(["ok": true, "saved": true, "proxy": ["host": "127.0.0.1", "port": 47124]])
+        assert(!store.proxyDirty)
+        assert(store.feedback == "代理配置已保存，重启 ChatGPT 后生效")
 
         // 每条渠道一个启用开关：禁用只翻这一条并落盘，别的渠道不动，也不重启客户端。
         store.showList()
@@ -469,23 +482,30 @@ struct StatusMenuTests {
     struct TestFailure: Error { let message: String; init(_ message: String) { self.message = message } }
 
     static func render(_ controller: StatusMenuController, store: PanelStore, directory: URL) throws {
-        guard let window = controller.window, let content = window.contentView else { return }
-        func shoot(_ name: String) {
-            content.layoutSubtreeIfNeeded()
-            guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
-            content.cacheDisplay(in: content.bounds, to: rep)
-            try? rep.representation(using: .png, properties: [:])?
-                .write(to: directory.appendingPathComponent(name))
+        guard let window = controller.window, window.contentView != nil else { return }
+        func shoot(_ name: String) throws {
+            guard let current = window.contentView else {
+                throw TestFailure("截图前窗口内容被移除：\(name)")
+            }
+            current.layoutSubtreeIfNeeded()
+            guard let rep = current.bitmapImageRepForCachingDisplay(in: current.bounds) else {
+                throw TestFailure("无法创建截图：\(name)")
+            }
+            current.cacheDisplay(in: current.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                throw TestFailure("无法编码截图：\(name)")
+            }
+            try data.write(to: directory.appendingPathComponent(name))
         }
         store.showList()
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        shoot("list.png")
+        try shoot("list.png")
         store.editChannel(at: 0)
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        shoot("detail.png")
+        try shoot("detail.png")
         store.requestDelete(at: 0)
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        shoot("confirm.png")
+        try shoot("confirm.png")
         store.cancelDelete()
         store.discoveredModels = [
             DiscoveredModel(id: "deepseek-v4-flash-vision-exp", displayName: nil, context: nil),
@@ -494,7 +514,21 @@ struct StatusMenuTests {
         ]
         store.discoveredSelection = ["deepseek-v4-pro"]
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        shoot("picker.png")
+        try shoot("picker.png")
         store.cancelDiscovery()
+        store.version = "0.1.46"
+        store.showList()
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .about))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("about.png")
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .help))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("help.png")
+        let appearance = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = NSHostingView(rootView: PanelView(store: store))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("dark-list.png")
+        NSApp.appearance = appearance
     }
 }

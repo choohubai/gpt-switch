@@ -25,6 +25,7 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Copy-Channels")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Models")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Channels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Test-ProxyDirty")))
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}
@@ -61,5 +62,13 @@ if ($snapshot[0].enabled -ne $false) { throw "复制渠道快照时丢了 enable
 if (Compare-Channels @(Convert-ResponseChannels $detailed.channels) $snapshot) {
   throw "原样复制的快照被判成了有改动"
 }
+
+$script:proxyHost = "127.0.0.1"
+$script:proxyPort = "47123"
+$script:savedProxyHost = "127.0.0.1"
+$script:savedProxyPort = "47123"
+if (Test-ProxyDirty) { throw "代理配置原样时被判成有改动" }
+$script:proxyPort = "47124"
+if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
 
 Write-Output "Windows 面板渠道响应检查通过"

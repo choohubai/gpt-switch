@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import { atomicWrite } from "./model-config.mjs";
+import {
+  writeProxySettings, recordedProxyAddress, repointProxyUrl,
+} from "./channel-config.mjs";
 
 /// 模型 id 里带上渠道身份：客户端只会把 id 原样发回来，转发层据此把请求送回原来那家。
 /// 渠道 id 只允许字母数字和 -_，不需要转义。
@@ -213,29 +217,97 @@ export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" })
 };
 
 export const DEFAULT_PROXY_PORT = Number(process.env.GPT_SWITCH_PROXY_PORT) || 47123;
+export const DEFAULT_PROXY_HOST = "127.0.0.1";
+export const MAX_PROXY_PORT = 65535;
 
-export const proxyBaseUrl = (port) => `http://127.0.0.1:${port}/v1`;
+export const proxyBaseUrl = (port, host = DEFAULT_PROXY_HOST) => `http://${host}:${port}/v1`;
 
-export const startProxy = ({ loadState, log, port = DEFAULT_PROXY_PORT, attempts = 10 }) => new Promise((resolve, reject) => {
-  let candidate = port;
-  const tryListen = (remaining) => {
+/// 代理切换和 ChatGPT 重启绑定：新服务先就绪，客户端重启成功后才释放旧服务。
+/// 地址或重启失败时恢复旧文件，避免留下指向未启动代理的半成品。
+export const switchProxyAndRestart = async ({
+  settings, currentServer, currentHost, currentPort, restartClient,
+  updateCodex = async () => false,
+  loadState = () => ({ channels: [], current: null }),
+  log = () => {}, proxyConfigPath, userConfigPath, recordPath,
+}) => {
+  if (settings.host === currentHost && settings.port === currentPort) {
+    await restartClient();
+    return {
+      server: currentServer, host: currentHost, port: currentPort, repointed: false,
+      previousHost: currentHost, previousPort: currentPort,
+    };
+  }
+  const configExisted = fs.existsSync(proxyConfigPath);
+  const configText = configExisted ? fs.readFileSync(proxyConfigPath, "utf8") : null;
+  const codexExisted = fs.existsSync(userConfigPath);
+  const codexText = codexExisted ? fs.readFileSync(userConfigPath, "utf8") : null;
+  const started = await startProxy({ loadState, log, host: settings.host, port: settings.port });
+  try {
+    const actual = { host: started.host, port: started.port };
+    if (started.port !== settings.port) writeProxySettings(proxyConfigPath, actual);
+    const repointed = recordedProxyAddress({ userConfigPath, recordPath })
+      ? repointProxyUrl({ userConfigPath, recordPath, baseUrl: started.baseUrl })
+      : false;
+    await updateCodex(started.baseUrl);
+    await restartClient();
+    await closeProxyServer(currentServer);
+    log("proxy_switched", { ...actual, repointed });
+    return {
+      server: started.server, host: actual.host, port: actual.port, repointed,
+      previousHost: currentHost, previousPort: currentPort,
+    };
+  } catch (error) {
+    try { started.server.close(); } catch {}
+    try {
+      if (configExisted) atomicWrite(proxyConfigPath, configText);
+      else fs.rmSync(proxyConfigPath, { force: true });
+      if (codexExisted && codexText !== null) atomicWrite(userConfigPath, codexText);
+      else if (!codexExisted) fs.rmSync(userConfigPath, { force: true });
+    } catch (restoreError) {
+      log("proxy_switch_rollback_failed", String(restoreError?.message || restoreError));
+    }
+    throw error;
+  }
+};
+
+/// 等待旧代理真正释放端口；重启后的客户端不会因为换端口而撞上旧监听。
+const closeProxyServer = (server) => new Promise((resolve) => {
+  if (!server) {
+    resolve();
+    return;
+  }
+  server.close(() => resolve());
+});
+
+/// 代理会把渠道密钥替换进请求；默认只监听回环地址，用户明确改成局域网 IP 时自行承担暴露风险。
+/// 面板先校验配置，这里只负责在指定地址上启动监听。
+
+/// 指定端口被占用时向后找可用端口；调用方要把实际端口写回配置，Codex 才能继续对上。
+export const startProxy = ({
+  loadState, log, host = DEFAULT_PROXY_HOST, port = DEFAULT_PROXY_PORT, attempts = 10,
+}) => new Promise((resolve, reject) => {
+  const tryListen = (candidate, remaining) => {
     const server = createProxyServer({ loadState, log });
     server.once("error", (error) => {
-      if (error?.code === "EADDRINUSE" && remaining > 0) {
-        candidate += 1;
-        tryListen(remaining - 1);
-        return;
+      if (error?.code === "EADDRINUSE" && candidate < MAX_PROXY_PORT && remaining > 0) {
+        tryListen(candidate + 1, remaining - 1);
+      } else {
+        reject(error);
       }
-      reject(error);
     });
-    server.listen(candidate, "127.0.0.1", () => {
+    server.listen(candidate, host, () => {
       const address = server.address();
-      const actual = typeof address === "object" && address ? address.port : candidate;
-      log("proxy_started", { port: actual });
-      resolve({ server, port: actual, baseUrl: proxyBaseUrl(actual) });
+      const actualPort = typeof address === "object" && address ? address.port : candidate;
+      const actualHost = typeof address === "object" && address ? address.address : host;
+      log("proxy_started", { host: actualHost, port: actualPort });
+      resolve({
+        server, host: actualHost, port: actualPort,
+        baseUrl: proxyBaseUrl(actualPort, actualHost),
+        requestedPort: port,
+      });
     });
   };
-  tryListen(attempts);
+  tryListen(port, attempts);
 });
 
 const readChannelsFile = (filePath) => {
@@ -250,11 +322,13 @@ if (isMain) {
     return index >= 0 ? process.argv[index + 1] : fallback;
   };
   const statePath = option("--state", `${process.env.HOME}/.gptswitch/channels.json`);
+  const host = option("--host", DEFAULT_PROXY_HOST);
   const port = Number(option("--port", DEFAULT_PROXY_PORT));
-  const { port: actual } = await startProxy({
+  const started = await startProxy({
     loadState: () => readChannelsFile(statePath),
     log: (message, detail) => process.stderr.write(`${message} ${detail ? JSON.stringify(detail) : ""}\n`),
+    host,
     port,
   });
-  process.stderr.write(`proxy listening on ${proxyBaseUrl(actual)}\n`);
+  process.stderr.write(`proxy listening on ${started.baseUrl}\n`);
 }

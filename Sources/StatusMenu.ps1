@@ -60,6 +60,11 @@ $script:discoveredModels = @()
 $script:discoveredSelection = @{}
 $script:discovering = $false
 $script:modelSizeTexts = @()
+$script:proxyHost = "127.0.0.1"
+$script:proxyPort = "47123"
+$script:savedProxyHost = "127.0.0.1"
+$script:savedProxyPort = "47123"
+$script:savingProxy = $false
 
 function Send-Request([hashtable]$Request) {
   $stdout.WriteLine(($Request | ConvertTo-Json -Compress -Depth 6))
@@ -250,10 +255,15 @@ function Convert-Context([int]$k) {
     <Grid x:Name="ListPage" Grid.Row="0">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
         <RowDefinition Height="Auto"/>
       </Grid.RowDefinitions>
-      <Grid Grid.Row="0" Margin="0,0,0,12">
+      <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+        <Button x:Name="ModelsTab" Style="{StaticResource Pill}" Content="模型" Height="32"/>
+        <Button x:Name="ProxyTab" Style="{StaticResource Link}" Content="代理" Height="32" Margin="6,0,0,0"/>
+      </StackPanel>
+      <Grid x:Name="ModelsPage" Grid.Row="1" Margin="0,0,0,12">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
@@ -267,7 +277,8 @@ function Convert-Context([int]$k) {
         <Button x:Name="RestartButton" Grid.Column="1" Style="{StaticResource Pill}" Content="重启 ChatGPT"
                 VerticalAlignment="Top"/>
       </Grid>
-      <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
+      </Grid>
+      <Border x:Name="ModelsCard" Grid.Row="2" Background="#FFFFFF" BorderBrush="#E8E8EB" BorderThickness="1" CornerRadius="12">
         <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -285,6 +296,44 @@ function Convert-Context([int]$k) {
           <Button x:Name="AddChannelButton" Grid.Row="1" Style="{StaticResource Dashed}" Content="添加渠道" Margin="14,0,14,14"/>
         </Grid>
       </Border>
+      <Grid x:Name="ProxyPage" Grid.Row="1" Grid.RowSpan="2" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel>
+          <TextBlock Text="代理" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
+          <TextBlock Text="控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。"
+                     FontSize="13" Foreground="#656667" Margin="0,4,0,0"/>
+        </StackPanel>
+        <Border Grid.Row="1" Style="{StaticResource Card}" VerticalAlignment="Top" Margin="0,16,0,0" Padding="18">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="16"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+              <TextBlock Text="监听 IP" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+              <TextBox x:Name="ProxyHostField" Style="{StaticResource Field}" Margin="0,4,0,0"/>
+              <TextBlock Text="必须是合法 IPv4。建议使用 127.0.0.1；开放到局域网会增加密钥暴露风险。"
+                         FontSize="11" Foreground="#88898A" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+              <TextBlock Text="监听端口" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+              <TextBox x:Name="ProxyPortField" Style="{StaticResource Field}" Margin="0,4,0,0"/>
+              <TextBlock Text="1024–65535；被占用时自动顺延并更新此端口。"
+                         FontSize="11" Foreground="#88898A" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="0" Grid.ColumnSpan="3" Margin="0,24,0,0">
+              <TextBlock Text="保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。"
+                         FontSize="11" Foreground="#88898A"/>
+              <Button x:Name="SaveProxyButton" Style="{StaticResource Pill}" Content="保存"
+                      HorizontalAlignment="Right" Width="76" Margin="0,14,0,0"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+      </Grid>
     </Grid>
 
     <Grid x:Name="DetailPage" Grid.Row="0" Visibility="Collapsed">
@@ -504,6 +553,17 @@ $discoverList = $window.FindName("DiscoverList")
 $discoverClose = $window.FindName("DiscoverClose")
 $discoverCancel = $window.FindName("DiscoverCancel")
 $discoverAdd = $window.FindName("DiscoverAdd")
+$modelsTab = $window.FindName("ModelsTab")
+$proxyTab = $window.FindName("ProxyTab")
+$modelsPage = $window.FindName("ModelsPage")
+$modelsCard = $window.FindName("ModelsCard")
+$proxyPage = $window.FindName("ProxyPage")
+$proxyHostField = $window.FindName("ProxyHostField")
+$proxyPortField = $window.FindName("ProxyPortField")
+$saveProxyButton = $window.FindName("SaveProxyButton")
+$addButton = $window.FindName("AddModelButton")
+$clearButton = $window.FindName("ClearButton")
+$restartButton = $window.FindName("RestartButton")
 
 # 面板跑在 powershell.exe 里，不显式设置就会顶着 PowerShell 的图标。
 # sips 生成的 ico 是 PNG 压缩的，先走 WIC 解码，失败再退回 System.Drawing。
@@ -708,6 +768,11 @@ function Update-ChannelList {
 }
 
 function Show-List-Page {
+  $modelsPage.Visibility = "Visible"
+  $modelsCard.Visibility = "Visible"
+  $proxyPage.Visibility = "Collapsed"
+  $modelsTab.Style = $window.FindResource("Pill")
+  $proxyTab.Style = $window.FindResource("Link")
   $listPage.Visibility = "Visible"
   $detailPage.Visibility = "Collapsed"
   # 离开编辑页这个标记就不成立了：列表上的动作（删渠道等）不能拿它去改「运行中」是谁。
@@ -718,7 +783,35 @@ function Show-List-Page {
   Update-Controls
 }
 
+function Show-Proxy-Page {
+  $listPage.Visibility = "Visible"
+  $detailPage.Visibility = "Collapsed"
+  $modelsPage.Visibility = "Collapsed"
+  $modelsCard.Visibility = "Collapsed"
+  $proxyPage.Visibility = "Visible"
+  $modelsTab.Style = $window.FindResource("Link")
+  $proxyTab.Style = $window.FindResource("Pill")
+  $script:proxyHost = [string]$script:proxyHost
+  $script:proxyPort = [string]$script:proxyPort
+  $script:rendering = $true
+  $proxyHostField.Text = [string]$script:proxyHost
+  $proxyPortField.Text = [string]$script:proxyPort
+  $script:rendering = $false
+  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+function Test-ProxyDirty {
+  return [string]$script:proxyHost -ne [string]$script:savedProxyHost -or `
+    [string]$script:proxyPort -ne [string]$script:savedProxyPort
+}
+
 function Show-Detail-Page {
+  $modelsPage.Visibility = "Visible"
+  $modelsCard.Visibility = "Visible"
+  $proxyPage.Visibility = "Collapsed"
+  $modelsTab.Style = $window.FindResource("Pill")
+  $proxyTab.Style = $window.FindResource("Link")
   $listPage.Visibility = "Collapsed"
   $detailPage.Visibility = "Visible"
   # 进编辑页这一刻记下「这条是不是正在运行的那条」：后面把 Provider ID 改掉之后就比不出来了。
@@ -751,6 +844,9 @@ function Update-Controls {
   $fetchModelsButton.Content = if ($script:fetchingModels) { "获取中…" } else { "获取可用模型" }
   $fetchModelsButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel -and -not [string]::IsNullOrWhiteSpace([string](Get-ActiveChannel).baseUrl)
   $emptyState.Visibility = if ($script:loaded -and $models.Count -eq 0) { "Visible" } else { "Collapsed" }
+  $proxyHostField.IsEnabled = $script:loaded -and -not $script:busy
+  $proxyPortField.IsEnabled = $script:loaded -and -not $script:busy
+  $saveProxyButton.IsEnabled = $script:loaded -and -not $script:busy -and (Test-ProxyDirty)
 }
 
 function Compare-Channels($Left, $Right) {
@@ -1276,10 +1372,31 @@ function Receive-Response($Response) {
     Update-Controls
     return
   }
+  if ($script:savingProxy) {
+    $script:savingProxy = $false
+    $script:busy = $false
+    if ($Response.ok -eq $true -and $null -ne $Response.proxy) {
+      $script:proxyHost = [string]$Response.proxy.host
+      $script:proxyPort = [string]$Response.proxy.port
+      $script:savedProxyHost = $script:proxyHost
+      $script:savedProxyPort = $script:proxyPort
+      Set-Feedback "代理配置已保存，重启 ChatGPT 后生效"
+    } else {
+      Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "保存代理配置失败" }) $true
+    }
+    Show-Proxy-Page
+    return
+  }
   $script:busy = $false
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
   if ($ok -or $Response.saved -eq $true -or $cleared) {
+    if ($null -ne $Response.proxy) {
+      $script:proxyHost = [string]$Response.proxy.host
+      $script:proxyPort = [string]$Response.proxy.port
+      $script:savedProxyHost = $script:proxyHost
+      $script:savedProxyPort = $script:proxyPort
+    }
     if (Test-ResponseChannels $Response.channels) {
       $previousId = ""
       $active = Get-ActiveChannel
@@ -1483,6 +1600,37 @@ $channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBas
 $channelApiKeyField.Add_PasswordChanged({ Update-ChannelField "apiKey" $channelApiKeyField.Password })
 $channelHeaderNameField.Add_TextChanged({ Update-ChannelField "headerName" $channelHeaderNameField.Text })
 $channelHeaderValueField.Add_TextChanged({ Update-ChannelField "headerValue" $channelHeaderValueField.Text })
+$proxyHostField.Add_TextChanged({
+  if ($script:rendering) { return }
+  $script:proxyHost = [string]$proxyHostField.Text
+  if ($script:savingProxy) { return }
+  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
+  Update-Controls
+})
+$proxyPortField.Add_TextChanged({
+  if ($script:rendering) { return }
+  $script:proxyPort = [string]$proxyPortField.Text
+  if ($script:savingProxy) { return }
+  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
+  Update-Controls
+})
+$modelsTab.Add_Click({ Show-List-Page })
+$proxyTab.Add_Click({ Show-Proxy-Page })
+$saveProxyButton.Add_Click({
+  if (-not $script:loaded -or $script:busy) { return }
+  $port = 0
+  if (-not [int]::TryParse([string]$script:proxyPort, [ref]$port)) { $port = -1 }
+  $script:busy = $true
+  $script:savingProxy = $true
+  Set-Feedback "正在保存代理配置…"
+  Update-Controls
+  Send-Request @{
+    action = "save"
+    restart = $false
+    scope = "proxy"
+    proxy = @{ host = [string]$script:proxyHost; port = $port }
+  }
+})
 
 # 右上角「重启」：重新写一遍 ChatGPT 配置和全部启用渠道的模型目录，先问一句再动手。
 $restartButton.Add_Click({

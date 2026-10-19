@@ -25,9 +25,11 @@ fi
 # 面板状态机（开关、删除、保存跟随 current）只写在这份用例里：必须真的编译并跑起来，
 # 只 typecheck 拦不住「存盘失败没回滚」这类回归。
 PANEL_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-switch-panel.XXXXXX")"
+PANEL_RENDER_DIR="$PANEL_TEST_DIR/render"
+mkdir -p "$PANEL_RENDER_DIR"
 /bin/zsh "$SCRIPT_DIR/swiftc.sh" -D STATUS_MENU_TEST -parse-as-library -target "$(uname -m)-apple-macosx13.0" -framework SwiftUI \
   "$SOURCE_DIR/StatusMenu.swift" "$ROOT_DIR/tests/StatusMenuTests.swift" -o "$PANEL_TEST_DIR/panel-tests"
-"$PANEL_TEST_DIR/panel-tests" "$RESOURCE_DIR/MenuBarIcon.png"
+"$PANEL_TEST_DIR/panel-tests" "$RESOURCE_DIR/MenuBarIcon.png" "$PANEL_RENDER_DIR"
 rm -rf "$PANEL_TEST_DIR"
 /bin/zsh -n "$SCRIPT_DIR/GPTSwitch"
 /bin/zsh -n "$SCRIPT_DIR/build.sh"

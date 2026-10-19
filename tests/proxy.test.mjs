@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import net from "node:net";
 import { test } from "node:test";
 import {
   proxyModelId, parseProxyModelId, resolveRoute, upstreamUrl, buildUpstreamHeaders,
-  startProxy, proxyBaseUrl, pickerModelsFromState, pickerGroupNameFromState, pickerChannelNamesFromState,
+  startProxy, proxyBaseUrl, switchProxyAndRestart, pickerModelsFromState, pickerGroupNameFromState,
+  pickerChannelNamesFromState,
 } from "../Sources/proxy.mjs";
+import { writeProxySettings } from "../Sources/channel-config.mjs";
 
 const channel = (over = {}) => ({
   id: "relay", name: "Relay", baseUrl: "https://relay.example/v1", apiKey: "sk-relay",
@@ -289,11 +293,13 @@ test("startProxy moves to the next port when the preferred one is taken", async 
   const proxy = await startProxy({
     loadState: () => ({ channels: [], current: null }),
     log: () => {},
+    host: "127.0.0.1",
     port: taken,
   });
   try {
     assert.notEqual(proxy.port, taken, "占着的端口要往后顺延");
     assert.equal(proxy.baseUrl, `http://127.0.0.1:${proxy.port}/v1`);
+    assert.equal(proxy.requestedPort, taken);
     const response = await fetch(`${proxy.baseUrl}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -304,4 +310,86 @@ test("startProxy moves to the next port when the preferred one is taken", async 
     await new Promise((resolve) => proxy.server.close(resolve));
     await new Promise((resolve) => blocker.close(resolve));
   }
+});
+
+const proxySwitchSandbox = (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gpt-switch-switch-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  return {
+    root,
+    proxyConfigPath: path.join(root, ".gptswitch", "proxy.json"),
+    userConfigPath: path.join(codexHome, "config.toml"),
+    recordPath: path.join(root, ".gptswitch", "codex.json"),
+  };
+};
+
+test("proxy address changes are applied to Codex after ChatGPT restart", async (context) => {
+  const files = proxySwitchSandbox(context);
+  fs.mkdirSync(path.dirname(files.recordPath), { recursive: true });
+  const oldProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
+  context.after(() => oldProxy.server.close());
+  const nextProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
+  const nextPort = nextProxy.port;
+  await new Promise((resolve) => nextProxy.server.close(resolve));
+  fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "http://127.0.0.1:${oldProxy.port}/v1"\n`);
+  fs.writeFileSync(files.recordPath, JSON.stringify({ appliedId: "relay", tablesAdded: ["relay"] }));
+  writeProxySettings(files.proxyConfigPath, { host: "127.0.0.1", port: nextPort });
+  let oldClosed = false;
+  oldProxy.server.once("close", () => { oldClosed = true; });
+
+  const switched = await switchProxyAndRestart({
+    settings: { host: "127.0.0.1", port: nextPort },
+    currentServer: oldProxy.server,
+    currentHost: "127.0.0.1",
+    currentPort: oldProxy.port,
+    restartClient: async () => { assert.equal(oldClosed, false, "客户端重启期间旧代理不能提前关掉"); },
+    updateCodex: async (baseUrl) => {
+      fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "${baseUrl}"\n`);
+      return true;
+    },
+    log: () => {},
+    proxyConfigPath: files.proxyConfigPath,
+    userConfigPath: files.userConfigPath,
+    recordPath: files.recordPath,
+  });
+  context.after(() => switched.server.close());
+  assert.equal(switched.host, "127.0.0.1");
+  assert.match(fs.readFileSync(files.userConfigPath, "utf8"), new RegExp(`base_url = "http://127\\.0\\.0\\.1:${nextPort}/v1"`));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(oldClosed, true, "客户端重启成功后要关掉旧代理");
+});
+
+test("failed ChatGPT restart keeps old proxy and restores proxy and Codex files", async (context) => {
+  const files = proxySwitchSandbox(context);
+  fs.mkdirSync(path.dirname(files.recordPath), { recursive: true });
+  const originalCodex = `[model_providers.relay]\nbase_url = "http://127.0.0.1:47123/v1"\n`;
+  fs.writeFileSync(files.userConfigPath, originalCodex);
+  fs.writeFileSync(files.recordPath, JSON.stringify({ appliedId: "relay", tablesAdded: ["relay"] }));
+  writeProxySettings(files.proxyConfigPath, { host: "127.0.0.1", port: 47125 });
+  const beforeProxy = fs.readFileSync(files.proxyConfigPath, "utf8");
+  const oldProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
+  context.after(() => oldProxy.server.close());
+  let oldClosed = false;
+  oldProxy.server.once("close", () => { oldClosed = true; });
+
+  await assert.rejects(switchProxyAndRestart({
+    settings: { host: "127.0.0.1", port: 47125 },
+    currentServer: oldProxy.server,
+    currentHost: "127.0.0.1",
+    currentPort: oldProxy.port,
+    restartClient: async () => { throw new Error("客户端启动失败"); },
+    updateCodex: async (baseUrl) => {
+      fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "${baseUrl}"\n`);
+      return true;
+    },
+    log: () => {},
+    proxyConfigPath: files.proxyConfigPath,
+    userConfigPath: files.userConfigPath,
+    recordPath: files.recordPath,
+  }), /客户端启动失败/);
+  assert.equal(oldClosed, false, "重启失败必须保留旧代理");
+  assert.equal(fs.readFileSync(files.proxyConfigPath, "utf8"), beforeProxy);
+  assert.equal(fs.readFileSync(files.userConfigPath, "utf8"), originalCodex);
 });

@@ -8,6 +8,7 @@ import {
   modelProviderFromToml, readProviderTable, upsertProviderTable, setModelProvider,
   applyChannelToCodex, restoreCodexConfig, importChannelsFromCodex, handlePanelRequest,
   discoverChannelModels, modelFromToml, recordedProxyPort, repointProxyUrl,
+  readProxySettings, validateProxySettings, writeProxySettings, recordedProxyAddress,
 } from "../Sources/channel-config.mjs";
 
 const CONFIG = [
@@ -49,6 +50,7 @@ const sandbox = (context) => {
     authPath: path.join(codexHome, "auth.json"),
     recordPath: path.join(directory, ".gptswitch", "codex.json"),
     configPath: path.join(directory, ".gptswitch", "channels.json"),
+    proxyConfigPath: path.join(directory, ".gptswitch", "proxy.json"),
   };
 };
 
@@ -73,6 +75,58 @@ test("validateChannels trims rows, keeps ids unique and rejects bad input", () =
     assert.throws(() => validateChannels(invalid));
   }
   assert.equal(validateChannels([{ id: "x", baseUrl: "" }])[0].baseUrl, "");
+});
+
+test("proxy settings default to loopback and use the CC Switch port range", (context) => {
+  const { proxyConfigPath } = sandbox(context);
+  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47123 });
+  assert.deepEqual(validateProxySettings({ host: " 127.0.0.1 ", port: "47124" }),
+    { host: "127.0.0.1", port: 47124 });
+  assert.deepEqual(validateProxySettings({ host: "192.168.1.20", port: 47124 }),
+    { host: "192.168.1.20", port: 47124 });
+  assert.deepEqual(writeProxySettings(proxyConfigPath, { host: "127.0.0.1", port: 47125 }),
+    { host: "127.0.0.1", port: 47125 });
+  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47125 });
+  for (const invalid of [
+    { host: "localhost", port: 47123 },
+    { host: "999.1.1.1", port: 47123 },
+    { host: "192.168.1", port: 47123 },
+    { host: "127.0.0.1", port: 1023 },
+    { host: "127.0.0.1", port: 65536 },
+  ]) {
+    assert.throws(() => validateProxySettings(invalid));
+  }
+});
+
+test("proxy save persists values without applying them to the running service", async (context) => {
+  const paths = sandbox(context);
+  const { options } = panelOptions(paths);
+  const saved = await handlePanelRequest({
+    action: "save", restart: false, scope: "proxy",
+    proxy: { host: "127.0.0.1", port: 47129 },
+  }, options);
+  assert.equal(saved.ok, true);
+  assert.equal(saved.restartNeeded, true);
+  assert.equal(readProxySettings(paths.proxyConfigPath).port, 47129);
+  const loaded = await handlePanelRequest({ action: "load" }, options);
+  assert.equal(loaded.ok, true);
+  assert.deepEqual(loaded.proxy, { host: "127.0.0.1", port: 47129 });
+});
+
+test("switching reports the saved proxy value used by the restart", async (context) => {
+  const paths = sandbox(context);
+  const { options } = panelOptions(paths);
+  writeProxySettings(paths.proxyConfigPath, { host: "127.0.0.1", port: 47131 });
+  const result = await handlePanelRequest({
+    action: "switch",
+    restart: true,
+    current: "relay",
+    channels: [channel()],
+  }, {
+    ...options,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.proxy, { host: "127.0.0.1", port: 47131 });
 });
 
 test("toml helpers read the existing provider and rewrite only their own table", () => {
@@ -284,6 +338,7 @@ const panelOptions = (paths, over = {}) => {
   const calls = { applied: [], repointed: [], catalogs: [], restarts: [], restored: 0, cleared: 0 };
   const options = {
     configPath: paths.configPath,
+    proxyConfigPath: paths.proxyConfigPath,
     importOptions: {
       userConfigPath: paths.userConfigPath, authPath: paths.authPath, modelPaths: [],
     },
@@ -570,6 +625,15 @@ test("recordedProxyPort only trusts the provider table we wrote", (context) => {
     "只认我们自己那段 provider 的地址，不能拿 Ollama 的端口");
   fs.writeFileSync(userConfigPath, '[model_providers.relay]\nbase_url = "https://relay.example/v1"\n');
   assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 0, "直连渠道不算本地转发端口");
+});
+
+test("recorded proxy address imports both host and port from our provider", (context) => {
+  const { userConfigPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, '[model_providers.relay]\nbase_url = "http://192.168.1.20:47123/v1"\n');
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, JSON.stringify({ appliedId: "relay" }));
+  assert.deepEqual(recordedProxyAddress({ userConfigPath, recordPath }),
+    { host: "192.168.1.20", port: 47123 });
 });
 
 test("repointProxyUrl moves only base_url when the forward port changed", (context) => {

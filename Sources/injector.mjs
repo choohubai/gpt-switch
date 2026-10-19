@@ -13,11 +13,13 @@ import {
 } from "./model-config.mjs";
 import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
-  modelProviderFromToml, modelFromToml, channelDefaultModel, recordedProxyPort, repointProxyUrl,
+  modelProviderFromToml, modelFromToml, channelDefaultModel, recordedProxyAddress,
+  repointProxyUrl,
+  readProxySettings, writeProxySettings,
 } from "./channel-config.mjs";
 import {
-  startProxy, proxyBaseUrl, pickerModelsFromState, pickerGroupNameFromState,
-  pickerChannelNamesFromState, DEFAULT_PROXY_PORT, MODEL_PREFIX,
+  startProxy, proxyBaseUrl, switchProxyAndRestart, pickerModelsFromState, pickerGroupNameFromState,
+  pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
 
 const VERSION = "0.1.46";
@@ -46,9 +48,10 @@ const WINDOWS_PANEL_ICON = path.join(SCRIPT_DIR, "AppIcon.ico");
 const BUNDLE_ID = "com.openai.codex";
 let statusMenuProcess = null;
 let proxyServer = null;
+let proxyHost = "";
 let proxyPort = 0;
 /// 客户端 config.toml 里 provider 的 base_url 会写成它；代理没起来时留空，退回直连。
-const proxyUrl = () => (proxyPort ? proxyBaseUrl(proxyPort) : "");
+const proxyUrl = () => (proxyPort ? proxyBaseUrl(proxyPort, proxyHost) : "");
 
 fs.mkdirSync(SUPPORT_DIR, { recursive: true, mode: 0o700 });
 fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
@@ -821,6 +824,7 @@ const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
 const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
 const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
 const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
+const PROXY_CONFIG = path.join(HOME, ".gptswitch", "proxy.json");
 
 /// 渠道配置不存在时按这个顺序找老配置导入：本插件旧目录、更早的 CodexModelUnlocker 目录。
 const channelImportOptions = () => ({
@@ -961,27 +965,49 @@ const main = async () => {
   // --once 是给检查用的单次模式，起了服务就退不出去，所以只在常驻模式启动。
   if (!runOnce) {
     try {
-      // 端口优先沿用客户端配置里那个：base_url 是写死在 config.toml 里的，换端口它不会知道。
-      const recordedPort = recordedProxyPort({ userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD });
+      // 代理页的设置是唯一来源；旧安装还没有这份文件时，先沿用 config.toml 里写过的端口。
+      // 启动阶段可能同时弹出面板，代理配置和渠道列表都先读好再拉起面板，避免 load 抢跑。
+      if (!fs.existsSync(PROXY_CONFIG)) {
+        const recorded = recordedProxyAddress({ userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD });
+        writeProxySettings(PROXY_CONFIG, recorded || {
+          host: DEFAULT_PROXY_HOST, port: DEFAULT_PROXY_PORT,
+        });
+      }
+      const settings = readProxySettings(PROXY_CONFIG);
+      // 先读取当前配置，让它和代理配置一样在面板启动前完成；之后请求仍然实时读文件，
+      // 保存渠道后不需要重启注入器。
+      loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+      const loadState = () => loadChannelState(CHANNELS_CONFIG, channelImportOptions());
       const started = await startProxy({
-        loadState: () => loadChannelState(CHANNELS_CONFIG, channelImportOptions()),
+        loadState,
         log,
-        port: recordedPort || DEFAULT_PROXY_PORT,
+        host: settings.host,
+        port: settings.port,
       });
       proxyServer = started.server;
+      proxyHost = started.host;
       proxyPort = started.port;
-      if (recordedPort && started.port !== recordedPort) {
-        // 端口被别人占了往后顺延时，客户端还指着旧端口：把配置里的地址改过来，
-        // 不然它的请求会一直发到没人监听的地方，直到用户手动点一次重启。
-        const repaired = repointProxyUrl({
-          userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD, baseUrl: proxyBaseUrl(started.port),
-        });
-        log("proxy_port_changed", { recorded: recordedPort, actual: started.port, repaired });
+      let configChanged = false;
+      if (started.port !== settings.port) {
+        // 占用的端口自动顺延后写回配置，面板刷新时会看到真正在用的端口。
+        writeProxySettings(PROXY_CONFIG, { host: started.host, port: started.port });
+        configChanged = true;
       }
+      const recorded = recordedProxyAddress({ userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD });
+      const actual = { host: started.host, port: started.port };
+      if (recorded && (recorded.host !== actual.host || recorded.port !== actual.port)) {
+        // 端口顺延或监听地址变化后，把客户端配置里我们写过的 provider 地址一并修好。
+        const repaired = repointProxyUrl({
+          userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD, baseUrl: proxyBaseUrl(actual.port, actual.host),
+        });
+        log("proxy_address_changed", { recorded, actual, repaired });
+      }
+      if (configChanged) log("proxy_config_updated", { host: started.host, port: started.port });
     } catch (error) {
       // 起不来就退回直连：applyCodex 拿不到转发地址时会写渠道自己的 base_url。
       log("proxy_failed", String(error?.message || error));
       proxyServer = null;
+      proxyHost = "";
       proxyPort = 0;
     }
   }
@@ -1124,9 +1150,44 @@ const main = async () => {
     if (request?.action === "check-update") return checkForUpdate();
     const answer = await handlePanelRequest(request, {
       configPath: CHANNELS_CONFIG,
+      proxyConfigPath: PROXY_CONFIG,
       importOptions: channelImportOptions(),
-      restart,
-      applyCodex: (channel, channelIds) => applyChannelToCodex({
+      restart: async () => {
+        // 配置里的目标地址若被其他进程占用，startProxy 会顺延；候选服务必须先启动再切客户端。
+        const settings = readProxySettings(PROXY_CONFIG);
+        const switched = await switchProxyAndRestart({
+          settings,
+          currentServer: proxyServer,
+          currentHost: proxyHost,
+          currentPort: proxyPort,
+          restartClient: () => restart(),
+          // 渠道写入在 restart 之前执行，这里用候选地址覆盖刚写进去的旧地址。
+          updateCodex: async (baseUrl) => {
+            const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+            const active = state.channels.find((channel) => channel.id === state.current);
+            if (!active) return false;
+            applyChannelToCodex({
+              channel: active,
+              channelIds: state.channels.map((channel) => channel.id),
+              authPath: AUTH_PATH,
+              userConfigPath: USER_CONFIG,
+              recordPath: CODEX_RECORD,
+              proxyUrl: baseUrl,
+              knownModels: pickerModels().map((model) => model.id),
+            });
+            return true;
+          },
+          loadState: () => loadChannelState(CHANNELS_CONFIG, channelImportOptions()),
+          log,
+          proxyConfigPath: PROXY_CONFIG,
+          userConfigPath: USER_CONFIG,
+          recordPath: CODEX_RECORD,
+        });
+        proxyServer = switched.server;
+        proxyHost = switched.host;
+        proxyPort = switched.port;
+      },
+      applyCodex: async (channel, channelIds) => applyChannelToCodex({
         channel, channelIds, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
         proxyUrl: proxyUrl(), knownModels: pickerModels().map((model) => model.id),
       }),
@@ -1155,7 +1216,7 @@ const main = async () => {
     if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
     // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
     // 不能 await：客户端没在跑时 waitForTargets 要等满 30 秒，面板会一直转圈。
-    if (request?.action === "save" && answer?.ok && port) {
+    if (request?.action === "save" && request?.scope !== "proxy" && answer?.ok && port) {
       restart(port).catch((error) => log("panel_refresh_failed", String(error?.message || error)));
     }
     return { ...answer, version: VERSION };
