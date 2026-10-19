@@ -36,6 +36,20 @@ rm -rf "$PANEL_TEST_DIR"
 /bin/zsh -n "$SCRIPT_DIR/package-windows.sh"
 /usr/bin/plutil -lint "$RESOURCE_DIR/Info.plist"
 
+# Windows 面板没有 WPF 运行环境；至少守住保存回包不能把空 ID 渠道回填到界面。
+for marker in "function Test-ResponseChannels" "if (Test-ResponseChannels \$Response.channels)" \
+  "插件返回的渠道列表不完整，已保留当前配置"; do
+  if ! grep -Fq "$marker" "$SOURCE_DIR/StatusMenu.ps1"; then
+    print -u2 -- "Windows 面板缺少渠道回包保护：$marker"
+    exit 1
+  fi
+done
+
+if ! grep -Fq "StatusMenu.ps1.test.ps1" "$ROOT_DIR/.github/workflows/windows-probe.yml"; then
+  print -u2 -- "Windows probe 没有执行 tests/StatusMenu.ps1.test.ps1"
+  exit 1
+fi
+
 # Windows 安装包的载荷：面板、启动器和打包脚本都要在。
 WINDOWS_PAYLOADS=("$SOURCE_DIR/StatusMenu.ps1" "$SOURCE_DIR/channel-config.mjs" "$SCRIPT_DIR/GPTSwitch.ps1" "$SCRIPT_DIR/package-windows.sh" "$SCRIPT_DIR/windows-installer.nsi")
 for payload in "${WINDOWS_PAYLOADS[@]}"; do

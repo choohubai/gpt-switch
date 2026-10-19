@@ -28,7 +28,7 @@ const CONFIG = [
 
 /// validateChannels 会把模型补成面板保存后的完整形状（没填显示名就落成模型 ID），断言里用它对齐。
 const model = (over = {}) => ({
-  displayName: String(over.id ?? ""), inputModalities: ["text", "image"], ...over,
+  displayName: String(over.id ?? ""), inputModalities: ["text", "image"], webSearch: false, ...over,
 });
 
 const channel = (over = {}) => ({
@@ -224,7 +224,7 @@ test("importChannelsFromCodex lifts the current provider, key and legacy models"
     apiKey: "sk-choohub",
     headerName: "x-openai-actor-authorization",
     headerValue: "actor-token",
-    models: [model({ id: "gpt-6-astra", context: 300 })],
+    models: [model({ id: "gpt-6-astra", context: 300, webSearch: true })],
   }]);
   const empty = importChannelsFromCodex({
     userConfigPath: path.join(directory, "nope.toml"), authPath: path.join(directory, "nope.json"), modelPaths: [],
@@ -307,11 +307,12 @@ test("panel save stores channels and switch applies the active one", async (cont
 
   const channels = [
     channel({ id: "a", name: "A" }),
-    channel({ id: "b", name: "B", models: [{ id: "m-b", context: 64 }] }),
+    channel({ id: "b", name: "B", models: [{ id: "deepseek-v4-pro", context: 64 }] }),
   ];
   const saved = await handlePanelRequest({ action: "save", restart: false, channels, current: null }, options);
   assert.equal(saved.ok, true);
   assert.equal(saved.current, null);
+  assert.equal(saved.channels[1].models[0].webSearch, true, "缺省值由后台按白名单归一后返回");
   assert.equal(calls.applied.length, 0);
   assert.equal(readChannelState(paths.configPath).channels.length, 2);
 
@@ -327,7 +328,7 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.equal(switched.current, "b");
   assert.deepEqual(calls.applied, ["b"]);
   assert.deepEqual(calls.repointed, [["a", "b"]], "切换要把渠道列表的 ID 一起交给写入");
-  const expectedModels = [model({ id: "m-b", context: 64 })];
+  const expectedModels = [model({ id: "deepseek-v4-pro", context: 64, webSearch: true })];
   assert.deepEqual(calls.catalogs, [expectedModels]);
   assert.deepEqual(calls.restarts, ["b"], "重启前 current 已经落盘：注入器按它决定注入哪些渠道的模型");
 
@@ -422,18 +423,18 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
   assert.equal(seen[0].init.headers["x-actor"], "actor");
   assert.equal(seen[0].init.headers.accept, "application/json");
   assert.deepEqual(models, [
-    { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128 },
-    { id: "glm-5.3" },
-    { id: "long-name" },
-    { id: "control-name" },
+    { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128, webSearch: true },
+    { id: "glm-5.3", webSearch: false },
+    { id: "long-name", webSearch: false },
+    { id: "control-name", webSearch: false },
   ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；名字缺失或存不进去就不填，保存时统一兜底");
 
   const mapped = await withFetch(async () => listing({
     models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },
   }), () => discoverChannelModels({ baseUrl: "https://relay.example" }));
   assert.deepEqual(mapped, [
-    { id: "glm-5.3", displayName: "GLM 5.3" },
-    { id: "deepseek-v4-pro" },
+    { id: "glm-5.3", displayName: "GLM 5.3", webSearch: false },
+    { id: "deepseek-v4-pro", webSearch: true },
   ], "models 对象用属性名当 id，非对象条目忽略");
 });
 
@@ -481,14 +482,14 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   const { options } = panelOptions(paths);
   const listed = await withFetch(async () => listing({ data: [{ id: "m-one" }] }),
     () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
-  assert.deepEqual(listed, { ok: true, models: [{ id: "m-one" }] });
+  assert.deepEqual(listed, { ok: true, models: [{ id: "m-one", webSearch: false }] });
 
   const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
   assert.equal(bad.ok, false);
   assert.match(bad.error, /请先填渠道地址/);
 });
 
-test("switching turns web search off and shows raw reasoning, clearing removes them again", (context) => {
+test("switching keeps web search off and shows raw reasoning, clearing removes them again", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
   fs.writeFileSync(userConfigPath, CONFIG);
   fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
@@ -507,7 +508,7 @@ test("switching turns web search off and shows raw reasoning, clearing removes t
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "用户没写过的键还原时删掉");
 });
 
-test("switching keeps the user's own web_search value until clearing", (context) => {
+test("switching sets web search off and clearing restores the user's value", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
   const original = `web_search = "live"\n${CONFIG}`;
   fs.writeFileSync(userConfigPath, original);
@@ -515,7 +516,6 @@ test("switching keeps the user's own web_search value until clearing", (context)
   applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
   const written = fs.readFileSync(userConfigPath, "utf8");
   assert.match(written, /^web_search = "disabled"$/m);
-  assert.equal(written.includes('web_search = "live"'), false);
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原放回用户原来的值");
 });

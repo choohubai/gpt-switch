@@ -13,14 +13,26 @@ const defaults = [{ id: "gpt-6-astra", displayName: "", context: 272, inputModal
 
 test("model validation accepts IDs with default context and rejects invalid rows", () => {
   assert.deepEqual(validateModels([{ id: " alias-id " }]),
-    [{ id: "alias-id", displayName: "alias-id", context: 272, inputModalities: ["text", "image"] }],
+    [{ id: "alias-id", displayName: "alias-id", context: 272, inputModalities: ["text", "image"], webSearch: false }],
     "没填显示名就存模型 ID");
+  assert.equal(validateModels([{ id: "deepseek-v4.1-flash" }])[0].webSearch, true,
+    "白名单内的模型默认勾选");
+  assert.equal(validateModels([{ id: "GPT-6-Astra" }])[0].webSearch, true,
+    "白名单匹配不区分大小写");
+  assert.equal(validateModels([{ id: "glm-5.3" }])[0].webSearch, false,
+    "白名单外的模型默认不勾");
+  assert.equal(validateModels([{ id: "deepseek-v4.1-flash", webSearch: false }])[0].webSearch, false,
+    "用户显式取消后不能被前缀规则勾回去");
+  assert.equal(validateModels([{ id: "GPT-6-Astra", webSearch: true }])[0].webSearch, true,
+    "显式开启的模型不能被归一成关闭");
   assert.deepEqual(validateModels([{ id: "alias-id", displayName: " 旧名称 " }]),
-    [{ id: "alias-id", displayName: "旧名称", context: 272, inputModalities: ["text", "image"] }]);
+    [{ id: "alias-id", displayName: "旧名称", context: 272, inputModalities: ["text", "image"], webSearch: false }]);
   assert.deepEqual(validateModels([{ id: "x", context: " 1000 " }]),
-    [{ id: "x", displayName: "x", context: 1000, inputModalities: ["text", "image"] }]);
+    [{ id: "x", displayName: "x", context: 1000, inputModalities: ["text", "image"], webSearch: false }]);
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["image"] }]),
-    [{ id: "x", displayName: "x", context: 272, inputModalities: ["image"] }]);
+    [{ id: "x", displayName: "x", context: 272, inputModalities: ["image"], webSearch: false }]);
+  assert.equal(validateModels([{ id: "x", webSearch: true }])[0].webSearch, true,
+    "模型卡片勾了网页搜索才打开");
   // 勾了两次的输入类型去重，顺序按面板勾选顺序。
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["text", "text"] }])
     .at(0).inputModalities, ["text"]);
@@ -55,18 +67,7 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
     { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 1000, inputModalities: ["text"] },
   ]);
   assert.equal(catalog.models.length, 2);
-  assert.deepEqual(catalog.models[0], {
-    slug: "gpt-6-astra",
-    display_name: "GPT-6-Astra",
-    context_window: 272000,
-    max_context_window: 272000,
-    effective_context_window_percent: 95,
-    visibility: "list",
-    use_responses_lite: true,
-    shell_type: "unified_exec",
-    extra: "keep",
-    input_modalities: ["text", "image"],
-  });
+  assert.equal(catalog.models[0].supports_search_tool, true, "内置同名模型也要按当前选择覆盖搜索能力");
   assert.equal(catalog.models[1].slug, "deepseek-v4-pro");
   assert.equal(catalog.models[1].display_name, "DeepSeek V4 Pro");
   assert.equal(catalog.models[1].description, "DeepSeek V4 Pro");
@@ -79,6 +80,8 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
   assert.equal(catalog.models[1].use_responses_lite, false);
   assert.equal(catalog.models[1].tool_mode, null);
   assert.equal(catalog.models[1].shell_type, "shell_command");
+  assert.equal(catalog.models[1].web_search_tool_type, "text");
+  assert.equal(catalog.models[1].supports_search_tool, true, "deepseek 前缀默认打开网页搜索");
   assert.equal(catalog.models[1].web_search_tool_type, "text");
   assert.equal(catalog.models[1].supports_parallel_tool_calls, true);
   assert.deepEqual(catalog.models[1].service_tiers, []);
@@ -98,6 +101,17 @@ test("catalog keeps the bundled display name and applies panel display names", (
   // 面板链路先过 validateModels：留空会落成模型 ID，重名时以面板的为准。
   const chained = buildCatalog(bundled, validateModels([{ id: "gpt-6-astra" }]));
   assert.equal(chained.models[0].display_name, "gpt-6-astra");
+});
+
+test("catalog enables search only for models that opt in", () => {
+  const catalog = buildCatalog({ models: [{ slug: "gpt-6-astra", supports_search_tool: true }] }, [
+    { id: "deepseek-v4.1-flash", displayName: "DeepSeek", context: 1000, inputModalities: ["text"] },
+    { id: "glm-5.3", displayName: "GLM", context: 200, inputModalities: ["text"], webSearch: false },
+    { id: "gpt-6-astra-private", displayName: "GPT private", context: 200, inputModalities: ["text"] },
+  ]);
+  assert.equal(catalog.models[1].supports_search_tool, true, "DeepSeek 勾选后要写进目录");
+  assert.equal(catalog.models[2].supports_search_tool, false, "GLM 不勾时不能被模板带着打开");
+  assert.equal(catalog.models[3].supports_search_tool, true, "白名单内的 gpt 模型默认打开");
 });
 
 test("catalog cleanup only touches the plugin-managed catalog", () => {

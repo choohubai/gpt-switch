@@ -1,5 +1,7 @@
 import fs from "node:fs";
-import { atomicWrite, MAX_LABEL_LENGTH, validateModels } from "./model-config.mjs";
+import {
+  atomicWrite, MAX_LABEL_LENGTH, validateModels, defaultWebSearchForModel,
+} from "./model-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
 /// 官方字段说明见 https://developers.openai.com/codex/config-reference
@@ -133,8 +135,9 @@ const removeTopLevelLine = (text, name) => {
 const COMPACT_PROMPT = "你正在进行上下文压缩检查点。请为接手这个任务的另一个 LLM 写一份交接摘要："
   + "用用户当前使用的语言写，并在摘要开头注明「后续回复与推理继续使用该语言」。";
 
-/// 第三方端点没有联网检索工具，声明了只会让请求被拒（DeepSeek 官方接入文档也是关掉的）；
-/// 第三方模型的推理是裸文本，不开这个桌面端看不到。这几个键都是全局的，启用时写入、还原时放回原值。
+/// 模型能不能用网页搜索由目录里的 supports_search_tool 决定，所以全局保持关闭，
+/// 避免不支持搜索的模型也收到搜索工具；第三方模型的推理是裸文本，不开这个桌面端看不到。
+/// 这几个键都是全局的，启用时写入、还原时放回原值。
 const GLOBAL_KEYS = [
   { name: "web_search", value: '"disabled"' },
   { name: "show_raw_agent_reasoning", value: "true" },
@@ -570,6 +573,8 @@ const readModelListing = (body) => {
       id,
       ...(displayName ? { displayName } : {}),
       ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
+      // 端点清单里没有这个选项；按前缀白名单预选，用户仍可在模型卡片里改。
+      webSearch: defaultWebSearchForModel(id),
     });
   }
   return models;
@@ -642,7 +647,20 @@ export const handlePanelRequest = async (request, {
   let restored = false;
   try {
     if (request?.action === "load") {
-      return { ok: true, ...loadChannelState(configPath, importOptions) };
+      const state = loadChannelState(configPath, importOptions);
+      // 老渠道文件没有布尔值时按同一份白名单给面板默认值；显式保存过的值保持原样。
+      return {
+        ok: true,
+        ...state,
+        channels: state.channels.map((channel) => ({
+          ...channel,
+          models: channel.models.map((model) => (
+            typeof model.webSearch === "boolean"
+              ? model
+              : { ...model, webSearch: defaultWebSearchForModel(model.id) }
+          )),
+        })),
+      };
     }
     if (request?.action === "list-models") {
       return { ok: true, models: await discoverChannelModels(request) };

@@ -5,6 +5,13 @@ export const DEFAULT_CONTEXT_K = 272;
 const EFFECTIVE_CONTEXT_PERCENT = 95;
 const INPUT_MODALITIES = ["text", "image"];
 export const MAX_LABEL_LENGTH = 160;
+/// 支持网页搜索的模型 ID 白名单；新增模型时只扩展这一处，所有入口复用同一个匹配规则。
+export const WEB_SEARCH_ALLOWLIST = ["deepseek", "gpt"];
+
+export const defaultWebSearchForModel = (id) => {
+  const normalized = String(id ?? "").trim().toLowerCase();
+  return WEB_SEARCH_ALLOWLIST.some((prefix) => normalized.startsWith(prefix));
+};
 
 const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 
@@ -56,6 +63,10 @@ export const validateModels = (models) => {
       displayName: parseDisplayName(model.displayName, index) || id,
       context: parseContextK(model.context, index),
       inputModalities: parseModalities(model.inputModalities, index),
+      // 白名单内的模型默认勾选；显式保存过的 false 仍然优先。
+      webSearch: typeof model.webSearch === "boolean"
+        ? model.webSearch
+        : defaultWebSearchForModel(id),
     };
   });
 };
@@ -79,6 +90,7 @@ const THIRD_PARTY_MODEL = {
   tool_mode: null,
   shell_type: "shell_command",
   web_search_tool_type: "text",
+  supports_search_tool: false,
   supports_parallel_tool_calls: true,
   // 第三方端点不认 service_tier，Fast 档摆出来只会让请求被拒。
   service_tiers: [],
@@ -117,6 +129,9 @@ export const buildCatalog = (bundled, models) => {
       applyWindow(existing, tokens);
       if (model.displayName) existing.display_name = model.displayName;
       existing.input_modalities = modalities;
+      existing.supports_search_tool = typeof model.webSearch === "boolean"
+        ? model.webSearch
+        : defaultWebSearchForModel(model.id);
       existing.visibility = "list";
       continue;
     }
@@ -124,6 +139,10 @@ export const buildCatalog = (bundled, models) => {
     const entry = {
       ...JSON.parse(JSON.stringify(template)),
       ...THIRD_PARTY_MODEL,
+      // 模板里可能带着内置模型的能力；网页搜索按模型显式覆盖，不能让不支持的上游继承过去。
+      supports_search_tool: typeof model.webSearch === "boolean"
+        ? model.webSearch
+        : defaultWebSearchForModel(model.id),
       slug: model.id,
       display_name: displayName,
       description: displayName,
