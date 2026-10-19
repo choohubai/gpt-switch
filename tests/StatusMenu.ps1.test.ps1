@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $sourcePath = Join-Path $PSScriptRoot "..\Sources\StatusMenu.ps1"
-$source = Get-Content -LiteralPath $sourcePath -Raw
+$source = [string](Get-Content -LiteralPath $sourcePath -Raw)
 
 function Get-FunctionBlock([string]$Name) {
   $pattern = '(?ms)^function\s+' + [regex]::Escape($Name) + '\s*\{.*?^\}'
