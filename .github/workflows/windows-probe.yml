@@ -44,9 +44,7 @@ jobs:
 
       - name: 跑 Windows 面板测试
         shell: pwsh
-        run: |
-          ./tests/StatusMenu.ps1.test.ps1
-          if ($LASTEXITCODE -ne 0) { throw "StatusMenu.ps1.test.ps1 退出码 $LASTEXITCODE" }
+        run: ./tests/StatusMenu.ps1.test.ps1
 
       - name: 启动带调试端口的 Chromium
         shell: pwsh
