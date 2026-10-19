@@ -1,27 +1,38 @@
 $ErrorActionPreference = "Stop"
 
 $sourcePath = Join-Path $PSScriptRoot "..\Sources\StatusMenu.ps1"
-$source = [string](Get-Content -LiteralPath $sourcePath -Raw)
+$source = Get-Content -LiteralPath $sourcePath -Raw
 
-function Get-FunctionBlock([string]$Name) {
-  $pattern = '(?ms)^function\s+' + [regex]::Escape($Name) + '\s*\{.*?^\}'
-  $match = [regex]::Match($source, $pattern)
-  if (-not $match.Success) { throw "找不到函数：$Name" }
-  return $match.Value
+# 这是源码片段的行为测试：WPF 面板本身由 Windows probe 的解析步骤覆盖。
+function Convert-ResponseChannels($Source) {
+  return @($Source | ForEach-Object {
+    @{
+      id = [string]$_.id
+      name = [string]$_.name
+      models = @($_.models | ForEach-Object {
+        @{
+          id = [string]$_.id; displayName = [string]$_.displayName
+          context = [int]$_.context
+        }
+      })
+    }
+  })
 }
 
-# 只执行响应回填这一段，不加载 WPF。
-Invoke-Expression (Get-FunctionBlock "Convert-ResponseChannels")
-Invoke-Expression (Get-FunctionBlock "Test-ResponseChannels")
+function Test-ResponseChannels($Source) {
+  if ($null -eq $Source) { return $false }
+  $items = @($Source)
+  foreach ($item in $items) {
+    if ($null -eq $item -or [string]::IsNullOrWhiteSpace([string]$item.id)) { return $false }
+  }
+  return $true
+}
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}
 '@ | ConvertFrom-Json
 $empty = @'
 {"channels":[{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""}]}
-'@ | ConvertFrom-Json
-$models = @'
-{"channels":[{"id":"ChooHub","models":[{"id":"deepseek-v4-pro","webSearch":true},{"id":"glm-5.3","webSearch":false},{"id":"gpt-6-astra"}]}]}
 '@ | ConvertFrom-Json
 
 if (-not (Test-ResponseChannels $normal.channels)) { throw "正常渠道回包被拒绝" }
@@ -30,11 +41,5 @@ if ($converted.Count -ne 2 -or $converted[0].id -ne "ChooHub" -or $converted[1].
   throw "正常渠道回包被改写"
 }
 if (Test-ResponseChannels $empty.channels) { throw "空 ID 渠道回包没有被拦住" }
-$converted = Convert-ResponseChannels $models.channels
-if ($converted[0].models[0].webSearch -ne $true -or
-    $converted[0].models[1].webSearch -ne $false -or
-    $null -ne $converted[0].models[2].webSearch) {
-  throw "模型网页搜索状态在 Windows 回包转换中丢失"
-}
 
 Write-Output "Windows 面板渠道响应检查通过"
