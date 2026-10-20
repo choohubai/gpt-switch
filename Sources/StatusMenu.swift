@@ -243,6 +243,18 @@ final class PanelStore: ObservableObject {
     var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
     var isDirty: Bool { channels != savedChannels }
 
+    /// 输入阶段就按后端的 Provider ID 规则校验，别等整份列表保存时才报错。
+    var channelIDError: String? {
+        guard let channel = activeChannel else { return nil }
+        let id = channel.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.isEmpty { return "渠道 ID 不能为空" }
+        if id.count > 32 { return "渠道 ID 不能超过 32 个字符" }
+        if id.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) == nil {
+            return "渠道 ID 只能用字母、数字、- 和 _"
+        }
+        return nil
+    }
+
     var editingTitle: String {
         guard let channel = activeChannel, !channel.id.isEmpty else { return "添加渠道" }
         return "编辑渠道"
@@ -378,6 +390,11 @@ final class PanelStore: ObservableObject {
     /// 那条时 current 要跟着走，否则把渠道 ID 改掉之后「运行中」就掉了。
     func save() {
         guard loaded, !busy else { return }
+        if let error = channelIDError {
+            feedback = error
+            feedbackIsError = true
+            return
+        }
         leaveEditorAfterSave = true
         if editingActiveChannel, channels.indices.contains(activeIndex) {
             submit(action: "save", currentID: channels[activeIndex].id)
@@ -1448,7 +1465,7 @@ struct ChannelDetailView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .pointingHand()
-                    .disabled(!store.isDirty || store.busy || !store.hasChannel)
+                    .disabled(!store.isDirty || store.busy || !store.hasChannel || store.channelIDError != nil)
             }
             .padding(.horizontal, 28)
             .padding(.bottom, 18)
@@ -1460,8 +1477,15 @@ struct ChannelDetailView: View {
     private var channelForm: some View {
         if store.hasChannel {
             VStack(alignment: .leading, spacing: 14) {
-                LabeledField(title: "渠道 ID", placeholder: "输入渠道 ID",
-                             text: $store.channels[store.activeIndex].id)
+                VStack(alignment: .leading, spacing: 4) {
+                    LabeledField(title: "渠道 ID", placeholder: "输入渠道 ID",
+                                 text: $store.channels[store.activeIndex].id)
+                    if let error = store.channelIDError {
+                        Text(error)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                    }
+                }
                 LabeledField(title: "API 密钥", placeholder: "输入 API 密钥",
                              text: $store.channels[store.activeIndex].apiKey, secure: true)
                 LabeledField(title: "API 地址", placeholder: "https://gateway.example/v1",

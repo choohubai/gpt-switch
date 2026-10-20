@@ -38,6 +38,13 @@ test("后缀的大小写和空格跟渠道名有出入时归到同一个表头",
   assert.equal(defaultPickerGroupName(), "Choo Hub");
 });
 
+test("客户端把渠道名里的连字符渲染成空格后仍归到原渠道", () => {
+  const { splitPickerLabel, pickerRowGroup } = loadGrouping(["choohub-gpt"], "choohub-gpt");
+  assert.deepEqual(splitPickerLabel("6 Astra（choohub Gpt）"),
+    { name: "6 Astra", group: "choohub-gpt" });
+  assert.equal(pickerRowGroup("6 Astra（choohub Gpt）"), "choohub-gpt");
+});
+
 test("注入器没给渠道名时用兜底表头名，注入器没给默认分组名时也一样", () => {
   const { splitPickerLabel, defaultPickerGroupName } = loadGrouping([], "");
   assert.equal(defaultPickerGroupName(), "当前渠道");

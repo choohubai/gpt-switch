@@ -511,6 +511,8 @@ function Convert-Context([int]$k) {
             <StackPanel>
               <TextBlock Text="渠道 ID" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
               <TextBox x:Name="ChannelIdField" Style="{StaticResource Field}" Margin="0,4,0,14"/>
+              <TextBlock x:Name="ChannelIdHint" FontSize="12" Foreground="#D93025"
+                         Margin="0,-10,0,10" TextWrapping="Wrap" Visibility="Collapsed"/>
               <TextBlock Text="API 密钥" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
               <PasswordBox x:Name="ChannelApiKeyField" Style="{StaticResource SecretField}" Margin="0,4,0,14"/>
               <TextBlock Text="API 地址" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
@@ -695,6 +697,7 @@ $backButton = $window.FindName("BackButton")
 $pageTitle = $window.FindName("PageTitle")
 $deleteChannelButton = $window.FindName("DeleteChannelButton")
 $channelIdField = $window.FindName("ChannelIdField")
+$channelIdHint = $window.FindName("ChannelIdHint")
 $channelBaseUrlField = $window.FindName("ChannelBaseUrlField")
 $channelApiKeyField = $window.FindName("ChannelApiKeyField")
 $channelHeaderNameField = $window.FindName("ChannelHeaderNameField")
@@ -807,6 +810,7 @@ function Update-ChannelFields {
   } finally {
     $script:rendering = $false
   }
+  Update-ChannelIdHint
 }
 
 function Update-ChannelList {
@@ -1562,6 +1566,20 @@ function Remove-Channel([int]$Index) {
   Submit "save" "正在删除渠道…"
 }
 
+function Get-ChannelIdError([string]$Value) {
+  $id = ([string]$Value).Trim()
+  if (-not $id) { return "渠道 ID 不能为空" }
+  if ($id.Length -gt 32) { return "渠道 ID 不能超过 32 个字符" }
+  if ($id -notmatch '^[A-Za-z0-9_-]+$') { return "渠道 ID 只能用字母、数字、- 和 _" }
+  return $null
+}
+
+function Update-ChannelIdHint {
+  $error = Get-ChannelIdError $channelIdField.Text
+  $channelIdHint.Text = if ($error) { $error } else { "" }
+  $channelIdHint.Visibility = if ($error) { "Visible" } else { "Collapsed" }
+}
+
 function Update-ChannelField([string]$Field, [string]$Value) {
   if ($script:rendering -or $script:busy) { return }
   $channel = Get-ActiveChannel
@@ -1571,6 +1589,7 @@ function Update-ChannelField([string]$Field, [string]$Value) {
   $channel[$Field] = $Value
   if ($Field -eq "id") {
     $pageTitle.Text = if ([string]::IsNullOrWhiteSpace($Value)) { "添加渠道" } else { $Value }
+    Update-ChannelIdHint
   }
   Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
@@ -1764,6 +1783,13 @@ $saveButton.Add_Click({
   # 保存只写渠道列表：写进 ChatGPT 是右上角「重启」的事。改的是正在用的那条时 current
   # 要跟着新 ID 走，否则把渠道 ID 改掉之后「运行中」就掉了。
   $channel = Get-ActiveChannel
+  $idError = Get-ChannelIdError ([string]$channel.id)
+  if ($idError) {
+    Update-ChannelIdHint
+    Set-Feedback $idError $true
+    $channelIdField.Focus() | Out-Null
+    return
+  }
   if ($script:editingCurrent -and $null -ne $channel) { Submit "save" "" ([string]$channel.id); return }
   Submit "save"
 })

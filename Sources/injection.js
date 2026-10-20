@@ -7,7 +7,7 @@
   const MODEL_ID_PREFIX = "";
   /// 注入模板自己的版本：模板改动（插的 DOM 形状变了）就抬一格，
   /// 已经开着的客户端会拆掉上一份重建，不至于把旧节点留在页面上。
-  const VERSION = "0.1.29";
+  const VERSION = "0.1.30";
   const GLOBAL_KEY = "__GPT_SWITCH__";
   const STATSIG_MODEL_CONFIG = "107580212";
   const modelListRequestIds = new Set();
@@ -590,8 +590,8 @@
    */
   const stripRowMarks = (value) => normalizeGroupText(value).replace(/[\s✓✔√]+$/u, "");
 
-  /** 比较用的键：忽略大小写与空白。 */
-  const groupLookupKey = (value) => normalizeGroupText(value).replace(/\s+/g, "").toLowerCase();
+  /** 比较用的键：忽略大小写、空白和连字符（客户端会把渠道名里的 `-` 渲染成空格）。 */
+  const groupLookupKey = (value) => normalizeGroupText(value).replace(/[\s-]+/g, "").toLowerCase();
 
   /** 默认分组名：注入器给的是当前生效渠道名。 */
   const defaultPickerGroupName = () => normalizeGroupText(state.groupName) || MODEL_GROUP_FALLBACK_NAME;

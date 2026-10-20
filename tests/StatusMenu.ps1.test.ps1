@@ -27,6 +27,17 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Channels")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-ProxyDirty")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Receive-Response")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Get-ChannelIdError")))
+
+if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
+if ((Get-ChannelIdError "bad id") -ne "渠道 ID 只能用字母、数字、- 和 _") {
+  throw "非法渠道 ID 没有提示"
+}
+$longId = ("a" * 33) -join ""
+if ((Get-ChannelIdError $longId) -ne "渠道 ID 不能超过 32 个字符") {
+  throw "超长渠道 ID 没有提示"
+}
+if ($null -ne (Get-ChannelIdError "choohub-gpt")) { throw "合法渠道 ID 被误判" }
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}

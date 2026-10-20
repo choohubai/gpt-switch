@@ -37,6 +37,22 @@ struct StatusMenuTests {
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
+        // 渠道 ID 在输入阶段校验：格式不对时给出具体提示，保存请求不发出去。
+        store.addChannel()
+        store.channels[store.channels.count - 1].id = "bad id"
+        assert(store.channelIDError == "渠道 ID 只能用字母、数字、- 和 _")
+        let requestsBeforeInvalidSave = requests.count
+        store.save()
+        assert(requests.count == requestsBeforeInvalidSave, "渠道 ID 不合法时不能发保存请求")
+        assert(store.feedbackIsError && store.feedback == "渠道 ID 只能用字母、数字、- 和 _")
+        store.channels[store.channels.count - 1].id = "choohub-gpt"
+        assert(store.channelIDError == nil)
+        store.channels[store.channels.count - 1].id = String(repeating: "a", count: 33)
+        assert(store.channelIDError == "渠道 ID 不能超过 32 个字符")
+        store.channels[store.channels.count - 1].id = " "
+        assert(store.channelIDError == "渠道 ID 不能为空")
+        store.requestLeaveEditor()
+
         // 程序坞图标要能把面板叫回来；从程序坞或 ⌘Q 来的退出请求只关窗口，不能把菜单栏图标带走。
         controller.window?.orderOut(nil)
         assert(controller.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
