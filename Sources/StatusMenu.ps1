@@ -288,6 +288,17 @@ function Convert-Context([int]$k) {
       <Setter Property="Background" Value="#DCEBD9"/>
       <Setter Property="Foreground" Value="#356C41"/>
     </Style>
+    <Style x:Key="NavGlyph" TargetType="Path">
+      <Setter Property="Width" Value="18"/>
+      <Setter Property="Height" Value="18"/>
+      <Setter Property="Stretch" Value="Uniform"/>
+      <Setter Property="Fill" Value="Transparent"/>
+      <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+      <Setter Property="StrokeThickness" Value="1.6"/>
+      <Setter Property="StrokeStartLineCap" Value="Round"/>
+      <Setter Property="StrokeEndLineCap" Value="Round"/>
+      <Setter Property="StrokeLineJoin" Value="Round"/>
+    </Style>
     <Style x:Key="ChannelSwitch" TargetType="ToggleButton">
       <Setter Property="Width" Value="34"/>
       <Setter Property="Height" Value="20"/>
@@ -342,44 +353,44 @@ function Convert-Context([int]$k) {
                    Margin="14,0,0,8"/>
         <Button x:Name="ModelsTab" Style="{StaticResource NavActive}">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 L21,7 21,17 12,22 3,17 3,7 Z M3,7 12,12 21,7 M12,12 12,22" Margin="0,0,10,0"/>
             <TextBlock Text="模型"/>
           </StackPanel>
         </Button>
         <Button x:Name="ProxyTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE968;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M9,2 L15,2 15,8 9,8 Z M2,16 L8,16 8,22 2,22 Z M16,16 L22,16 22,22 16,22 Z M5,16 5,13 19,13 19,16 M12,13 12,8" Margin="0,0,10,0"/>
             <TextBlock Text="代理"/>
           </StackPanel>
         </Button>
         <Button x:Name="GeneralTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M9.5,2 L14.5,2 15.3,4.4 17.2,5.2 19.5,4.2 22,7.8 20.1,9.5 20.1,11.5 22,13.2 19.5,16.8 17.2,15.8 15.3,16.6 14.5,19 9.5,19 8.7,16.6 6.8,15.8 4.5,16.8 2,13.2 3.9,11.5 3.9,9.5 2,7.8 4.5,4.2 6.8,5.2 8.7,4.4 Z M15,10.5 A3,3 0 1 1 9,10.5 A3,3 0 1 1 15,10.5" Margin="0,0,10,0"/>
             <TextBlock Text="通用"/>
           </StackPanel>
         </Button>
         <Button x:Name="AppearanceTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE790;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M14.5,3 L21,9.5 10,20.5 3.5,21 4,14.5 Z M14.5,3 18,6.5 M4,14.5 9.5,20 M16,5 19,8" Margin="0,0,10,0"/>
             <TextBlock Text="外观"/>
           </StackPanel>
         </Button>
         <Button x:Name="AgentsTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE716;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M5,5 A3,3 0 1 1 5,11 A3,3 0 1 1 5,5 M16,4 A3,3 0 1 1 16,10 A3,3 0 1 1 16,4 M2,20 L2,18 C2,15 4,13 7,13 10,13 14,15 14,18 L14,20 M16,13 C19.5,13 22,14.5 22,18 L22,20" Margin="0,0,10,0"/>
             <TextBlock Text="Agents"/>
           </StackPanel>
         </Button>
         <Border Height="1" Background="#CFDACB" Margin="4,12,4,10"/>
         <Button x:Name="AboutTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M12,10 L12,16 M12,7 12,7.01" Margin="0,0,10,0"/>
             <TextBlock Text="关于"/>
           </StackPanel>
         </Button>
         <Button x:Name="HelpTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
           <StackPanel Orientation="Horizontal">
-            <TextBlock Text="&#xE9CE;" FontFamily="Segoe MDL2 Assets" FontSize="14" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M9.1,9 A3,3 0 1 1 12,14 L12,15 M12,18 12,18.01" Margin="0,0,10,0"/>
             <TextBlock Text="获取帮助"/>
           </StackPanel>
         </Button>
@@ -480,7 +491,15 @@ function Convert-Context([int]$k) {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <Button x:Name="BackButton" Grid.Column="0" Style="{StaticResource Link}" Content="‹ 返回"/>
+        <Button x:Name="BackButton" Grid.Column="0" Style="{StaticResource Link}"
+                Padding="2,0,8,0" VerticalAlignment="Center"
+                AutomationProperties.Name="返回">
+          <StackPanel Orientation="Horizontal">
+            <Path Style="{StaticResource NavGlyph}" Width="16" Height="16"
+                  Data="M15,4 7,12 15,20" Margin="0,0,5,0"/>
+            <TextBlock Text="返回" Foreground="#656667" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
         <TextBlock x:Name="PageTitle" Grid.Column="1" Text="添加渠道" FontSize="17" FontWeight="SemiBold"
                    Foreground="#202522" VerticalAlignment="Center" Margin="8,0,0,0"/>
         <Button x:Name="DeleteChannelButton" Grid.Column="3" Style="{StaticResource PillDanger}" Content="删除渠道"/>
