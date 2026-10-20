@@ -26,6 +26,7 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Models")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Channels")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-ProxyDirty")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Receive-Response")))
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}
@@ -87,5 +88,48 @@ $script:savedProxyPort = "47123"
 if (Test-ProxyDirty) { throw "代理配置原样时被判成有改动" }
 $script:proxyPort = "47124"
 if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
+
+# 编辑页保存成功后必须回列表；失败或回包不完整时不能把用户踢出编辑页。
+function Get-ActiveChannel {
+  if ($script:channelIndex -lt 0 -or $script:channelIndex -ge $script:channels.Count) { return $null }
+  return $script:channels[$script:channelIndex]
+}
+function Update-ChannelFields { }
+function Rebuild-Rows { }
+function Update-ChannelList { }
+function Set-Feedback([string]$Text, [bool]$IsError = $false) { }
+function Update-Controls { }
+$script:showListCalls = 0
+function Show-List-Page { $script:showListCalls += 1 }
+
+$script:checkingUpdate = $false
+$script:fetchingModels = $false
+$script:savingProxy = $false
+$script:cleared = $false
+$script:pendingDeleteRestore = $null
+$script:pendingDeleteNote = ""
+$script:loaded = $true
+$script:currentChannelId = "relay"
+$script:channelIndex = 0
+$script:channels = Convert-ResponseChannels $single.channels
+$script:savedChannels = Copy-Channels $script:channels
+$script:modelEditorActive = $true
+
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  saved = $true
+  current = "relay"
+  channels = $single.channels
+})
+if ($script:showListCalls -ne 1) { throw "编辑页保存成功后没有返回列表页" }
+
+$script:showListCalls = 0
+$script:modelEditorActive = $true
+Receive-Response ([pscustomobject]@{ ok = $false; error = "测试用失败" })
+if ($script:showListCalls -ne 0) { throw "编辑页保存失败后不应返回列表页" }
+
+$script:showListCalls = 0
+Receive-Response ([pscustomobject]@{ ok = $true; saved = $true; channels = @([pscustomobject]@{ id = "" }) })
+if ($script:showListCalls -ne 0) { throw "渠道回包不完整时不应返回列表页" }
 
 Write-Output "Windows 面板渠道响应检查通过"

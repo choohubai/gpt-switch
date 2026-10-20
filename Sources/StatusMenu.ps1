@@ -1663,7 +1663,13 @@ function Receive-Response($Response) {
   } elseif ($Response.restarted -eq $true) {
     Set-Feedback "配置已写入，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
-    Set-Feedback $(if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点右上角「重启 ChatGPT」才会生效" })
+    if (Test-ResponseChannels $Response.channels) {
+      $successNote = if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点右上角「重启 ChatGPT」才会生效" }
+      if ($script:modelEditorActive) { Show-List-Page }
+      Set-Feedback $successNote
+    } else {
+      Set-Feedback "插件返回的渠道列表不完整，已保留当前配置" $true
+    }
   } else {
     Set-Feedback ""
   }
