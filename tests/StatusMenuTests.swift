@@ -37,6 +37,34 @@ struct StatusMenuTests {
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
+        // Agents 草稿和开关独立于渠道：保存只写 scoped agents 请求，不误存渠道。
+        store.agentsContent = "# 公共指令\n"
+        store.agentsEnabled = true
+        assert(store.agentsDirty)
+        let requestsBeforeAgents = requests.count
+        store.saveAgents()
+        assert(requests.count == requestsBeforeAgents + 1)
+        assert(requests.last?["scope"] as? String == "agents")
+        assert((requests.last?["agents"] as? [String: Any])?["enabled"] as? Bool == true)
+        store.apply(["ok": true, "saved": true, "agents": [
+            "content": "# 公共指令\n", "enabled": true,
+            "backupPath": "/tmp/AGENTS.md.2026.bak",
+        ]])
+        assert(!store.agentsDirty && !store.busy)
+        assert(store.agentsBackupPath == "/tmp/AGENTS.md.2026.bak")
+        assert(store.feedback == "公共指令已同步，原文件已备份")
+        store.agentsContent = "# 未完成\n"
+        assert(store.agentsDirty)
+        store.saveAgents()
+        assert(store.savingAgents && store.busy)
+        store.cancelSavingAgents()
+        assert(!store.savingAgents && !store.busy, "切换页面时能取消 Agents 在途保存")
+        store.agentsContent = "# 未完成\n"
+        store.agentsContent = "# 草稿"
+        assert(store.agentsDirty, "Agents 草稿有未保存内容时关闭流程必须参与确认")
+        store.agentsContent = store.savedAgentsContent
+        store.agentsEnabled = store.savedAgentsEnabled
+
         // 渠道 ID 在输入阶段校验：格式不对时给出具体提示，保存请求不发出去。
         store.addChannel()
         store.channels[store.channels.count - 1].id = "bad id"
@@ -534,6 +562,18 @@ struct StatusMenuTests {
         store.cancelDiscovery()
         store.version = "0.1.46"
         store.showList()
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .proxy))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("proxy.png")
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .agents))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("agents.png")
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .general))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("general.png")
+        window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .appearance))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("appearance.png")
         window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .about))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("about.png")

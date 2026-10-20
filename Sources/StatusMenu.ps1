@@ -66,6 +66,12 @@ $script:proxyPort = "47123"
 $script:savedProxyHost = "127.0.0.1"
 $script:savedProxyPort = "47123"
 $script:savingProxy = $false
+$script:agentsContent = ""
+$script:savedAgentsContent = ""
+$script:agentsEnabled = $false
+$script:savedAgentsEnabled = $false
+$script:agentsBackupPath = ""
+$script:savingAgents = $false
 
 function Send-Request([hashtable]$Request) {
   $stdout.WriteLine(($Request | ConvertTo-Json -Compress -Depth 6))
@@ -118,6 +124,10 @@ function Convert-Context([int]$k) {
       <Setter Property="Foreground" Value="#FFFFFF"/>
       <Setter Property="BorderBrush" Value="#477C51"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style x:Key="HeaderDivider" TargetType="Border">
+      <Setter Property="Height" Value="1"/>
+      <Setter Property="Background" Value="#E5E9E3"/>
     </Style>
     <Style x:Key="PillDanger" TargetType="Button" BasedOn="{StaticResource Pill}">
       <Setter Property="Foreground" Value="#D93025"/>
@@ -398,12 +408,12 @@ function Convert-Context([int]$k) {
     </Border>
     <Border Grid.RowSpan="2" Grid.Column="1" Background="#D8E2D4"/>
 
-    <Grid x:Name="ListPage" Grid.Row="0" Grid.Column="2">
+    <Grid x:Name="ListPage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <Grid x:Name="ModelsPage" Grid.Row="0" Margin="28,20,28,14">
+      <Grid x:Name="ModelsPage" Grid.Row="0" Margin="0,0,0,14">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
@@ -417,7 +427,7 @@ function Convert-Context([int]$k) {
         <Button x:Name="RestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}" Content="重启 ChatGPT"
                 VerticalAlignment="Top"/>
       </Grid>
-      <Border x:Name="ModelsCard" Grid.Row="1" Margin="28,16,28,20"
+      <Border x:Name="ModelsCard" Grid.Row="1" Margin="0,16,0,0"
               Background="Transparent" BorderThickness="0">
         <Grid>
           <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -434,16 +444,24 @@ function Convert-Context([int]$k) {
           </StackPanel>
         </Grid>
       </Border>
-      <Grid x:Name="ProxyPage" Grid.RowSpan="2" Margin="28,20,28,20" Visibility="Collapsed">
+      <Grid x:Name="ProxyPage" Grid.RowSpan="2" Visibility="Collapsed">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="代理" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
-          <TextBlock Text="控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。"
-                     FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
-        </StackPanel>
+        <Grid Margin="0,0,0,14">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+            <TextBlock Text="代理" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
+            <TextBlock Text="控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。"
+                       FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
+          </StackPanel>
+          <Button x:Name="ProxyRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
+                  Content="重启 ChatGPT" VerticalAlignment="Top"/>
+        </Grid>
         <Border Grid.Row="1" Style="{StaticResource Card}" VerticalAlignment="Top" Margin="0,16,0,0" Padding="18">
           <Grid>
             <Grid.ColumnDefinitions>
@@ -476,6 +494,8 @@ function Convert-Context([int]$k) {
           </Grid>
         </Border>
       </Grid>
+      <Border x:Name="ModelsHeaderDivider" Grid.Row="0" Height="1" Background="#E5E9E3"
+              VerticalAlignment="Bottom"/>
     </Grid>
 
     <Grid x:Name="DetailPage" Grid.Row="0" Grid.Column="2" Margin="28,22,28,20" Visibility="Collapsed">
@@ -549,17 +569,84 @@ function Convert-Context([int]$k) {
       </StackPanel>
     </Grid>
 
-    <Grid x:Name="SimplePage" Grid.Row="0" Grid.Column="2" Margin="28,26,28,20" Visibility="Collapsed">
-      <TextBlock x:Name="SimplePageTitle" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
+    <Grid x:Name="SimplePage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20" Visibility="Collapsed">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+      <TextBlock x:Name="SimplePageTitle" FontSize="20" FontWeight="SemiBold" Foreground="#202522"
+                 Margin="0,0,0,14"/>
+      <Border x:Name="SimpleHeaderDivider" Grid.Row="0" Height="1" Background="#E5E9E3"
+              VerticalAlignment="Bottom"/>
     </Grid>
 
-    <Grid x:Name="AboutPage" Grid.Row="0" Grid.Column="2" Margin="28,26,28,20" Visibility="Collapsed">
+    <Grid x:Name="AgentsPage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20" Visibility="Collapsed">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+      <Grid Margin="0,0,0,14">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel>
+          <TextBlock Text="Agents" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
+          <TextBlock Text="维护所有项目共用的 Markdown 指令。"
+                     FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+          <TextBlock Text="启用" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <ToggleButton x:Name="AgentsEnabledToggle" Style="{StaticResource ChannelSwitch}"/>
+        </StackPanel>
+      </Grid>
+      <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="18">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="公共指令" FontSize="13" FontWeight="Medium" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" Text="~/.codex/AGENTS.md" FontFamily="Consolas"
+                       FontSize="11" Foreground="#747D76" VerticalAlignment="Center"/>
+          </Grid>
+          <TextBox x:Name="AgentsContentField" Grid.Row="1" Style="{StaticResource Field}"
+                   AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                   FontFamily="Consolas" FontSize="13" MinHeight="300" Margin="0,10,0,0"/>
+          <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="启用时先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。"
+                         FontSize="11" Foreground="#747D76" TextWrapping="Wrap"/>
+              <TextBlock x:Name="AgentsBackupLabel" FontSize="11" Foreground="#747D76"
+                         FontFamily="Consolas" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
+            </StackPanel>
+            <Button x:Name="SaveAgentsButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
+                    Content="保存" Width="76" Margin="12,0,0,0"/>
+          </Grid>
+        </Grid>
+      </Border>
+      <Border Grid.Row="0" Height="1" Background="#E5E9E3" VerticalAlignment="Bottom"/>
+    </Grid>
+
+    <Grid x:Name="AboutPage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20" Visibility="Collapsed">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <TextBlock Text="关于" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
+      <TextBlock Text="关于" FontSize="20" FontWeight="SemiBold" Foreground="#202522"
+                 Margin="0,0,0,14"/>
       <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="18,0">
         <StackPanel>
           <Grid Height="58">
@@ -590,6 +677,7 @@ function Convert-Context([int]$k) {
           </Grid>
         </StackPanel>
       </Border>
+      <Border Grid.Row="0" Height="1" Background="#E5E9E3" VerticalAlignment="Bottom"/>
     </Grid>
 
     <Border Grid.Row="1" Grid.Column="2" Height="36" Background="#F7FAF5"
@@ -729,10 +817,16 @@ $modelsCard = $window.FindName("ModelsCard")
 $proxyPage = $window.FindName("ProxyPage")
 $simplePage = $window.FindName("SimplePage")
 $simplePageTitle = $window.FindName("SimplePageTitle")
+$agentsPage = $window.FindName("AgentsPage")
+$agentsEnabledToggle = $window.FindName("AgentsEnabledToggle")
+$agentsContentField = $window.FindName("AgentsContentField")
+$agentsBackupLabel = $window.FindName("AgentsBackupLabel")
+$saveAgentsButton = $window.FindName("SaveAgentsButton")
 $aboutPage = $window.FindName("AboutPage")
 $proxyHostField = $window.FindName("ProxyHostField")
 $proxyPortField = $window.FindName("ProxyPortField")
 $saveProxyButton = $window.FindName("SaveProxyButton")
+$proxyRestartButton = $proxyPage.FindName("ProxyRestartButton")
 $addButton = $window.FindName("AddModelButton")
 $clearButton = $window.FindName("ClearButton")
 $restartButton = $window.FindName("RestartButton")
@@ -976,6 +1070,7 @@ function Show-List-Page {
   $modelsPage.Visibility = "Visible"
   $modelsCard.Visibility = "Visible"
   $proxyPage.Visibility = "Collapsed"
+  $agentsPage.Visibility = "Collapsed"
   Set-Nav "models"
   $listPage.Visibility = "Visible"
   $detailPage.Visibility = "Collapsed"
@@ -998,6 +1093,7 @@ function Show-Proxy-Page {
   $modelsPage.Visibility = "Collapsed"
   $modelsCard.Visibility = "Collapsed"
   $proxyPage.Visibility = "Visible"
+  $agentsPage.Visibility = "Collapsed"
   Set-Nav "proxy"
   $script:proxyHost = [string]$script:proxyHost
   $script:proxyPort = [string]$script:proxyPort
@@ -1018,6 +1114,7 @@ function Show-Detail-Page {
   $modelsPage.Visibility = "Visible"
   $modelsCard.Visibility = "Visible"
   $proxyPage.Visibility = "Collapsed"
+  $agentsPage.Visibility = "Collapsed"
   Set-Nav "models"
   $listPage.Visibility = "Collapsed"
   $detailPage.Visibility = "Visible"
@@ -1038,9 +1135,52 @@ function Show-Empty-Page([string]$Title, [string]$Section) {
   $detailPage.Visibility = "Collapsed"
   $simplePage.Visibility = "Visible"
   $aboutPage.Visibility = "Collapsed"
+  $agentsPage.Visibility = "Collapsed"
   $simplePageTitle.Text = $Title
   Set-Nav $Section
   Set-Feedback ""
+}
+
+function Test-AgentsDirty {
+  return [string]$script:agentsContent -ne [string]$script:savedAgentsContent -or `
+    [bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled
+}
+
+function Update-AgentsControls {
+  $agentsContentField.IsEnabled = -not $script:busy
+  $agentsEnabledToggle.IsEnabled = -not $script:busy
+  $saveAgentsButton.IsEnabled = $script:loaded -and -not $script:busy -and (Test-AgentsDirty)
+  $agentsBackupLabel.Text = if ($script:agentsBackupPath) { "最近备份：$script:agentsBackupPath" } else { "" }
+}
+
+function Confirm-AgentsLeave {
+  if ($script:busy -or -not (Test-AgentsDirty)) { return $true }
+  $answer = [System.Windows.MessageBox]::Show(
+    $window,
+    "Agents 里还有未保存的改动，离开会丢弃它们。",
+    "放弃未保存的更改？",
+    "YesNo", "Warning")
+  if ($answer -ne "Yes") { return $false }
+  $script:agentsContent = [string]$script:savedAgentsContent
+  $script:agentsEnabled = [bool]$script:savedAgentsEnabled
+  Set-Feedback ""
+  Update-AgentsControls
+  return $true
+}
+
+function Show-Agents-Page {
+  $listPage.Visibility = "Collapsed"
+  $detailPage.Visibility = "Collapsed"
+  $simplePage.Visibility = "Collapsed"
+  $aboutPage.Visibility = "Collapsed"
+  $agentsPage.Visibility = "Visible"
+  $script:rendering = $true
+  $agentsContentField.Text = [string]$script:agentsContent
+  $agentsEnabledToggle.IsChecked = [bool]$script:agentsEnabled
+  $script:rendering = $false
+  Set-Nav "agents"
+  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
+  Update-AgentsControls
 }
 
 function Show-About-Page {
@@ -1048,6 +1188,7 @@ function Show-About-Page {
   $detailPage.Visibility = "Collapsed"
   $simplePage.Visibility = "Collapsed"
   $aboutPage.Visibility = "Visible"
+  $agentsPage.Visibility = "Collapsed"
   Set-Nav "about"
   Set-Feedback ""
 }
@@ -1065,6 +1206,7 @@ function Update-Controls {
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
   $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -gt 0
+  $proxyRestartButton.IsEnabled = $restartButton.IsEnabled
   $dirty = Compare-Channels $script:channels $script:savedChannels
   # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事，按钮文案不再跟着变。
   $saveButton.Content = "保存"
@@ -1632,6 +1774,22 @@ function Receive-Response($Response) {
     Show-Proxy-Page
     return
   }
+  if ($script:savingAgents) {
+    $script:savingAgents = $false
+    $script:busy = $false
+    if ($Response.ok -eq $true -and $null -ne $Response.agents) {
+      $script:agentsContent = [string]$Response.agents.content
+      $script:savedAgentsContent = $script:agentsContent
+      $script:agentsEnabled = [bool]$Response.agents.enabled
+      $script:savedAgentsEnabled = $script:agentsEnabled
+      $script:agentsBackupPath = [string]$Response.agents.backupPath
+      Set-Feedback $(if ($script:agentsBackupPath) { "公共指令已同步，原文件已备份" } else { "公共指令已保存" })
+    } else {
+      Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "保存公共指令失败" }) $true
+    }
+    Show-Agents-Page
+    return
+  }
   $script:busy = $false
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
@@ -1641,6 +1799,13 @@ function Receive-Response($Response) {
       $script:proxyPort = [string]$Response.proxy.port
       $script:savedProxyHost = $script:proxyHost
       $script:savedProxyPort = $script:proxyPort
+    }
+    if ($null -ne $Response.agents) {
+      $script:agentsContent = [string]$Response.agents.content
+      $script:savedAgentsContent = $script:agentsContent
+      $script:agentsEnabled = [bool]$Response.agents.enabled
+      $script:savedAgentsEnabled = $script:agentsEnabled
+      $script:agentsBackupPath = [string]$Response.agents.backupPath
     }
     if (Test-ResponseChannels $Response.channels) {
       $previousId = ""
@@ -1872,13 +2037,39 @@ $proxyPortField.Add_TextChanged({
   Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
   Update-Controls
 })
-$modelsTab.Add_Click({ Show-Models-Page })
-$proxyTab.Add_Click({ Show-Proxy-Page })
-$generalTab.Add_Click({ Show-Empty-Page "通用" "general" })
-$appearanceTab.Add_Click({ Show-Empty-Page "外观" "appearance" })
-$agentsTab.Add_Click({ Show-Empty-Page "Agents" "agents" })
-$aboutTab.Add_Click({ Show-About-Page })
-$helpTab.Add_Click({ Show-Empty-Page "获取帮助" "help" })
+$modelsTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Models-Page } })
+$proxyTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Proxy-Page } })
+$generalTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "通用" "general" } })
+$appearanceTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "外观" "appearance" } })
+$agentsTab.Add_Click({ Show-Agents-Page })
+
+$agentsContentField.Add_TextChanged({
+  if ($script:rendering -or $script:busy) { return }
+  $script:agentsContent = $agentsContentField.Text
+  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
+  Update-AgentsControls
+})
+$agentsEnabledToggle.Add_Click({
+  if ($script:rendering -or $script:busy) { return }
+  $script:agentsEnabled = $agentsEnabledToggle.IsChecked -eq $true
+  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
+  Update-AgentsControls
+})
+$saveAgentsButton.Add_Click({
+  if (-not $script:loaded -or $script:busy -or -not (Test-AgentsDirty)) { return }
+  $script:busy = $true
+  $script:savingAgents = $true
+  Set-Feedback "正在保存公共指令…"
+  Update-AgentsControls
+  Send-Request @{
+    action = "save"
+    restart = $false
+    scope = "agents"
+    agents = @{ content = [string]$script:agentsContent; enabled = [bool]$script:agentsEnabled }
+  }
+})
+$aboutTab.Add_Click({ if (Confirm-AgentsLeave) { Show-About-Page } })
+$helpTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "获取帮助" "help" } })
 $saveProxyButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
   $port = 0
@@ -1895,8 +2086,8 @@ $saveProxyButton.Add_Click({
   }
 })
 
-# 右上角「重启」：重新写一遍 ChatGPT 配置和全部启用渠道的模型目录，先问一句再动手。
-$restartButton.Add_Click({
+# 模型页和代理页的两个重启入口共用同一流程：重新写一遍配置和全部启用渠道，先问一句再动手。
+$requestRestart = {
   if (-not $script:loaded -or $script:busy -or $script:channels.Count -eq 0) { return }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
@@ -1905,7 +2096,9 @@ $restartButton.Add_Click({
     "OKCancel", "Warning")
   if ($answer -ne "OK") { return }
   Submit "switch"
-})
+}
+$restartButton.Add_Click($requestRestart)
+$proxyRestartButton.Add_Click($requestRestart)
 
 $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
@@ -1937,6 +2130,16 @@ $updateButton.Add_Click({
 $window.Add_Closing({
   param($sender, $eventArgs)
   if ($script:quitting) { return }
+  if (-not $script:busy -and (Test-AgentsDirty)) {
+    $answer = [System.Windows.MessageBox]::Show(
+      $window,
+      "Agents 里还有未保存的改动，关闭面板会丢弃它们。",
+      "放弃未保存的更改？",
+      "YesNo", "Warning")
+    if ($answer -ne "Yes") { $eventArgs.Cancel = $true; return }
+    $script:agentsContent = $script:savedAgentsContent
+    $script:agentsEnabled = $script:savedAgentsEnabled
+  }
   # 关窗只是收起面板：最小化到任务栏，插件继续在托盘运行。
   # 不用 Hide()：WPF 隐藏后自己不再渲染，被外部 ShowWindow 叫回来会是一片黑。
   $eventArgs.Cancel = $true

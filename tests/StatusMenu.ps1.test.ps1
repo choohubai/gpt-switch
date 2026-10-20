@@ -1,6 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $sourcePath = Join-Path $PSScriptRoot "..\Sources\StatusMenu.ps1"
+$agentStorePath = Join-Path $PSScriptRoot "..\Sources\agents-config.mjs"
+if (-not (Select-String -Path $agentStorePath -Pattern 'AGENTS\.md' -Quiet)) {
+  throw "公共指令存储路径缺失"
+}
 
 # 从源码里取真实函数体来执行，不复制一份实现：副本会和源码漂移，测试就变成假绿。
 # 取到的文本必须点源到脚本作用域执行：在函数里 Invoke-Expression 定义的函数，出了那个作用域就没了。
@@ -99,6 +103,18 @@ $script:savedProxyPort = "47123"
 if (Test-ProxyDirty) { throw "代理配置原样时被判成有改动" }
 $script:proxyPort = "47124"
 if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
+
+$script:agentsContent = "原内容"
+$script:savedAgentsContent = "原内容"
+$script:agentsEnabled = $false
+$script:savedAgentsEnabled = $false
+. ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
+if (Test-AgentsDirty) { throw "Agents 原样时被判成有改动" }
+$script:agentsContent = "新内容"
+if (-not (Test-AgentsDirty)) { throw "Agents 文本改变后没有识别出未保存" }
+$script:agentsContent = "原内容"
+$script:agentsEnabled = $true
+if (-not (Test-AgentsDirty)) { throw "Agents 开关改变后没有识别出未保存" }
 
 # 编辑页保存成功后必须回列表；失败或回包不完整时不能把用户踢出编辑页。
 function Get-ActiveChannel {

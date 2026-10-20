@@ -22,7 +22,7 @@ import {
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
 
-const VERSION = "0.1.50";
+const VERSION = "0.1.51";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -820,6 +820,7 @@ const waitForTargets = async (port, timeoutMs = 30_000) => {
 const CODEX_HOME = path.join(HOME, ".codex");
 const USER_CONFIG = path.join(CODEX_HOME, "config.toml");
 const AUTH_PATH = path.join(CODEX_HOME, "auth.json");
+const AGENTS_PATH = path.join(CODEX_HOME, "AGENTS.md");
 const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
 const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
 const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
@@ -1151,6 +1152,7 @@ const main = async () => {
     const answer = await handlePanelRequest(request, {
       configPath: CHANNELS_CONFIG,
       proxyConfigPath: PROXY_CONFIG,
+      agentsPath: AGENTS_PATH,
       importOptions: channelImportOptions(),
       restart: async () => {
         // 配置里的目标地址若被其他进程占用，startProxy 会顺延；候选服务必须先启动再切客户端。
@@ -1216,7 +1218,7 @@ const main = async () => {
     if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
     // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
     // 不能 await：客户端没在跑时 waitForTargets 要等满 30 秒，面板会一直转圈。
-    if (request?.action === "save" && request?.scope !== "proxy" && answer?.ok && port) {
+    if (request?.action === "save" && request.scope !== "proxy" && request.scope !== "agents" && answer?.ok && port) {
       restart(port).catch((error) => log("panel_refresh_failed", String(error?.message || error)));
     }
     return { ...answer, version: VERSION };

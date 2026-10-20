@@ -51,6 +51,7 @@ const sandbox = (context) => {
     recordPath: path.join(directory, ".gptswitch", "codex.json"),
     configPath: path.join(directory, ".gptswitch", "channels.json"),
     proxyConfigPath: path.join(directory, ".gptswitch", "proxy.json"),
+    agentsPath: path.join(codexHome, "AGENTS.md"),
   };
 };
 
@@ -339,6 +340,7 @@ const panelOptions = (paths, over = {}) => {
   const options = {
     configPath: paths.configPath,
     proxyConfigPath: paths.proxyConfigPath,
+    agentsPath: paths.agentsPath,
     importOptions: {
       userConfigPath: paths.userConfigPath, authPath: paths.authPath, modelPaths: [],
     },
@@ -410,6 +412,26 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.equal(keep.ok, true);
   assert.equal(keep.current, "b-2", "改了运行中渠道的 ID（带空格）之后「运行中」要跟着新 ID");
   assert.equal(readChannelState(paths.configPath).current, "b-2");
+});
+
+test("panel agents load and save keep scoped state and back up AGENTS.md", async (context) => {
+  const paths = sandbox(context);
+  fs.writeFileSync(paths.agentsPath, "原公共指令\n");
+  const { options } = panelOptions(paths);
+  const loaded = await handlePanelRequest({ action: "load" }, options);
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.agents.content, "原公共指令\n");
+  assert.equal(loaded.agents.enabled, false);
+  assert.equal(loaded.agents.backupPath, null);
+  assert.equal("storePath" in loaded.agents, false);
+  assert.equal("agentsPath" in loaded.agents, false);
+  const saved = await handlePanelRequest({
+    action: "save", scope: "agents",
+    agents: { content: "新公共指令\n", enabled: true },
+  }, options);
+  assert.equal(saved.ok, true);
+  assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "新公共指令\n");
+  assert.equal(fs.readFileSync(saved.agents.backupPath, "utf8"), "原公共指令\n");
 });
 
 test("panel clear restores codex config, keeps the channels and restarts with no current", async (context) => {

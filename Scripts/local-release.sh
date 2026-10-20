@@ -180,6 +180,7 @@ generate_release_notes() {
     printf '%s\n' '- 修复 Windows 只有一个渠道时生成多张“未填渠道 ID”空卡的问题。'
     printf '%s\n' '- 渠道 ID 在输入时就校验格式并显示提示，不合法时不会保存。'
     printf '%s\n' '- 修复渠道名含连字符时模型选择器少显示分组的问题。'
+    printf '%s\n' '- Agents 页支持编辑并启用公共 AGENTS.md；首次启用前自动备份，关闭后保留当前文件。'
     printf '%s\n' '- 右上角「重启 ChatGPT」把配置写进客户端；「关于」页的「还原配置」清理插件写过的配置和模型目录，渠道列表保留。'
     printf '%s\n' '- macOS 菜单栏面板与 Windows 桌面面板共用同一套渠道配置与转发协议，DMG 与 Windows 安装包一起发布。'
     printf '\n## 模型配置\n\n'

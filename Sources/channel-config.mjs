@@ -2,6 +2,7 @@ import fs from "node:fs";
 import {
   atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
+import { loadPublicInstructions, savePublicInstructions } from "./agents-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
 /// 官方字段说明见 https://developers.openai.com/codex/config-reference
@@ -697,7 +698,8 @@ export const discoverChannelModels = async (request = {}) => {
 /// 面板协议：load 读渠道和代理设置，save 只落盘，switch 落盘后写 Codex 配置并重启，
 /// clear 把 Codex 侧还原（渠道列表保留）。
 export const handlePanelRequest = async (request, {
-  configPath, proxyConfigPath, importOptions, applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
+  configPath, proxyConfigPath, agentsPath, importOptions,
+  applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
 }) => {
   let savedState = null;
   let cleared = false;
@@ -705,7 +707,20 @@ export const handlePanelRequest = async (request, {
   try {
     if (request?.action === "load") {
       const state = loadChannelState(configPath, importOptions);
-      return { ok: true, ...state, proxy: readProxySettings(proxyConfigPath) };
+      return {
+        ok: true, ...state, proxy: readProxySettings(proxyConfigPath),
+        agents: loadPublicInstructions(agentsPath),
+      };
+    }
+    if (request?.action === "save" && request?.scope === "agents") {
+      const current = loadPublicInstructions(agentsPath);
+      const saved = savePublicInstructions(agentsPath, current, request.agents);
+      return {
+        ok: true, saved: true, agents: {
+          content: saved.content, enabled: saved.enabled,
+          backupPath: saved.backupPath,
+        },
+      };
     }
     if (request?.action === "list-models") {
       return { ok: true, models: await discoverChannelModels(request) };

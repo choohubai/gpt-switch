@@ -196,6 +196,12 @@ final class PanelStore: ObservableObject {
     @Published var proxyPort = "47123"
     @Published var savedProxyHost = "127.0.0.1"
     @Published var savedProxyPort = "47123"
+    @Published var agentsContent = ""
+    @Published var savedAgentsContent = ""
+    @Published var agentsEnabled = false
+    @Published var savedAgentsEnabled = false
+    @Published var agentsBackupPath = ""
+    @Published var savingAgents = false
     @Published var savingProxy = false
     @Published var currentChannelID: String?
     @Published var editingIndex: Int?
@@ -241,6 +247,7 @@ final class PanelStore: ObservableObject {
     var hasChannel: Bool { activeChannel != nil }
     /// 代理页也有自己的保存按钮；未保存的代理输入不能把模型页的「保存」和右上角重启拖住。
     var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
+    var agentsDirty: Bool { agentsContent != savedAgentsContent || agentsEnabled != savedAgentsEnabled }
     var isDirty: Bool { channels != savedChannels }
 
     /// 输入阶段就按后端的 Provider ID 规则校验，别等整份列表保存时才报错。
@@ -418,6 +425,35 @@ final class PanelStore: ObservableObject {
         ])
     }
 
+    /// 只保存公共指令草稿；启用时由本地注入器在写入前备份现有的 AGENTS.md。
+    func saveAgents() {
+        guard loaded, !busy, agentsDirty else { return }
+        busy = true
+        savingAgents = true
+        feedback = "正在保存公共指令…"
+        feedbackIsError = false
+        send([
+            "action": "save",
+            "restart": false,
+            "scope": "agents",
+            "agents": ["content": agentsContent, "enabled": agentsEnabled],
+        ])
+    }
+
+    func cancelSavingAgents() {
+        guard savingAgents else { return }
+        savingAgents = false
+        busy = false
+        feedback = isDirty ? "有未保存的更改" : ""
+        feedbackIsError = false
+    }
+
+    /// 离开 Agents 页前确认草稿；切走可丢弃，但不会改回已经同步的 AGENTS.md。
+    func discardAgentsDraft() {
+        agentsContent = savedAgentsContent
+        agentsEnabled = savedAgentsEnabled
+    }
+
     /// 右上角的「重启」：重新写一遍 ChatGPT 配置和全部渠道的模型目录，然后重启。
     func applyAndRestart() {
         guard loaded, !busy, !channels.isEmpty else { return }
@@ -536,6 +572,15 @@ final class PanelStore: ObservableObject {
             savedProxyHost = host
             savedProxyPort = String(port)
         }
+        if let value = response["agents"] as? [String: Any],
+           let content = value["content"] as? String,
+           let enabled = value["enabled"] as? Bool {
+            agentsContent = content
+            savedAgentsContent = content
+            agentsEnabled = enabled
+            savedAgentsEnabled = enabled
+            agentsBackupPath = value["backupPath"] as? String ?? ""
+        }
         if checkingUpdate {
             finishUpdateCheck(response)
             return
@@ -559,6 +604,26 @@ final class PanelStore: ObservableObject {
                 feedbackIsError = false
             } else {
                 feedback = response["error"] as? String ?? "保存代理配置失败"
+                feedbackIsError = true
+            }
+            return
+        }
+        if savingAgents {
+            savingAgents = false
+            busy = false
+            if response["ok"] as? Bool == true,
+               let value = response["agents"] as? [String: Any],
+               let content = value["content"] as? String,
+               let enabled = value["enabled"] as? Bool {
+                agentsContent = content
+                savedAgentsContent = content
+                agentsEnabled = enabled
+                savedAgentsEnabled = enabled
+                agentsBackupPath = value["backupPath"] as? String ?? ""
+                feedback = agentsBackupPath.isEmpty ? "公共指令已保存" : "公共指令已同步，原文件已备份"
+                feedbackIsError = false
+            } else {
+                feedback = response["error"] as? String ?? "保存公共指令失败"
                 feedbackIsError = true
             }
             return
@@ -750,7 +815,7 @@ struct PanelView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(selection: $selectedSection)
+            SidebarView(selection: guardedSectionSelection)
                 .frame(width: 190)
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
@@ -802,8 +867,10 @@ struct PanelView: View {
                     ProxySettingsView(store: store)
                 case .about:
                     AboutView(store: store)
-                case .general, .appearance, .agents, .help:
-                    EmptyPanelView(title: selectedSection.rawValue)
+                case .agents:
+                    AgentsSettingsView(store: store)
+                case .general, .appearance, .help:
+                    EmptyPanelView(store: store, title: selectedSection.rawValue)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -835,6 +902,30 @@ struct PanelView: View {
     private var restartPromptPresented: Binding<Bool> {
         Binding(get: { store.restartPrompt },
                 set: { presented in if !presented { store.cancelRestart() } })
+    }
+
+    /// 切出 Agents 页时先拦住保存请求，免得迟来的响应被别的页面消费。
+    private var guardedSectionSelection: Binding<SidebarSection> {
+        Binding(
+            get: { selectedSection },
+            set: { next in
+                guard next != selectedSection else { return }
+                if store.savingAgents {
+                    store.cancelSavingAgents()
+                } else if store.agentsDirty {
+                    let alert = NSAlert()
+                    alert.messageText = "Agents 有未保存的更改"
+                    alert.informativeText = "要放弃草稿并离开吗？"
+                    alert.addButton(withTitle: "继续编辑")
+                    alert.addButton(withTitle: "放弃并离开")
+                    guard alert.runModal() == .alertSecondButtonReturn else { return }
+                    store.discardAgentsDraft()
+                    store.feedback = ""
+                    store.feedbackIsError = false
+                }
+                selectedSection = next
+            }
+        )
     }
 
     /// 列表和编辑页共用这一层：要么问一句删不删，要么让人挑要加哪些模型。
@@ -906,18 +997,168 @@ private struct SidebarRow: View {
     }
 }
 
+/// 侧栏页面共用页头：标题、说明、全局重启入口和下方的分割线只在这里维护。
+private struct PanelHeader: View {
+    @ObservedObject var store: PanelStore
+    let title: String
+    let detail: String
+    var showsRestart = false
+    var content: AnyView?
+
+    init(store: PanelStore, title: String, detail: String, showsRestart: Bool = false) {
+        self.store = store
+        self.title = title
+        self.detail = detail
+        self.showsRestart = showsRestart
+        content = nil
+    }
+
+    init<Accessory: View>(
+        store: PanelStore,
+        title: String,
+        detail: String,
+        showsRestart: Bool = false,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.store = store
+        self.title = title
+        self.detail = detail
+        self.showsRestart = showsRestart
+        content = AnyView(accessory())
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.system(size: 20, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            if let content {
+                content
+            } else if showsRestart {
+                RestartButton(store: store)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 20)
+        .padding(.bottom, 14)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
+        }
+    }
+}
+
+/// 重启会同时写入全部渠道和代理设置，所以各设置页沿用同一个入口与确认流程。
+private struct RestartButton: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        Button { store.requestRestart() } label: {
+            Text(store.restarting ? "重启中" : "重启 ChatGPT")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .frame(height: 30)
+                .background(RoundedRectangle(cornerRadius: 9).fill(accentGradient))
+                .shadow(color: accentBottom.opacity(0.18), radius: 6, y: 2)
+                .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .withoutFocusRing()
+        .pointingHand()
+        .opacity(store.canRestart ? 1 : 0.45)
+        .disabled(!store.canRestart)
+    }
+}
+
 private struct EmptyPanelView: View {
+    @ObservedObject var store: PanelStore
     let title: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.system(size: 20, weight: .semibold))
-                .padding(.horizontal, 28)
-                .padding(.top, 26)
+        VStack(spacing: 0) {
+            PanelHeader(store: store, title: title, detail: "")
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(panelBackground)
+    }
+}
+
+/// 公共指令源文件是 ~/.codex/AGENTS.md；面板保存的是草稿，开启后每次保存同步写入。
+private struct AgentsSettingsView: View {
+    @ObservedObject var store: PanelStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                store: store,
+                title: "Agents",
+                detail: "维护所有项目共用的 Markdown 指令。"
+            ) {
+                HStack(spacing: 8) {
+                    Text("启用").font(.system(size: 13))
+                    Toggle("", isOn: $store.agentsEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .disabled(store.busy)
+                        .help("启用后，保存时把编辑器内容写入 ~/.codex/AGENTS.md")
+                }
+            }
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("公共指令").font(.system(size: 13, weight: .medium))
+                        Spacer()
+                        Text("~/.codex/AGENTS.md")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    TextEditor(text: $store.agentsContent)
+                        .font(.system(size: 13, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 280)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(Color.primary.opacity(0.14)))
+                    Text("启用时会先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    if !store.agentsBackupPath.isEmpty {
+                        Text("最近备份：\(store.agentsBackupPath)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9)))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.07)))
+                HStack {
+                    Text("保存草稿；启用状态下同时写入公共 AGENTS.md。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("保存") { store.saveAgents() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .tint(accentBottom)
+                        .disabled(!store.agentsDirty || store.busy)
+                        .pointingHand()
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
+        }
         .background(panelBackground)
     }
 }
@@ -927,58 +1168,60 @@ private struct ProxySettingsView: View {
     @ObservedObject var store: PanelStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("代理").font(.system(size: 20, weight: .semibold))
-                Text("控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
+        VStack(spacing: 0) {
+            PanelHeader(
+                store: store,
+                title: "代理",
+                detail: "控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。",
+                showsRestart: true)
             VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("监听 IP").font(.system(size: 13, weight: .medium))
-                        TextField("127.0.0.1", text: $store.proxyHost)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 13, design: .monospaced))
-                            .fieldBox()
-                        Text("必须是合法 IPv4。建议使用 127.0.0.1；开放到局域网会增加密钥暴露风险。")
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("监听 IP").font(.system(size: 13, weight: .medium))
+                            TextField("127.0.0.1", text: $store.proxyHost)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, design: .monospaced))
+                                .fieldBox()
+                            Text("必须是合法 IPv4。建议使用 127.0.0.1；开放到局域网会增加密钥暴露风险。")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("监听端口").font(.system(size: 13, weight: .medium))
+                            TextField("47123", text: $store.proxyPort)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, design: .monospaced))
+                                .fieldBox()
+                            Text("1024–65535；被占用时自动顺延并更新此端口。")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Text("保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("监听端口").font(.system(size: 13, weight: .medium))
-                        TextField("47123", text: $store.proxyPort)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 13, design: .monospaced))
-                            .fieldBox()
-                        Text("1024–65535；被占用时自动顺延并更新此端口。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 12)
+                        Button("保存") { store.saveProxy() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .tint(accentBottom)
+                            .disabled(!store.canSaveProxy)
+                            .pointingHand()
                     }
                 }
-                HStack(spacing: 12) {
-                    Text("保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 12)
-                    Button("保存") { store.saveProxy() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .tint(accentBottom)
-                        .disabled(!store.canSaveProxy)
-                        .pointingHand()
-                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9)))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.07)))
+                Spacer()
             }
-            .padding(20)
-            .background(RoundedRectangle(cornerRadius: 12)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9)))
-            .overlay(RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.primary.opacity(0.07)))
-            Spacer()
+            .padding(.horizontal, 28)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 26)
         .background(panelBackground)
         .disabled(store.busy)
     }
@@ -988,41 +1231,43 @@ private struct AboutView: View {
     @ObservedObject var store: PanelStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("关于")
-                .font(.system(size: 20, weight: .semibold))
-            VStack(spacing: 0) {
-                AboutRow(
-                    title: "当前版本",
-                    detail: store.version.isEmpty ? "" : "v\(store.version)",
-                    inlineDetail: true,
-                    buttonTitle: store.updateTitle
-                ) {
-                    store.checkForUpdates()
+        VStack(spacing: 0) {
+            PanelHeader(store: store, title: "关于", detail: "")
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(spacing: 0) {
+                    AboutRow(
+                        title: "当前版本",
+                        detail: store.version.isEmpty ? "" : "v\(store.version)",
+                        inlineDetail: true,
+                        buttonTitle: store.updateTitle
+                    ) {
+                        store.checkForUpdates()
+                    }
+                    .disabled(!store.updateEnabled || store.busy)
+                    Divider().padding(.leading, 18)
+                    AboutRow(
+                        title: "还原配置",
+                        detail: "还原 ChatGPT 侧配置与模型目录，面板里的渠道列表保留。",
+                        buttonTitle: "还原配置"
+                    ) {
+                        store.confirmingClear = true
+                    }
+                    .disabled(!store.loaded || store.busy)
                 }
-                .disabled(!store.updateEnabled || store.busy)
-                Divider().padding(.leading, 18)
-                AboutRow(
-                    title: "还原配置",
-                    detail: "还原 ChatGPT 侧配置与模型目录，面板里的渠道列表保留。",
-                    buttonTitle: "还原配置"
-                ) {
-                    store.confirmingClear = true
-                }
-                .disabled(!store.loaded || store.busy)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.primary.opacity(0.07))
+                )
+                Spacer()
             }
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.primary.opacity(0.07))
-            )
-            Spacer()
+            .padding(.horizontal, 28)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 26)
         .background(panelBackground)
     }
 }
@@ -1252,37 +1497,11 @@ struct ChannelListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("模型").font(.system(size: 20, weight: .semibold))
-                    Text("聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                // 「重启生效」原来挂在当前渠道那行；它是全局动作，挪到这里只留一个入口。
-                Button { store.requestRestart() } label: {
-                    Text(store.restarting ? "重启中" : "重启 ChatGPT")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 30)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(accentGradient))
-                        .shadow(color: accentBottom.opacity(0.18), radius: 6, y: 2)
-                        .contentShape(RoundedRectangle(cornerRadius: 9))
-                }
-                .buttonStyle(.plain)
-                .withoutFocusRing()
-                .pointingHand()
-                .opacity(store.canRestart ? 1 : 0.45)
-                .disabled(!store.canRestart)
-            }
-            .padding(.horizontal, 28)
-            .padding(.top, 20)
-            .padding(.bottom, 14)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
-            }
+            PanelHeader(
+                store: store,
+                title: "模型",
+                detail: "聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。",
+                showsRestart: true)
 
             OverlayScrollView {
                 LazyVStack(spacing: 10) {
@@ -1895,7 +2114,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         // 面板还没建过（没打开过面板就点退出）时没有可丢的改动，直接放行。
         guard let store else { return true }
         guard !store.busy else { return true }
-        guard store.isDirty || store.proxyDirty else { return true }
+        guard store.isDirty || store.proxyDirty || store.agentsDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "放弃未保存的更改？"
         alert.addButton(withTitle: "继续编辑")
@@ -1904,6 +2123,8 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         store.channels = store.savedChannels
         store.proxyHost = store.savedProxyHost
         store.proxyPort = store.savedProxyPort
+        store.agentsContent = store.savedAgentsContent
+        store.agentsEnabled = store.savedAgentsEnabled
         store.editingIndex = nil
         return true
     }
