@@ -3,69 +3,113 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { loadPublicInstructions, savePublicInstructions } from "../Sources/agents-config.mjs";
+import {
+  loadInstructionsTemplate, readInstructionsEnabled, saveInstructionsToCodex,
+} from "../Sources/agents-config.mjs";
 
 const sandbox = (context) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "gpt-switch-agents-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return {
-    codexHome: directory,
-    agentsPath: path.join(directory, "AGENTS.md"),
-    storePath: path.join(directory, "gptswitch-agents.json"),
-  };
+  return directory;
 };
 
-test("公共指令首次加载当前 AGENTS.md，启用前创建独立备份", (context) => {
-  const paths = sandbox(context);
-  fs.writeFileSync(paths.agentsPath, "原始公共指令\n");
-  const loaded = loadPublicInstructions(paths.agentsPath);
-  assert.equal(loaded.content, "原始公共指令\n");
-  assert.equal(loaded.enabled, false);
-
-  const saved = savePublicInstructions(paths.agentsPath, loaded, { content: "新的公共指令\n", enabled: true });
-  assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "新的公共指令\n");
-  assert.ok(saved.backupPath);
-  assert.equal(fs.readFileSync(saved.backupPath, "utf8"), "原始公共指令\n");
-
-  const reopened = loadPublicInstructions(paths.agentsPath);
-  assert.equal(reopened.content, "新的公共指令\n");
-  assert.equal(reopened.enabled, true);
+test("加载固定插件模板，不读取用户现有 AGENTS.md", (context) => {
+  const codexHome = sandbox(context);
+  const userPath = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(userPath, "用户私有规则\n");
+  const template = loadInstructionsTemplate();
+  assert.match(template, /请遵循以下全局工作方式/);
+  assert.doesNotMatch(template, /用户私有规则/);
+  assert.equal(fs.readFileSync(userPath, "utf8"), "用户私有规则\n");
 });
 
-test("关闭只停止同步并保留当前文件，再次启用会重新备份", (context) => {
-  const paths = sandbox(context);
-  const initial = loadPublicInstructions(paths.agentsPath);
-  const enabled = savePublicInstructions(paths.agentsPath, initial, { content: "第一次\n", enabled: true });
-  assert.equal(enabled.backupPath, null, "原本没有文件时不制造空备份");
-  const disabled = savePublicInstructions(paths.agentsPath, loadPublicInstructions(paths.agentsPath),
-    { content: "草稿\n", enabled: false });
-  assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "第一次\n");
-  assert.equal(disabled.enabled, false);
-  const enabledAgain = savePublicInstructions(paths.agentsPath, loadPublicInstructions(paths.agentsPath),
-    { content: "第二次\n", enabled: true });
-  assert.ok(enabledAgain.backupPath);
-  assert.equal(fs.readFileSync(enabledAgain.backupPath, "utf8"), "第一次\n");
-  assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "第二次\n");
+test("应用路径包含空格时仍能读取模板", () => {
+  assert.match(loadInstructionsTemplate(), /## 一、任务开始前：读取基线/);
 });
 
-test("启用时更新内容同步写 AGENTS.md，不改渠道和 Codex 配置", (context) => {
-  const paths = sandbox(context);
-  fs.writeFileSync(paths.agentsPath, "原内容\n");
-  const enabled = savePublicInstructions(paths.agentsPath, loadPublicInstructions(paths.agentsPath),
-    { content: "更新内容\n", enabled: true });
-  assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "更新内容\n");
-  assert.equal(JSON.parse(fs.readFileSync(paths.storePath, "utf8")).content, "更新内容\n");
-  assert.equal(fs.readdirSync(paths.codexHome).filter((name) => name.endsWith(".bak")).length, 1);
-  assert.ok(enabled.backupPath);
+test("保存只替换插件标记段，用户原有 AGENTS.md 正文保留", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(userPath, "用户私有规则\n");
+  const result = saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  assert.equal(result.path, userPath);
+  assert.equal(result.keptUserFile, true);
+  const merged = fs.readFileSync(userPath, "utf8");
+  assert.match(merged, /<!-- GPTSWITCH_AGENTS_START -->/);
+  assert.match(merged, /请遵循以下全局工作方式/);
+  assert.match(merged, /用户私有规则\n$/);
+  assert.equal(fs.readFileSync(result.backupPath, "utf8"), "用户私有规则\n");
 });
 
-test("AGENTS.md 写入失败时不提交草稿，也不会留下假备份", (context) => {
-  const paths = sandbox(context);
-  const initial = loadPublicInstructions(paths.agentsPath);
-  fs.mkdirSync(paths.agentsPath);
-  assert.throws(() => savePublicInstructions(paths.agentsPath, initial, {
-    content: "不会落盘\n", enabled: true,
-  }));
-  assert.equal(fs.existsSync(paths.storePath), false);
-  assert.equal(fs.readdirSync(paths.codexHome).filter((name) => name.endsWith(".bak")).length, 0);
+test("再次保存只替换插件块，不重复追加模板", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(userPath, "用户正文\n");
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  const merged = fs.readFileSync(userPath, "utf8");
+  assert.equal(merged.match(/<!-- GPTSWITCH_AGENTS_START -->/g)?.length, 1);
+  assert.equal(merged.match(/<!-- GPTSWITCH_AGENTS_END -->/g)?.length, 1);
+  assert.match(merged, /用户正文\n$/);
+});
+
+test("重复启用和停用不会删除用户正文开头的空行", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(userPath, "\n\n用户正文\n");
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  saveInstructionsToCodex({ codexHome, statePath, enabled: false });
+  assert.equal(fs.readFileSync(userPath, "utf8"), "\n\n用户正文\n");
+});
+
+test("停用只移除插件标记块，用户正文和备份保留", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(userPath, "用户正文\n");
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  assert.equal(readInstructionsEnabled(statePath), true);
+  const result = saveInstructionsToCodex({ codexHome, statePath, enabled: false });
+  assert.equal(result.enabled, false);
+  assert.equal(readInstructionsEnabled(statePath), false);
+  assert.equal(fs.readFileSync(userPath, "utf8"), "用户正文\n");
+  assert.ok(result.backupPath);
+});
+
+test("默认禁用，状态存在插件配置里而不是从用户 AGENTS.md 推断", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  fs.writeFileSync(path.join(codexHome, "AGENTS.md"), "用户自己的规则\n");
+  assert.equal(readInstructionsEnabled(statePath), false);
+});
+
+test("禁用且用户文件里没有插件段时不改写 AGENTS.md", (context) => {
+  const codexHome = sandbox(context);
+  const statePath = path.join(codexHome, "agents.json");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  const original = "\n用户保留开头的空行\n";
+  fs.writeFileSync(userPath, original);
+  const result = saveInstructionsToCodex({ codexHome, statePath, enabled: false });
+  assert.equal(fs.readFileSync(userPath, "utf8"), original);
+  assert.equal(result.backupPath, "");
+  assert.equal(readInstructionsEnabled(statePath), false);
+});
+
+test("AGENTS.md 是符号链接时保留链接并更新目标文件", (context) => {
+  const codexHome = sandbox(context);
+  const targetPath = path.join(codexHome, "dotfiles-agents.md");
+  const userPath = path.join(codexHome, "AGENTS.md");
+  const statePath = path.join(codexHome, "agents.json");
+  fs.writeFileSync(targetPath, "链接目标里的用户正文\n");
+  fs.symlinkSync(targetPath, userPath);
+  saveInstructionsToCodex({ codexHome, statePath, enabled: true });
+  assert.equal(fs.lstatSync(userPath).isSymbolicLink(), true);
+  assert.match(fs.readFileSync(targetPath, "utf8"), /请遵循以下全局工作方式/);
+  saveInstructionsToCodex({ codexHome, statePath, enabled: false });
+  assert.equal(fs.lstatSync(userPath).isSymbolicLink(), true);
+  assert.equal(fs.readFileSync(targetPath, "utf8"), "链接目标里的用户正文\n");
 });

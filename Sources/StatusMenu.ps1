@@ -67,10 +67,11 @@ $script:savedProxyHost = "127.0.0.1"
 $script:savedProxyPort = "47123"
 $script:savingProxy = $false
 $script:agentsContent = ""
-$script:savedAgentsContent = ""
+$script:agentsBackupPath = ""
+$script:agentsSource = ""
+$script:agentsError = ""
 $script:agentsEnabled = $false
 $script:savedAgentsEnabled = $false
-$script:agentsBackupPath = ""
 $script:savingAgents = $false
 
 function Send-Request([hashtable]$Request) {
@@ -590,15 +591,23 @@ function Convert-Context([int]$k) {
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <StackPanel>
+        <StackPanel Grid.Column="0">
           <TextBlock Text="Agents" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
-          <TextBlock Text="维护所有项目共用的 Markdown 指令。"
+          <TextBlock Text="按需启用插件内置的公共 Codex 指令。"
                      FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
-          <TextBlock Text="启用" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
-          <ToggleButton x:Name="AgentsEnabledToggle" Style="{StaticResource ChannelSwitch}"/>
-        </StackPanel>
+        <Grid Grid.Column="1">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Top" Margin="0,0,18,0">
+            <TextBlock Text="启用" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <ToggleButton x:Name="AgentsEnabledToggle" Style="{StaticResource ChannelSwitch}"/>
+          </StackPanel>
+          <Button x:Name="AgentsRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
+                  Content="重启 ChatGPT" VerticalAlignment="Top"/>
+        </Grid>
       </Grid>
       <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="18">
         <Grid>
@@ -619,17 +628,19 @@ function Convert-Context([int]$k) {
           <TextBox x:Name="AgentsContentField" Grid.Row="1" Style="{StaticResource Field}"
                    AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                   FontFamily="Consolas" FontSize="13" MinHeight="300" Margin="0,10,0,0"/>
+                   IsReadOnly="True" FontFamily="Consolas" FontSize="13" MinHeight="300" Margin="0,10,0,0"/>
           <Grid Grid.Row="2" Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel>
-              <TextBlock Text="启用时先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。"
+              <TextBlock Text="保存时先备份并合并插件段，用户原有配置保留。"
                          FontSize="11" Foreground="#747D76" TextWrapping="Wrap"/>
               <TextBlock x:Name="AgentsBackupLabel" FontSize="11" Foreground="#747D76"
                          FontFamily="Consolas" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
+              <TextBlock x:Name="AgentsErrorLabel" FontSize="11" Foreground="#D93025"
+                         TextWrapping="Wrap" Margin="0,3,0,0"/>
             </StackPanel>
             <Button x:Name="SaveAgentsButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
                     Content="保存" Width="76" Margin="12,0,0,0"/>
@@ -819,8 +830,10 @@ $simplePage = $window.FindName("SimplePage")
 $simplePageTitle = $window.FindName("SimplePageTitle")
 $agentsPage = $window.FindName("AgentsPage")
 $agentsEnabledToggle = $window.FindName("AgentsEnabledToggle")
+$agentsRestartButton = $agentsPage.FindName("AgentsRestartButton")
 $agentsContentField = $window.FindName("AgentsContentField")
 $agentsBackupLabel = $window.FindName("AgentsBackupLabel")
+$agentsErrorLabel = $window.FindName("AgentsErrorLabel")
 $saveAgentsButton = $window.FindName("SaveAgentsButton")
 $aboutPage = $window.FindName("AboutPage")
 $proxyHostField = $window.FindName("ProxyHostField")
@@ -1141,29 +1154,35 @@ function Show-Empty-Page([string]$Title, [string]$Section) {
   Set-Feedback ""
 }
 
-function Test-AgentsDirty {
-  return [string]$script:agentsContent -ne [string]$script:savedAgentsContent -or `
-    [bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled
-}
-
 function Update-AgentsControls {
   $agentsContentField.IsEnabled = -not $script:busy
   $agentsEnabledToggle.IsEnabled = -not $script:busy
-  $saveAgentsButton.IsEnabled = $script:loaded -and -not $script:busy -and (Test-AgentsDirty)
+  $saveAgentsButton.IsEnabled = $script:loaded -and -not $script:busy -and `
+    ([bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled)
   $agentsBackupLabel.Text = if ($script:agentsBackupPath) { "最近备份：$script:agentsBackupPath" } else { "" }
+  $agentsErrorLabel.Text = [string]$script:agentsError
+}
+
+function Refresh-Agents-View {
+  $script:rendering = $true
+  $agentsContentField.Text = [string]$script:agentsContent
+  $agentsEnabledToggle.IsChecked = [bool]$script:agentsEnabled
+  $script:rendering = $false
+  Set-Nav "agents"
+  Update-AgentsControls
 }
 
 function Confirm-AgentsLeave {
-  if ($script:busy -or -not (Test-AgentsDirty)) { return $true }
+  # 保存期间留在当前页，防止迟到的回包把用户从刚切换的页面拉回来。
+  if ($script:savingAgents) { return $false }
+  if ($script:busy -or ([bool]$script:agentsEnabled -eq [bool]$script:savedAgentsEnabled)) { return $true }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "Agents 里还有未保存的改动，离开会丢弃它们。",
+    "Agents 启用状态尚未保存，离开会放弃这次切换。",
     "放弃未保存的更改？",
     "YesNo", "Warning")
   if ($answer -ne "Yes") { return $false }
-  $script:agentsContent = [string]$script:savedAgentsContent
-  $script:agentsEnabled = [bool]$script:savedAgentsEnabled
-  Set-Feedback ""
+  $script:agentsEnabled = $script:savedAgentsEnabled
   Update-AgentsControls
   return $true
 }
@@ -1174,13 +1193,8 @@ function Show-Agents-Page {
   $simplePage.Visibility = "Collapsed"
   $aboutPage.Visibility = "Collapsed"
   $agentsPage.Visibility = "Visible"
-  $script:rendering = $true
-  $agentsContentField.Text = [string]$script:agentsContent
-  $agentsEnabledToggle.IsChecked = [bool]$script:agentsEnabled
-  $script:rendering = $false
-  Set-Nav "agents"
-  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
-  Update-AgentsControls
+  Set-Feedback ""
+  Refresh-Agents-View
 }
 
 function Show-About-Page {
@@ -1207,6 +1221,7 @@ function Update-Controls {
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
   $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -gt 0
   $proxyRestartButton.IsEnabled = $restartButton.IsEnabled
+  $agentsRestartButton.IsEnabled = $restartButton.IsEnabled
   $dirty = Compare-Channels $script:channels $script:savedChannels
   # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事，按钮文案不再跟着变。
   $saveButton.Content = "保存"
@@ -1779,15 +1794,25 @@ function Receive-Response($Response) {
     $script:busy = $false
     if ($Response.ok -eq $true -and $null -ne $Response.agents) {
       $script:agentsContent = [string]$Response.agents.content
-      $script:savedAgentsContent = $script:agentsContent
-      $script:agentsEnabled = [bool]$Response.agents.enabled
-      $script:savedAgentsEnabled = $script:agentsEnabled
+      $script:agentsSource = [string]$Response.agents.source
       $script:agentsBackupPath = [string]$Response.agents.backupPath
-      Set-Feedback $(if ($script:agentsBackupPath) { "公共指令已同步，原文件已备份" } else { "公共指令已保存" })
+      $script:agentsError = ""
+      $script:agentsEnabled = $Response.agents.enabled -eq $true
+      $script:savedAgentsEnabled = $script:agentsEnabled
+      if ($script:agentsEnabled) {
+        Set-Feedback $(if ($Response.agents.keptUserFile -eq $true) {
+          "公共指令已启用，原配置已备份"
+        } else {
+          "公共指令已启用"
+        })
+      } else {
+        Set-Feedback "公共指令已停用，用户原有配置保留"
+      }
     } else {
       Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "保存公共指令失败" }) $true
     }
-    Show-Agents-Page
+    # 只刷新 Agents 字段，保留刚写入的成功或错误提示。
+    Refresh-Agents-View
     return
   }
   $script:busy = $false
@@ -1802,10 +1827,11 @@ function Receive-Response($Response) {
     }
     if ($null -ne $Response.agents) {
       $script:agentsContent = [string]$Response.agents.content
-      $script:savedAgentsContent = $script:agentsContent
-      $script:agentsEnabled = [bool]$Response.agents.enabled
-      $script:savedAgentsEnabled = $script:agentsEnabled
+      $script:agentsSource = [string]$Response.agents.source
       $script:agentsBackupPath = [string]$Response.agents.backupPath
+      $script:agentsError = [string]$Response.agents.error
+      $script:agentsEnabled = $Response.agents.enabled -eq $true
+      $script:savedAgentsEnabled = $script:agentsEnabled
     }
     if (Test-ResponseChannels $Response.channels) {
       $previousId = ""
@@ -2046,26 +2072,24 @@ $agentsTab.Add_Click({ Show-Agents-Page })
 $agentsContentField.Add_TextChanged({
   if ($script:rendering -or $script:busy) { return }
   $script:agentsContent = $agentsContentField.Text
-  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
-  Update-AgentsControls
 })
 $agentsEnabledToggle.Add_Click({
   if ($script:rendering -or $script:busy) { return }
   $script:agentsEnabled = $agentsEnabledToggle.IsChecked -eq $true
-  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
   Update-AgentsControls
 })
 $saveAgentsButton.Add_Click({
-  if (-not $script:loaded -or $script:busy -or -not (Test-AgentsDirty)) { return }
+  if (-not $script:loaded -or $script:busy -or
+      ([bool]$script:agentsEnabled -eq [bool]$script:savedAgentsEnabled)) { return }
   $script:busy = $true
   $script:savingAgents = $true
-  Set-Feedback "正在保存公共指令…"
+  Set-Feedback "正在写入公共指令…"
   Update-AgentsControls
   Send-Request @{
     action = "save"
     restart = $false
     scope = "agents"
-    agents = @{ content = [string]$script:agentsContent; enabled = [bool]$script:agentsEnabled }
+    enabled = [bool]$script:agentsEnabled
   }
 })
 $aboutTab.Add_Click({ if (Confirm-AgentsLeave) { Show-About-Page } })
@@ -2099,6 +2123,7 @@ $requestRestart = {
 }
 $restartButton.Add_Click($requestRestart)
 $proxyRestartButton.Add_Click($requestRestart)
+$agentsRestartButton.Add_Click($requestRestart)
 
 $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
@@ -2130,14 +2155,13 @@ $updateButton.Add_Click({
 $window.Add_Closing({
   param($sender, $eventArgs)
   if ($script:quitting) { return }
-  if (-not $script:busy -and (Test-AgentsDirty)) {
+  if (-not $script:busy -and ([bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled)) {
     $answer = [System.Windows.MessageBox]::Show(
       $window,
-      "Agents 里还有未保存的改动，关闭面板会丢弃它们。",
+      "Agents 启用状态尚未保存，关闭面板会放弃这次切换。",
       "放弃未保存的更改？",
       "YesNo", "Warning")
     if ($answer -ne "Yes") { $eventArgs.Cancel = $true; return }
-    $script:agentsContent = $script:savedAgentsContent
     $script:agentsEnabled = $script:savedAgentsEnabled
   }
   # 关窗只是收起面板：最小化到任务栏，插件继续在托盘运行。

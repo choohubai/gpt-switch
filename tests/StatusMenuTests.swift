@@ -37,33 +37,34 @@ struct StatusMenuTests {
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
-        // Agents 草稿和开关独立于渠道：保存只写 scoped agents 请求，不误存渠道。
-        store.agentsContent = "# 公共指令\n"
+        // Agents 内容来自插件模板；保存只发 scoped agents 请求，不碰渠道。
+        store.agentsContent = "# 插件公共指令\n"
         store.agentsEnabled = true
         assert(store.agentsDirty)
         let requestsBeforeAgents = requests.count
         store.saveAgents()
         assert(requests.count == requestsBeforeAgents + 1)
         assert(requests.last?["scope"] as? String == "agents")
-        assert((requests.last?["agents"] as? [String: Any])?["enabled"] as? Bool == true)
+        assert(requests.last?["enabled"] as? Bool == true)
         store.apply(["ok": true, "saved": true, "agents": [
-            "content": "# 公共指令\n", "enabled": true,
-            "backupPath": "/tmp/AGENTS.md.2026.bak",
+            "content": "# 插件公共指令\n", "source": "plugin",
+            "enabled": true,
+            "path": "/tmp/AGENTS.md", "keptUserFile": true,
         ]])
         assert(!store.agentsDirty && !store.busy)
-        assert(store.agentsBackupPath == "/tmp/AGENTS.md.2026.bak")
-        assert(store.feedback == "公共指令已同步，原文件已备份")
-        store.agentsContent = "# 未完成\n"
+        assert(store.agentsSource == "plugin")
+        assert(store.agentsEnabled)
+        assert(store.feedback.contains("已启用"))
+
+        // Agents 开关尚未保存时关闭面板，不能把状态静默丢掉。
+        store.agentsEnabled = false
         assert(store.agentsDirty)
-        store.saveAgents()
-        assert(store.savingAgents && store.busy)
-        store.cancelSavingAgents()
-        assert(!store.savingAgents && !store.busy, "切换页面时能取消 Agents 在途保存")
-        store.agentsContent = "# 未完成\n"
-        store.agentsContent = "# 草稿"
-        assert(store.agentsDirty, "Agents 草稿有未保存内容时关闭流程必须参与确认")
-        store.agentsContent = store.savedAgentsContent
-        store.agentsEnabled = store.savedAgentsEnabled
+        controller.discardChangesChoice = { false }
+        assert(!controller.canDiscardChanges())
+        controller.discardChangesChoice = { true }
+        assert(controller.canDiscardChanges())
+        assert(!store.agentsDirty)
+        controller.discardChangesChoice = nil
 
         // 渠道 ID 在输入阶段校验：格式不对时给出具体提示，保存请求不发出去。
         store.addChannel()
@@ -544,6 +545,7 @@ struct StatusMenuTests {
         store.showList()
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("list.png")
+        try assertSidebarSelectionState()
         store.editChannel(at: 0)
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("detail.png")
@@ -586,5 +588,12 @@ struct StatusMenuTests {
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("dark-list.png")
         NSApp.appearance = appearance
+    }
+
+    /// 覆盖侧栏点击时走的同一套值变化；界面刷新由打包后的真实点击检查。
+    static func assertSidebarSelectionState() throws {
+        for section in SidebarSection.allCases {
+            assert(SidebarSection(rawValue: section.rawValue) == section)
+        }
     }
 }

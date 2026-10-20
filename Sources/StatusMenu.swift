@@ -197,10 +197,11 @@ final class PanelStore: ObservableObject {
     @Published var savedProxyHost = "127.0.0.1"
     @Published var savedProxyPort = "47123"
     @Published var agentsContent = ""
-    @Published var savedAgentsContent = ""
+    @Published var agentsBackupPath = ""
+    @Published var agentsSource = ""
+    @Published var agentsError = ""
     @Published var agentsEnabled = false
     @Published var savedAgentsEnabled = false
-    @Published var agentsBackupPath = ""
     @Published var savingAgents = false
     @Published var savingProxy = false
     @Published var currentChannelID: String?
@@ -247,7 +248,7 @@ final class PanelStore: ObservableObject {
     var hasChannel: Bool { activeChannel != nil }
     /// 代理页也有自己的保存按钮；未保存的代理输入不能把模型页的「保存」和右上角重启拖住。
     var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
-    var agentsDirty: Bool { agentsContent != savedAgentsContent || agentsEnabled != savedAgentsEnabled }
+    var agentsDirty: Bool { agentsEnabled != savedAgentsEnabled }
     var isDirty: Bool { channels != savedChannels }
 
     /// 输入阶段就按后端的 Provider ID 规则校验，别等整份列表保存时才报错。
@@ -425,34 +426,17 @@ final class PanelStore: ObservableObject {
         ])
     }
 
-    /// 只保存公共指令草稿；启用时由本地注入器在写入前备份现有的 AGENTS.md。
+    /// 把插件内固定模板写入用户的 Codex 公共指令；写入前由后端备份原文件。
     func saveAgents() {
-        guard loaded, !busy, agentsDirty else { return }
+        guard loaded, !busy else { return }
         busy = true
         savingAgents = true
-        feedback = "正在保存公共指令…"
+        feedback = "正在写入公共指令…"
         feedbackIsError = false
-        send([
-            "action": "save",
-            "restart": false,
-            "scope": "agents",
-            "agents": ["content": agentsContent, "enabled": agentsEnabled],
-        ])
+        send(["action": "save", "restart": false, "scope": "agents", "enabled": agentsEnabled])
     }
 
-    func cancelSavingAgents() {
-        guard savingAgents else { return }
-        savingAgents = false
-        busy = false
-        feedback = isDirty ? "有未保存的更改" : ""
-        feedbackIsError = false
-    }
-
-    /// 离开 Agents 页前确认草稿；切走可丢弃，但不会改回已经同步的 AGENTS.md。
-    func discardAgentsDraft() {
-        agentsContent = savedAgentsContent
-        agentsEnabled = savedAgentsEnabled
-    }
+    func discardAgentsDraft() { agentsEnabled = savedAgentsEnabled }
 
     /// 右上角的「重启」：重新写一遍 ChatGPT 配置和全部渠道的模型目录，然后重启。
     func applyAndRestart() {
@@ -573,13 +557,13 @@ final class PanelStore: ObservableObject {
             savedProxyPort = String(port)
         }
         if let value = response["agents"] as? [String: Any],
-           let content = value["content"] as? String,
-           let enabled = value["enabled"] as? Bool {
+           let content = value["content"] as? String {
             agentsContent = content
-            savedAgentsContent = content
-            agentsEnabled = enabled
-            savedAgentsEnabled = enabled
+            agentsSource = value["source"] as? String ?? ""
             agentsBackupPath = value["backupPath"] as? String ?? ""
+            agentsError = value["error"] as? String ?? ""
+            agentsEnabled = value["enabled"] as? Bool ?? false
+            savedAgentsEnabled = agentsEnabled
         }
         if checkingUpdate {
             finishUpdateCheck(response)
@@ -613,14 +597,17 @@ final class PanelStore: ObservableObject {
             busy = false
             if response["ok"] as? Bool == true,
                let value = response["agents"] as? [String: Any],
-               let content = value["content"] as? String,
-               let enabled = value["enabled"] as? Bool {
+               let content = value["content"] as? String {
                 agentsContent = content
-                savedAgentsContent = content
-                agentsEnabled = enabled
-                savedAgentsEnabled = enabled
+                agentsSource = value["source"] as? String ?? ""
                 agentsBackupPath = value["backupPath"] as? String ?? ""
-                feedback = agentsBackupPath.isEmpty ? "公共指令已保存" : "公共指令已同步，原文件已备份"
+                agentsError = ""
+                agentsEnabled = value["enabled"] as? Bool ?? false
+                savedAgentsEnabled = agentsEnabled
+                let keptUserFile = value["keptUserFile"] as? Bool == true
+                feedback = agentsEnabled
+                    ? (keptUserFile ? "公共指令已启用，原配置已备份" : "公共指令已启用")
+                    : "公共指令已停用，用户原有配置保留"
                 feedbackIsError = false
             } else {
                 feedback = response["error"] as? String ?? "保存公共指令失败"
@@ -815,7 +802,10 @@ struct PanelView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(selection: guardedSectionSelection)
+            SidebarView(
+                selection: $selectedSection,
+                onSelect: guardSectionSelection
+            )
                 .frame(width: 190)
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
@@ -904,28 +894,20 @@ struct PanelView: View {
                 set: { presented in if !presented { store.cancelRestart() } })
     }
 
-    /// 切出 Agents 页时先拦住保存请求，免得迟来的响应被别的页面消费。
-    private var guardedSectionSelection: Binding<SidebarSection> {
-        Binding(
-            get: { selectedSection },
-            set: { next in
-                guard next != selectedSection else { return }
-                if store.savingAgents {
-                    store.cancelSavingAgents()
-                } else if store.agentsDirty {
-                    let alert = NSAlert()
-                    alert.messageText = "Agents 有未保存的更改"
-                    alert.informativeText = "要放弃草稿并离开吗？"
-                    alert.addButton(withTitle: "继续编辑")
-                    alert.addButton(withTitle: "放弃并离开")
-                    guard alert.runModal() == .alertSecondButtonReturn else { return }
-                    store.discardAgentsDraft()
-                    store.feedback = ""
-                    store.feedbackIsError = false
-                }
-                selectedSection = next
-            }
-        )
+    /// 离开 Agents 时先拦住未保存的开关；其它导航直接写入 @State，保证菜单立刻刷新。
+    private func guardSectionSelection(_ next: SidebarSection) -> Bool {
+        guard next != selectedSection else { return false }
+        if store.savingAgents { return false }
+        if store.agentsDirty {
+            let alert = NSAlert()
+            alert.messageText = "Agents 启用状态尚未保存"
+            alert.informativeText = "要放弃这次切换并离开吗？"
+            alert.addButton(withTitle: "继续编辑")
+            alert.addButton(withTitle: "放弃并离开")
+            guard alert.runModal() == .alertSecondButtonReturn else { return false }
+            store.discardAgentsDraft()
+        }
+        return true
     }
 
     /// 列表和编辑页共用这一层：要么问一句删不删，要么让人挑要加哪些模型。
@@ -942,6 +924,7 @@ struct PanelView: View {
 
 private struct SidebarView: View {
     @Binding var selection: SidebarSection
+    let onSelect: (SidebarSection) -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -952,13 +935,13 @@ private struct SidebarView: View {
                 .padding(.top, 48)
                 .padding(.bottom, 8)
             ForEach(SidebarSection.settings, id: \.self) { section in
-                SidebarRow(section: section, selection: $selection)
+                SidebarRow(section: section, selection: $selection, onSelect: onSelect)
             }
             Divider()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-            SidebarRow(section: .about, selection: $selection)
-            SidebarRow(section: .help, selection: $selection)
+            SidebarRow(section: .about, selection: $selection, onSelect: onSelect)
+            SidebarRow(section: .help, selection: $selection, onSelect: onSelect)
             Spacer(minLength: 20)
         }
         .background(sidebarBackground)
@@ -968,9 +951,13 @@ private struct SidebarView: View {
 private struct SidebarRow: View {
     let section: SidebarSection
     @Binding var selection: SidebarSection
+    let onSelect: (SidebarSection) -> Bool
 
     var body: some View {
-        Button { selection = section } label: {
+        Button {
+            guard onSelect(section) else { return }
+            selection = section
+        } label: {
             HStack(spacing: 10) {
                 Image(systemName: section.systemImage)
                     .font(.system(size: 14, weight: .medium))
@@ -1088,7 +1075,7 @@ private struct EmptyPanelView: View {
     }
 }
 
-/// 公共指令源文件是 ~/.codex/AGENTS.md；面板保存的是草稿，开启后每次保存同步写入。
+/// 页面展示插件内置模板；用户点保存后才写入 Codex，不读取其现有 AGENTS.md。
 private struct AgentsSettingsView: View {
     @ObservedObject var store: PanelStore
 
@@ -1097,15 +1084,17 @@ private struct AgentsSettingsView: View {
             PanelHeader(
                 store: store,
                 title: "Agents",
-                detail: "维护所有项目共用的 Markdown 指令。"
+                detail: "按需启用插件内置的公共 Codex 指令。"
             ) {
-                HStack(spacing: 8) {
-                    Text("启用").font(.system(size: 13))
-                    Toggle("", isOn: $store.agentsEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .disabled(store.busy)
-                        .help("启用后，保存时把编辑器内容写入 ~/.codex/AGENTS.md")
+                HStack(spacing: 16) {
+                    HStack(spacing: 8) {
+                        Text("启用").font(.system(size: 13))
+                        Toggle("", isOn: $store.agentsEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .disabled(store.busy)
+                    }
+                    RestartButton(store: store)
                 }
             }
             VStack(alignment: .leading, spacing: 16) {
@@ -1117,16 +1106,19 @@ private struct AgentsSettingsView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    TextEditor(text: $store.agentsContent)
-                        .font(.system(size: 13, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 280)
+                    ScrollView {
+                        Text(store.agentsContent)
+                            .font(.system(size: 13, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .frame(minHeight: 280)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 9))
                         .overlay(RoundedRectangle(cornerRadius: 9)
                             .strokeBorder(Color.primary.opacity(0.14)))
-                    Text("启用时会先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。")
+                    Text("启用保存时会备份并保留原有内容；停用保存时只移除插件段。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     if !store.agentsBackupPath.isEmpty {
@@ -1142,15 +1134,17 @@ private struct AgentsSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(Color.primary.opacity(0.07)))
                 HStack {
-                    Text("保存草稿；启用状态下同时写入公共 AGENTS.md。")
+                    Text(store.agentsError.isEmpty
+                         ? (store.agentsSource == "plugin" ? "内容来自插件内置模板，不读取本机现有指令。" : "")
+                         : store.agentsError)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(store.agentsError.isEmpty ? Color.secondary : Color.red)
                     Spacer()
                     Button("保存") { store.saveAgents() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                         .tint(accentBottom)
-                        .disabled(!store.agentsDirty || store.busy)
+                        .disabled(!store.loaded || store.busy || !store.agentsDirty)
                         .pointingHand()
                 }
                 Spacer()
@@ -1993,6 +1987,10 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     var parentMonitor: Timer?
     var window: NSWindow?
     var store: PanelStore?
+    /// 仅测试可替换关闭确认结果，生产路径仍由系统对话框询问用户。
+    #if STATUS_MENU_TEST
+    var discardChangesChoice: (() -> Bool)?
+    #endif
     /// 自己主动退出时置位；否则终止请求（程序坞的「退出」、⌘Q）只当作关窗口，
     /// 免得菜单栏图标跟着进程一起没掉，又没人把它拉回来。
     var quitRequested = false
@@ -2115,16 +2113,20 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         guard let store else { return true }
         guard !store.busy else { return true }
         guard store.isDirty || store.proxyDirty || store.agentsDirty else { return true }
+        #if STATUS_MENU_TEST
+        // 自动化测试不能让人工模态框永久等待；只替换按钮选择，仍走同一套回滚。
+        guard discardChangesChoice?() == true else { return false }
+        #else
         let alert = NSAlert()
         alert.messageText = "放弃未保存的更改？"
         alert.addButton(withTitle: "继续编辑")
         alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }
+        #endif
         store.channels = store.savedChannels
         store.proxyHost = store.savedProxyHost
         store.proxyPort = store.savedProxyPort
-        store.agentsContent = store.savedAgentsContent
-        store.agentsEnabled = store.savedAgentsEnabled
+        store.discardAgentsDraft()
         store.editingIndex = nil
         return true
     }

@@ -32,6 +32,16 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-ProxyDirty")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Receive-Response")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Get-ChannelIdError")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Set-Nav")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Models-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-List-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Proxy-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Detail-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Empty-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Update-AgentsControls")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Refresh-Agents-View")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Agents-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-About-Page")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
 if ((Get-ChannelIdError "bad id") -ne "渠道 ID 只能用字母、数字、- 和 _") {
@@ -105,16 +115,6 @@ $script:proxyPort = "47124"
 if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
 
 $script:agentsContent = "原内容"
-$script:savedAgentsContent = "原内容"
-$script:agentsEnabled = $false
-$script:savedAgentsEnabled = $false
-. ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
-if (Test-AgentsDirty) { throw "Agents 原样时被判成有改动" }
-$script:agentsContent = "新内容"
-if (-not (Test-AgentsDirty)) { throw "Agents 文本改变后没有识别出未保存" }
-$script:agentsContent = "原内容"
-$script:agentsEnabled = $true
-if (-not (Test-AgentsDirty)) { throw "Agents 开关改变后没有识别出未保存" }
 
 # 编辑页保存成功后必须回列表；失败或回包不完整时不能把用户踢出编辑页。
 function Get-ActiveChannel {
@@ -159,4 +159,129 @@ $script:showListCalls = 0
 Receive-Response ([pscustomobject]@{ ok = $true; saved = $true; channels = @([pscustomobject]@{ id = "" }) })
 if ($script:showListCalls -ne 0) { throw "渠道回包不完整时不应返回列表页" }
 
-Write-Output "Windows 面板渠道响应检查通过"
+# 侧栏导航使用共享的假控件记录可见性和导航样式，实际执行源码中的页面切换函数。
+function New-TestControl {
+  $control = [pscustomobject]@{
+    Text = ""
+    IsChecked = $false
+    IsEnabled = $true
+    Visibility = "Collapsed"
+    testStyle = $null
+  }
+  $control | Add-Member -MemberType ScriptProperty -Name Style -Value {
+    $this.testStyle
+  } -SecondValue {
+    param($value)
+    $this.testStyle = $value
+  }
+  return $control
+}
+
+$listPage = New-TestControl
+$detailPage = New-TestControl
+$simplePage = New-TestControl
+$aboutPage = New-TestControl
+$agentsPage = New-TestControl
+$modelsPage = New-TestControl
+$modelsCard = New-TestControl
+$proxyPage = New-TestControl
+$simplePageTitle = New-TestControl
+$agentsContentField = New-TestControl
+$agentsEnabledToggle = New-TestControl
+$saveAgentsButton = New-TestControl
+$agentsBackupLabel = New-TestControl
+$agentsErrorLabel = New-TestControl
+$proxyHostField = New-TestControl
+$proxyPortField = New-TestControl
+$modelsTab = New-TestControl
+$proxyTab = New-TestControl
+$generalTab = New-TestControl
+$appearanceTab = New-TestControl
+$agentsTab = New-TestControl
+$aboutTab = New-TestControl
+$helpTab = New-TestControl
+
+# 页面函数只读取资源名来切换导航样式，测试桩返回同一名称即可。
+$window = [pscustomobject]@{}
+$window | Add-Member -MemberType ScriptMethod -Name FindResource -Value {
+  param([string]$Name)
+  return $Name
+}
+
+# 源码函数通过 Windows PowerShell 的全局变量解析控件；测试桩也必须放在同一作用域。
+foreach ($name in @(
+  "listPage", "detailPage", "simplePage", "aboutPage", "agentsPage",
+  "modelsPage", "modelsCard", "proxyPage", "simplePageTitle",
+  "agentsContentField", "agentsEnabledToggle", "saveAgentsButton", "agentsBackupLabel", "agentsErrorLabel",
+  "proxyHostField", "proxyPortField", "modelsTab", "proxyTab", "generalTab",
+  "appearanceTab", "agentsTab", "aboutTab", "helpTab", "window"
+)) {
+  $value = Get-Variable -Name $name -ValueOnly
+  Set-Variable -Name $name -Value $value -Scope Global
+}
+
+# 前一段回包测试临时替换了 Show-List-Page；导航测试必须恢复源码函数，不能拿测试桩冒充页面切换。
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-List-Page")))
+
+function Assert-Navigation([string]$Active, [string]$VisiblePage) {
+  $tabNames = @{
+    models = $modelsTab
+    proxy = $proxyTab
+    general = $generalTab
+    appearance = $appearanceTab
+    agents = $agentsTab
+    about = $aboutTab
+    help = $helpTab
+  }
+  foreach ($key in $tabNames.Keys) {
+    $expected = if ($key -eq $Active) { "NavActive" } else { "Nav" }
+    if ($tabNames[$key].Style -ne $expected) {
+      throw "导航 $Active 时 $key 的高亮状态错误：实际=$($tabNames[$key].Style)，期望=$expected"
+    }
+  }
+  foreach ($pageName in @("listPage", "detailPage", "simplePage", "aboutPage", "agentsPage")) {
+    $actual = (Get-Variable -Name $pageName -ValueOnly).Visibility
+    $expected = if ($pageName -eq $VisiblePage) { "Visible" } else { "Collapsed" }
+    if ($actual -ne $expected) {
+      throw "导航 $Active 时 $pageName 的可见性错误：$actual"
+    }
+  }
+}
+
+$script:modelEditorActive = $false
+Show-Models-Page
+Assert-Navigation "models" "listPage"
+
+$script:modelEditorActive = $true
+Show-Models-Page
+Assert-Navigation "models" "detailPage"
+
+Show-Proxy-Page
+Assert-Navigation "proxy" "listPage"
+if ($proxyPage.Visibility -ne "Visible" -or $modelsPage.Visibility -ne "Collapsed" -or
+    $modelsCard.Visibility -ne "Collapsed") {
+  throw "代理页没有切换到正确的子页面"
+}
+
+Show-Empty-Page "通用" "general"
+Assert-Navigation "general" "simplePage"
+Show-Empty-Page "外观" "appearance"
+Assert-Navigation "appearance" "simplePage"
+
+Show-Agents-Page
+Assert-Navigation "agents" "agentsPage"
+
+Show-About-Page
+Assert-Navigation "about" "aboutPage"
+Show-Empty-Page "获取帮助" "help"
+Assert-Navigation "help" "simplePage"
+
+# Windows 的确认框类型只能在 Windows PowerShell 中实例化；这里检查六个离开入口都没有绕过确认函数。
+foreach ($name in @("ModelsTab", "ProxyTab", "GeneralTab", "AppearanceTab", "AboutTab", "HelpTab")) {
+  $pattern = "\`$$($name[0].ToString().ToLower())$($name.Substring(1)).Add_Click\(\{ if \(Confirm-AgentsLeave\)"
+  if (-not (Select-String -Path $sourcePath -Pattern $pattern -Quiet)) {
+    throw "侧栏入口 $name 缺少 Agents 未保存确认"
+  }
+}
+
+Write-Output "Windows 面板渠道响应和侧栏导航检查通过"

@@ -22,7 +22,7 @@ import {
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
 
-const VERSION = "0.1.51";
+const VERSION = "0.1.52";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -820,12 +820,12 @@ const waitForTargets = async (port, timeoutMs = 30_000) => {
 const CODEX_HOME = path.join(HOME, ".codex");
 const USER_CONFIG = path.join(CODEX_HOME, "config.toml");
 const AUTH_PATH = path.join(CODEX_HOME, "auth.json");
-const AGENTS_PATH = path.join(CODEX_HOME, "AGENTS.md");
 const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
 const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
 const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
 const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
 const PROXY_CONFIG = path.join(HOME, ".gptswitch", "proxy.json");
+const AGENTS_STATE = path.join(HOME, ".gptswitch", "agents.json");
 
 /// 渠道配置不存在时按这个顺序找老配置导入：本插件旧目录、更早的 CodexModelUnlocker 目录。
 const channelImportOptions = () => ({
@@ -1152,7 +1152,8 @@ const main = async () => {
     const answer = await handlePanelRequest(request, {
       configPath: CHANNELS_CONFIG,
       proxyConfigPath: PROXY_CONFIG,
-      agentsPath: AGENTS_PATH,
+      codexHome: CODEX_HOME,
+      agentsStatePath: AGENTS_STATE,
       importOptions: channelImportOptions(),
       restart: async () => {
         // 配置里的目标地址若被其他进程占用，startProxy 会顺延；候选服务必须先启动再切客户端。

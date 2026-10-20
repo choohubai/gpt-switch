@@ -2,7 +2,9 @@ import fs from "node:fs";
 import {
   atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
-import { loadPublicInstructions, savePublicInstructions } from "./agents-config.mjs";
+import {
+  loadInstructionsTemplate, readInstructionsEnabled, saveInstructionsToCodex,
+} from "./agents-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
 /// 官方字段说明见 https://developers.openai.com/codex/config-reference
@@ -695,31 +697,43 @@ export const discoverChannelModels = async (request = {}) => {
   return models;
 };
 
-/// 面板协议：load 读渠道和代理设置，save 只落盘，switch 落盘后写 Codex 配置并重启，
-/// clear 把 Codex 侧还原（渠道列表保留）。
+/// 面板协议：load 返回插件内固定公共指令模板；保存时用户确认后写入其 Codex 配置。
 export const handlePanelRequest = async (request, {
-  configPath, proxyConfigPath, agentsPath, importOptions,
+  configPath, proxyConfigPath, codexHome, agentsStatePath, importOptions,
   applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
 }) => {
   let savedState = null;
   let cleared = false;
   let restored = false;
+  let restoredAgents = null;
   try {
     if (request?.action === "load") {
       const state = loadChannelState(configPath, importOptions);
+      let agents;
+      try {
+        const content = loadInstructionsTemplate();
+        let enabled = false;
+        let error = "";
+        try {
+          enabled = readInstructionsEnabled(agentsStatePath);
+        } catch (stateError) {
+          error = `公共指令状态读取失败：${stateError.message}`;
+        }
+        agents = { content, source: "plugin", enabled, error };
+      } catch (error) {
+        agents = { content: "", source: "plugin", error: `公共指令模板读取失败：${error.message}` };
+      }
       return {
         ok: true, ...state, proxy: readProxySettings(proxyConfigPath),
-        agents: loadPublicInstructions(agentsPath),
+        agents,
       };
     }
     if (request?.action === "save" && request?.scope === "agents") {
-      const current = loadPublicInstructions(agentsPath);
-      const saved = savePublicInstructions(agentsPath, current, request.agents);
+      if (typeof request.enabled !== "boolean") throw new Error("启用状态必须是布尔值");
       return {
-        ok: true, saved: true, agents: {
-          content: saved.content, enabled: saved.enabled,
-          backupPath: saved.backupPath,
-        },
+        ok: true,
+        saved: true,
+        agents: saveInstructionsToCodex({ codexHome, statePath: agentsStatePath, enabled: request.enabled }),
       };
     }
     if (request?.action === "list-models") {
@@ -730,6 +744,7 @@ export const handlePanelRequest = async (request, {
         await restoreCodex();
         restored = true;
       }
+      restoredAgents = saveInstructionsToCodex({ codexHome, statePath: agentsStatePath, enabled: false });
       if (clearCatalog) await clearCatalog();
       cleared = true;
       let kept = { channels: [], current: null };
@@ -740,7 +755,10 @@ export const handlePanelRequest = async (request, {
         // 还没有渠道文件时只清 Codex 侧。
       }
       if (restart) await restart();
-      return { ok: true, cleared: true, restarted: true, channels: kept.channels, current: null };
+      return {
+        ok: true, cleared: true, restarted: true, channels: kept.channels, current: null,
+        agents: restoredAgents,
+      };
     }
     if (request?.action !== "save" && request?.action !== "switch") throw new Error("无效的面板操作");
     if (typeof request.restart !== "boolean") throw new Error("无效的面板操作");
@@ -794,6 +812,7 @@ export const handlePanelRequest = async (request, {
       ok: false,
       ...(savedState ? { saved: true, channels: savedState.channels, current: savedState.current } : {}),
       ...(cleared ? { cleared: true } : {}),
+      ...(restoredAgents ? { agents: restoredAgents } : {}),
       error: `${prefix}${error.message}`,
     };
   }
