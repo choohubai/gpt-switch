@@ -38,6 +38,14 @@ test("appearance catalog keeps one valid preview and runtime background per them
   assert.equal(appearanceNativeMode("unknown"), "light");
 });
 
+test("appearance does not paint ChatGPT's bottom scroll fade", () => {
+  const injection = fs.readFileSync(
+    fileURLToPath(new URL("../Sources/injection.js", import.meta.url)),
+    "utf8");
+  assert.match(injection, /--color-surface:transparent;/);
+  assert.doesNotMatch(injection, /--color-surface:\$\{theme\.surface\};/);
+});
+
 test("appearance persistence validates theme ids and returns panel paths", (context) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "gpt-switch-appearance-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));

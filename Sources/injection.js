@@ -1006,7 +1006,7 @@
         --app-color-background-surface-under:${theme.background};
         --app-color-text-foreground:${theme.text};
         --app-color-border:${theme.border};
-        --color-surface:${theme.surface};
+        --color-surface:transparent;
         --color-surface-secondary:${theme.sidebar};
         --color-surface-elevated:${theme.composer};
         --color-text-primary:${theme.text};
