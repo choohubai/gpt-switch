@@ -52,10 +52,12 @@ cp "$SCRIPT_DIR/GPTSwitch" "$CONTENTS/MacOS/GPTSwitch"
 cp "$SOURCE_DIR/injector.mjs" "$CONTENTS/Resources/injector.mjs"
 cp "$SOURCE_DIR/model-config.mjs" "$CONTENTS/Resources/model-config.mjs"
 cp "$SOURCE_DIR/agents-config.mjs" "$CONTENTS/Resources/agents-config.mjs"
+cp "$SOURCE_DIR/appearance-config.mjs" "$CONTENTS/Resources/appearance-config.mjs"
 cp "$SOURCE_DIR/AGENTS.template.md" "$CONTENTS/Resources/AGENTS.template.md"
 cp "$SOURCE_DIR/channel-config.mjs" "$CONTENTS/Resources/channel-config.mjs"
 cp "$SOURCE_DIR/proxy.mjs" "$CONTENTS/Resources/proxy.mjs"
 cp "$SOURCE_DIR/injection.js" "$CONTENTS/Resources/injection.js"
+cp -R "$RESOURCE_DIR/Appearance" "$CONTENTS/Resources/Appearance"
 cp "$RESOURCE_DIR/MenuBarIcon.png" "$CONTENTS/Resources/MenuBarIcon.png"
 /bin/zsh "$SCRIPT_DIR/swiftc.sh" -parse-as-library -O -target "$(uname -m)-apple-macosx13.0" -framework SwiftUI \
   "$SOURCE_DIR/StatusMenu.swift" \

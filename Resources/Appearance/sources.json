@@ -1,0 +1,20 @@
+{
+  "source": "WorkBuddy 5.8.3 local application resources",
+  "note": "Theme artwork remains subject to its original WorkBuddy/Tencent rights. Preview files are background-only derivatives kept in sync with their matching background assets; keep this provenance file with redistributed builds.",
+  "files": {
+    "light-preview.jpg": "generated from the light theme background palette; no UI content",
+    "dark-preview.jpg": "generated from the dark theme background palette; no UI content",
+    "wind-preview.jpg": "derived from wind-bg.png; background-only preview",
+    "wind-bg.png": "playbook cover 88847ad87cc1c81f14bebf0838189c87b8bdaf8d5414a52724e33dc3e95728cf",
+    "qq-preview.png": "derived from qq-bg.png; background-only preview",
+    "qq-bg.png": "playbook cover e7de5f881f9f1c0e81c2fa066996d0d9de13d3e2cc7d3946c75906994cc2d069",
+    "peace-preview.jpg": "derived from peace-bg.png; background-only preview",
+    "peace-bg.png": "playbook cover 344733f6f0598b4d8abf68d7e7bd7b20316a480b4d7b51d6cd122c90b1fe4cb9",
+    "journey-preview.jpg": "derived from journey-bg.png; background-only preview",
+    "journey-bg.png": "playbook cover 5ee7dbfa89479eba16321d7d3ddb3e9fe1221ba43c5adf192e1e49a17d9a99eb",
+    "ripple-preview.jpg": "derived from ripple-bg.png; background-only preview",
+    "ripple-bg.png": "playbook cover 74211b5f5df2a6f2761b006c1c4e5fd6a9471eba5f9501034234a642a3388a32",
+    "buddy-preview.jpg": "derived from buddy-bg.png; background-only preview",
+    "buddy-bg.png": "playbook cover 5503dd2d1fa72b0aa87a70ef05085cfe20d006a2a719b49f27db13bf354cb820"
+  }
+}

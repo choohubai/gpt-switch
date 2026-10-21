@@ -5,11 +5,16 @@
   const DEFAULT_GROUP_NAME = "";
   const KNOWN_GROUP_NAMES = [];
   const MODEL_ID_PREFIX = "";
+  const BOOT_APPEARANCE = null;
   /// 注入模板自己的版本：模板改动（插的 DOM 形状变了）就抬一格，
   /// 已经开着的客户端会拆掉上一份重建，不至于把旧节点留在页面上。
-  const VERSION = "0.1.30";
+  const VERSION = "0.1.32";
   const GLOBAL_KEY = "__GPT_SWITCH__";
+  const NATIVE_APPEARANCE_BINDING = "__gptSwitchNativeAppearanceChanged";
   const STATSIG_MODEL_CONFIG = "107580212";
+  const APPEARANCE_STYLE_ID = "gpt-switch-appearance-style";
+  const APPEARANCE_ATTRIBUTE = "data-gpt-switch-appearance";
+  const APPEARANCE_REGION_ATTRIBUTE = "data-gpt-switch-appearance-region";
   const modelListRequestIds = new Set();
   const appServerModulePromises = new Map();
   const appServerModuleFailures = new Map();
@@ -46,7 +51,7 @@
     try { window[GLOBAL_KEY].dispose?.(); } catch (error) { /* stale state is best-effort cleanup */ }
   }
   if (window[GLOBAL_KEY]?.version === VERSION) {
-    window[GLOBAL_KEY].update(BOOT_MODELS, DEFAULT_GROUP_NAME, KNOWN_GROUP_NAMES);
+    window[GLOBAL_KEY].update(BOOT_MODELS, DEFAULT_GROUP_NAME, KNOWN_GROUP_NAMES, BOOT_APPEARANCE);
     return {
       installed: true,
       reused: true,
@@ -62,6 +67,7 @@
     /// 分组用的渠道名清单。热推送时会被换成新的那份，所以不能直接读注入时的常量。
     groupName: DEFAULT_GROUP_NAME,
     groupNames: KNOWN_GROUP_NAMES,
+    appearance: BOOT_APPEARANCE,
     refreshTimer: null,
     refreshUntil: 0,
     interval: null,
@@ -71,7 +77,38 @@
     dispatchPatch: null,
     statsigPatches: [],
     appServerPatches: [],
+    unsubscribeNativeAppearance: null,
     disposed: false,
+  };
+
+  /**
+   * Codex 原生模式是用户在设置里主动选择时的最终来源。首次发现无效主题才上报，
+   * 后续每次真实广播都上报一次，让注入器持久化“跟随原生”并撤下 GPT Switch 覆盖。
+   */
+  const subscribeNativeAppearance = () => {
+    const bridge = window.electronBridge;
+    if (typeof bridge?.subscribeToSystemThemeVariant !== "function") return;
+    let lastMode = bridge.getSystemThemeVariant?.();
+    const notify = (mode) => {
+      if (mode !== "dark" && mode !== "light") return;
+      const binding = window[NATIVE_APPEARANCE_BINDING];
+      if (typeof binding !== "function") return;
+      try { binding(JSON.stringify({ mode })); } catch { /* 设置仍然正常可用 */ }
+    };
+    const expectedMode = state.appearance?.colorScheme === "dark" ? "dark" : "light";
+    if (
+      (lastMode === "dark" || lastMode === "light")
+      && state.appearance
+      && expectedMode !== lastMode
+    ) {
+      notify(lastMode);
+    }
+    state.unsubscribeNativeAppearance = bridge.subscribeToSystemThemeVariant(() => {
+      const mode = bridge.getSystemThemeVariant?.();
+      if (mode === lastMode) return;
+      lastMode = mode;
+      notify(mode);
+    });
   };
 
   const modelDescriptor = (model) => ({
@@ -640,7 +677,8 @@
   const isBootModelLabel = (text) => {
     if (!bootModelLabels) {
       bootModelLabels = new Set();
-      for (const model of Array.isArray(BOOT_MODELS) ? BOOT_MODELS : []) {
+      const models = Array.isArray(state.models) ? state.models : BOOT_MODELS;
+      for (const model of models) {
         // 显示名和 id 都收进来：客户端某天把行文本换成 id 时，这些行仍然算我们的。
         for (const label of [model?.displayName, model?.id]) {
           const key = groupLookupKey(label);
@@ -873,6 +911,8 @@
    * 渠道被禁用后模型目录里残留的旧条目（模型目录只在「重启」时重写）也一并挡住。
    */
   const hideForeignPickerRows = (list, groups) => {
+    // 没有渠道模型时注入器仍可能为了外观存在；这时必须保留客户端自己的模型行。
+    if (state.models.length === 0) return;
     const ours = new Set(groups.flatMap((group) => group.rows.map((item) => item.row)));
     for (const row of list.querySelectorAll(MODEL_PICKER_ROW_SELECTOR)) {
       row.classList.toggle(MODEL_GROUP_FOREIGN_CLASS, !ours.has(row));
@@ -933,6 +973,125 @@
       .${MODEL_GROUP_OWN_LABEL_CLASS}{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     `;
     document.head?.appendChild(style);
+  };
+
+  const clearAppearanceRegions = () => {
+    for (const node of document.querySelectorAll(`[${APPEARANCE_REGION_ATTRIBUTE}]`)) {
+      node.removeAttribute(APPEARANCE_REGION_ATTRIBUTE);
+    }
+  };
+
+  const appearanceCss = (theme) => {
+    const image = theme.imageUrl
+      ? `url("${theme.imageUrl}")`
+      : "none";
+    const imagePosition = theme.imagePosition || "center bottom";
+    const imageSize = theme.imageSize || "cover";
+    return `
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"]{
+        color-scheme:${theme.colorScheme || "light"};
+        --gpt-switch-theme-background:${theme.background};
+        --gpt-switch-theme-sidebar:${theme.sidebar};
+        --gpt-switch-theme-surface:${theme.surface};
+        --gpt-switch-theme-composer:${theme.composer};
+        --gpt-switch-theme-text:${theme.text};
+        --gpt-switch-theme-muted:${theme.muted};
+        --gpt-switch-theme-border:${theme.border};
+        --gpt-switch-theme-accent:${theme.accent};
+        --text-primary:${theme.text};
+        --main-surface-primary:${theme.surface};
+        --sidebar-surface-primary:${theme.sidebar};
+        --composer-surface-primary:${theme.composer};
+        --app-color-background-surface:${theme.surface};
+        --app-color-background-surface-under:${theme.background};
+        --app-color-text-foreground:${theme.text};
+        --app-color-border:${theme.border};
+        --color-surface:${theme.surface};
+        --color-surface-secondary:${theme.sidebar};
+        --color-surface-elevated:${theme.composer};
+        --color-text-primary:${theme.text};
+        --color-border:${theme.border};
+        background-color:var(--gpt-switch-theme-background)!important;
+        background-image:${image}!important;
+        background-position:${imagePosition}!important;
+        background-size:${imageSize}!important;
+        background-attachment:fixed!important;
+        background-repeat:no-repeat!important;
+      }
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] body{
+        color:var(--gpt-switch-theme-text)!important;
+        background:transparent!important;
+      }
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [${APPEARANCE_REGION_ATTRIBUTE}="sidebar"]{
+        background:var(--gpt-switch-theme-sidebar)!important;
+        border-color:var(--gpt-switch-theme-border)!important;
+        backdrop-filter:blur(18px) saturate(1.08);
+      }
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [${APPEARANCE_REGION_ATTRIBUTE}="surface"]{
+        background:transparent!important;
+      }
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [${APPEARANCE_REGION_ATTRIBUTE}="composer"]{
+        background:var(--gpt-switch-theme-composer)!important;
+        border-color:var(--gpt-switch-theme-border)!important;
+        box-shadow:0 10px 32px rgba(31, 45, 51, .1),0 0 0 1px var(--gpt-switch-theme-border)!important;
+        backdrop-filter:blur(20px) saturate(1.08);
+      }
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [role="menu"],
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [role="listbox"],
+      :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [role="dialog"]{
+        color:var(--gpt-switch-theme-text)!important;
+        border-color:var(--gpt-switch-theme-border)!important;
+        background-color:var(--gpt-switch-theme-composer)!important;
+        backdrop-filter:blur(22px) saturate(1.08);
+      }
+    `;
+  };
+
+  const setAppearanceRegion = (region, node) => {
+    for (const existing of document.querySelectorAll(`[${APPEARANCE_REGION_ATTRIBUTE}="${region}"]`)) {
+      if (existing !== node) existing.removeAttribute(APPEARANCE_REGION_ATTRIBUTE);
+    }
+    node?.setAttribute(APPEARANCE_REGION_ATTRIBUTE, region);
+  };
+
+  /** 只按稳定结构和角色标记 ChatGPT 外观区域，不读取任何聊天或菜单文字。 */
+  const markAppearanceRegions = () => {
+    setAppearanceRegion("sidebar", document.querySelector("#app-shell-sidebar"));
+    setAppearanceRegion("surface", document.querySelector("main, [role='main']"));
+    const input = document.querySelector(
+      "main [role='textbox'], main [contenteditable='true'], "
+      + "main form textarea, main textarea, [data-composer-surface='true']",
+    );
+    const composer = input?.closest?.("[class*='_ComposerLayoutRoot_']")
+      || input?.closest?.("[data-composer-surface='true']")
+      || null;
+    setAppearanceRegion("composer", composer);
+  };
+
+  const disposeAppearance = () => {
+    document.getElementById(APPEARANCE_STYLE_ID)?.remove();
+    document.documentElement?.removeAttribute(APPEARANCE_ATTRIBUTE);
+    clearAppearanceRegions();
+  };
+
+  /** 固定 style ID 保证主题切换不会叠加；浅色会清掉注入样式回到客户端原生外观。 */
+  const installAppearance = () => {
+    const theme = state.appearance;
+    if (!theme || theme.id === "light") {
+      disposeAppearance();
+      return;
+    }
+    let style = document.getElementById(APPEARANCE_STYLE_ID);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = APPEARANCE_STYLE_ID;
+      style.setAttribute("data-gptswitch-ext", "appearance");
+      document.head?.appendChild(style);
+    }
+    const css = appearanceCss(theme);
+    if (style.textContent !== css) style.textContent = css;
+    document.documentElement?.setAttribute(APPEARANCE_ATTRIBUTE, theme.id);
+    markAppearanceRegions();
   };
 
   const togglePickerGroup = (name) => {
@@ -1025,10 +1184,16 @@
   };
 
   const refreshOnce = () => {
+    installAppearance();
+    if (state.models.length === 0) {
+      disposeModelPatches();
+      return;
+    }
+    installModelPatches();
     patchStatsig();
-    installAppServerPatch();
     syncModelPickerGroups();
   };
+  state.refresh = refreshOnce;
 
   const refreshBurst = (durationMs = 3000) => {
     state.refreshUntil = Math.max(state.refreshUntil, Date.now() + durationMs);
@@ -1054,33 +1219,14 @@
    * 渠道名清单必须跟着一起来：只换模型列表的话，新增或改名的渠道，它的模型后缀认不出来，
    * 会被 hideForeignPickerRows 当成外来行藏掉——用户以为没加进去，其实要等一次重启。
    */
-  state.update = (models, groupName, groupNames) => {
-    if (state.disposed) return state.models;
-    setPickerGroupNames(groupName, groupNames);
-    const next = uniqueModels(models);
-    const nextIds = new Set(modelIds(next));
-    for (const model of state.models) {
-      if (!nextIds.has(model.id)) droppedModelIds.add(model.id);
-    }
-    for (const id of nextIds) droppedModelIds.delete(id);
-    state.models = next;
-    refreshBurst(3500);
-    return state.models;
+  const installModelPatches = () => {
+    if (state.models.length === 0) return;
+    installModelResponsePatch();
+    installModelListMessagePatch();
+    installAppServerPatch();
   };
-  state.dispose = () => {
-    if (state.disposed) return;
-    state.disposed = true;
-    if (state.interval != null) window.clearInterval(state.interval);
-    if (state.refreshTimer != null) window.clearTimeout(state.refreshTimer);
-    state.interval = null;
-    state.refreshTimer = null;
-    state.observer?.disconnect?.();
-    state.observer = null;
-    disposePickerGroups();
-    if (state.domReadyListener) {
-      document.removeEventListener("DOMContentLoaded", state.domReadyListener);
-      state.domReadyListener = null;
-    }
+
+  const disposeModelPatches = () => {
     const responsePatch = state.responsePatch;
     if (responsePatch && Response.prototype.json === responsePatch.wrapper) {
       Response.prototype.json = responsePatch.original;
@@ -1088,11 +1234,13 @@
     if (window.__gptSwitchResponsePatch === responsePatch) {
       delete window.__gptSwitchResponsePatch;
     }
+    state.responsePatch = null;
     const dispatchPatch = state.dispatchPatch;
     dispatchPatch?.dispose?.();
     if (window.__gptSwitchMessagePatch === dispatchPatch) {
       delete window.__gptSwitchMessagePatch;
     }
+    state.dispatchPatch = null;
     for (const { client, original, wrapper } of state.statsigPatches) {
       if (client.getDynamicConfig === wrapper) client.getDynamicConfig = original;
       if (client.__gptSwitchWrapper === wrapper) delete client.__gptSwitchWrapper;
@@ -1111,13 +1259,50 @@
     appServerModulePromises.clear();
     appServerModuleFailures.clear();
     appAssetTextScanPromise = null;
+  };
+
+  state.update = (models, groupName, groupNames, appearance) => {
+    if (state.disposed) return state.models;
+    setPickerGroupNames(groupName, groupNames);
+    const next = uniqueModels(models);
+    const nextIds = new Set(modelIds(next));
+    for (const model of state.models) {
+      if (!nextIds.has(model.id)) droppedModelIds.add(model.id);
+    }
+    for (const id of nextIds) droppedModelIds.delete(id);
+    state.models = next;
+    bootModelLabels = null;
+    if (appearance !== undefined) state.appearance = appearance;
+    installAppearance();
+    if (state.models.length === 0) disposeModelPatches();
+    else installModelPatches();
+    refreshBurst(3500);
+    return state.models;
+  };
+  state.dispose = () => {
+    if (state.disposed) return;
+    state.disposed = true;
+    if (state.interval != null) window.clearInterval(state.interval);
+    if (state.refreshTimer != null) window.clearTimeout(state.refreshTimer);
+    state.interval = null;
+    state.refreshTimer = null;
+    state.observer?.disconnect?.();
+    state.observer = null;
+    state.unsubscribeNativeAppearance?.();
+    state.unsubscribeNativeAppearance = null;
+    disposeAppearance();
+    disposePickerGroups();
+    if (state.domReadyListener) {
+      document.removeEventListener("DOMContentLoaded", state.domReadyListener);
+      state.domReadyListener = null;
+    }
+    disposeModelPatches();
     if (window[GLOBAL_KEY] === state) delete window[GLOBAL_KEY];
   };
 
   window[GLOBAL_KEY] = state;
-  installModelResponsePatch();
-  installModelListMessagePatch();
-  installAppServerPatch();
+  subscribeNativeAppearance();
+  installModelPatches();
 
   const startObserver = () => {
     if (!document.documentElement || state.observer) return;

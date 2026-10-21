@@ -202,13 +202,14 @@ test("injection template still carries both substitution markers", () => {
   const template = fs.readFileSync(new URL("../Sources/injection.js", import.meta.url), "utf8");
   // injector.mjs 靠这几行把模型、默认分组名和渠道名清单替换进去，改动它们会让注入整段失效。
   for (const marker of ["const BOOT_MODELS = [];", 'const DEFAULT_GROUP_NAME = "";',
-    "const KNOWN_GROUP_NAMES = [];", 'const MODEL_ID_PREFIX = "";']) {
+    "const KNOWN_GROUP_NAMES = [];", 'const MODEL_ID_PREFIX = "";',
+    "const BOOT_APPEARANCE = null;"]) {
     assert.equal(template.split(marker).length - 1, 1, `注入模板里应该有且只有一处 ${marker}`);
   }
   // 面板保存后的热推送走「已经装过」那条分支：渠道名清单必须跟着一起推，
   // 否则新增或改名的渠道，它的模型后缀认不出来，会被当成外来行藏掉直到重启。
-  assert.match(template, /update\(BOOT_MODELS, DEFAULT_GROUP_NAME, KNOWN_GROUP_NAMES\)/,
-    "热推送要把渠道名清单一起带上");
+  assert.match(template, /update\(BOOT_MODELS, DEFAULT_GROUP_NAME, KNOWN_GROUP_NAMES, BOOT_APPEARANCE\)/,
+    "热推送要把渠道名清单和外观状态一起带上");
 });
 
 test("proxy reports an unreachable channel instead of hanging", async () => {

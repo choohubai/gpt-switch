@@ -417,7 +417,7 @@ test("panel save stores channels and switch applies the active one", async (cont
   assert.equal(readChannelState(paths.configPath).current, "b-2");
 });
 
-test("panel agents load the plugin template and merge it without replacing user instructions", async (context) => {
+test("panel agents load an editable default and merge only the edited block", async (context) => {
   const paths = sandbox(context);
   fs.writeFileSync(paths.agentsPath, "原公共指令\n");
   const { options } = panelOptions(paths);
@@ -428,15 +428,22 @@ test("panel agents load the plugin template and merge it without replacing user 
   assert.match(loaded.agents.content, /请遵循以下全局工作方式/);
   assert.doesNotMatch(loaded.agents.content, /原公共指令/);
   const saved = await handlePanelRequest({
-    action: "save", scope: "agents", enabled: true,
+    action: "save",
+    scope: "agents",
+    agents: { content: "# 我编辑的公共指令\n", enabled: true },
   }, options);
   assert.equal(saved.ok, true);
   const merged = fs.readFileSync(paths.agentsPath, "utf8");
-  assert.match(merged, /请遵循以下全局工作方式/);
+  assert.match(merged, /# 我编辑的公共指令/);
+  assert.doesNotMatch(merged, /请遵循以下全局工作方式/);
   assert.match(merged, /原公共指令\n$/);
   assert.equal(saved.agents.path, paths.agentsPath);
   assert.equal(saved.agents.keptUserFile, true);
   assert.equal(saved.agents.enabled, true);
+
+  const reloaded = await handlePanelRequest({ action: "load" }, options);
+  assert.equal(reloaded.agents.content, "# 我编辑的公共指令\n");
+  assert.equal(reloaded.agents.source, "user");
 });
 
 test("agents state corruption keeps the template available and can be overwritten", async (context) => {
@@ -448,11 +455,35 @@ test("agents state corruption keeps the template available and can be overwritte
   assert.equal(loaded.ok, true);
   assert.match(loaded.agents.content, /请遵循以下全局工作方式/);
   assert.equal(loaded.agents.enabled, false);
-  assert.match(loaded.agents.error, /状态读取失败/);
-  const saved = await handlePanelRequest({ action: "save", scope: "agents", enabled: true }, options);
+  assert.equal(loaded.agents.error, "");
+  assert.doesNotThrow(() => JSON.parse(fs.readFileSync(paths.agentsStatePath, "utf8")));
+  const saved = await handlePanelRequest({
+    action: "save",
+    scope: "agents",
+    agents: { content: "# 覆盖损坏状态\n", enabled: true },
+  }, options);
   assert.equal(saved.ok, true);
   assert.equal(saved.agents.enabled, true);
-  assert.doesNotThrow(() => JSON.parse(fs.readFileSync(paths.agentsStatePath, "utf8")));
+  const state = JSON.parse(fs.readFileSync(paths.agentsStatePath, "utf8"));
+  assert.equal(state.content, "# 覆盖损坏状态\n");
+});
+
+test("agents load trusts the active AGENTS block when the state file is corrupt", async (context) => {
+  const paths = sandbox(context);
+  const { options } = panelOptions(paths);
+  fs.mkdirSync(path.dirname(paths.agentsStatePath), { recursive: true });
+  fs.writeFileSync(paths.agentsStatePath, "{broken");
+  fs.writeFileSync(
+    paths.agentsPath,
+    "<!-- GPTSWITCH_AGENTS_START -->\n# 文件里仍在生效\n<!-- GPTSWITCH_AGENTS_END -->\n");
+  const loaded = await handlePanelRequest({ action: "load" }, options);
+  assert.equal(loaded.agents.enabled, true);
+  assert.equal(loaded.agents.content, "# 文件里仍在生效\n");
+  assert.equal(loaded.agents.error, "");
+  assert.deepEqual(JSON.parse(fs.readFileSync(paths.agentsStatePath, "utf8")), {
+    enabled: true,
+    content: "# 文件里仍在生效\n",
+  });
 });
 
 test("panel clear restores codex config, keeps the channels and restarts with no current", async (context) => {
@@ -460,7 +491,11 @@ test("panel clear restores codex config, keeps the channels and restarts with no
   const { options, calls } = panelOptions(paths);
   const channels = [channel({ id: "a", name: "A" })];
   fs.writeFileSync(paths.agentsPath, "用户原有指令\n");
-  await handlePanelRequest({ action: "save", scope: "agents", enabled: true }, options);
+  await handlePanelRequest({
+    action: "save",
+    scope: "agents",
+    agents: { content: "# 可恢复的公共指令\n", enabled: true },
+  }, options);
   assert.equal((await handlePanelRequest({ action: "switch", restart: true, channels, current: "a" }, options)).ok, true);
 
   const cleared = await handlePanelRequest({ action: "clear" }, options);
@@ -473,6 +508,9 @@ test("panel clear restores codex config, keeps the channels and restarts with no
   assert.deepEqual(calls.restarts.at(-1), null, "没有当前渠道时注入器什么都不注入");
   assert.equal(readChannelState(paths.configPath).current, null);
   assert.equal(fs.readFileSync(paths.agentsPath, "utf8"), "用户原有指令\n");
+  const savedAgents = JSON.parse(fs.readFileSync(paths.agentsStatePath, "utf8"));
+  assert.equal(savedAgents.enabled, false);
+  assert.equal(savedAgents.content, "# 可恢复的公共指令\n");
   assert.equal(cleared.agents.enabled, false);
 
   const failed = await handlePanelRequest({ action: "clear" },

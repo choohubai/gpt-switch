@@ -67,12 +67,21 @@ $script:savedProxyHost = "127.0.0.1"
 $script:savedProxyPort = "47123"
 $script:savingProxy = $false
 $script:agentsContent = ""
+$script:savedAgentsContent = ""
 $script:agentsBackupPath = ""
 $script:agentsSource = ""
 $script:agentsError = ""
 $script:agentsEnabled = $false
 $script:savedAgentsEnabled = $false
 $script:savingAgents = $false
+$script:appearanceTheme = "light"
+$script:appearanceFollowNative = $false
+$script:appearanceNativeMode = "light"
+$script:appearanceThemes = @()
+$script:savingAppearance = $false
+$script:appearanceThemeBeforeSave = "light"
+$script:appearanceFollowNativeBeforeSave = $false
+$script:appearanceNativeModeBeforeSave = "light"
 
 function Send-Request([hashtable]$Request) {
   $stdout.WriteLine(($Request | ConvertTo-Json -Compress -Depth 6))
@@ -360,6 +369,8 @@ function Convert-Context([int]$k) {
 
     <Border x:Name="Sidebar" Grid.RowSpan="2" Grid.Column="0" Background="#EDF4EA">
       <StackPanel Margin="8,24,8,16">
+        <TextBlock Text="GPT Switch" FontSize="16" FontWeight="SemiBold" Foreground="#202522"
+                   Margin="14,0,0,22"/>
         <TextBlock Text="设置" FontSize="11" FontWeight="SemiBold" Foreground="#747D76"
                    Margin="14,0,0,8"/>
         <Button x:Name="ModelsTab" Style="{StaticResource NavActive}">
@@ -420,7 +431,7 @@ function Convert-Context([int]$k) {
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0">
-          <TextBlock Text="模型" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
+          <TextBlock Text="模型" FontSize="20" FontWeight="Normal" Foreground="#202522"/>
           <TextBlock Text="聚合多条渠道，模型合进同一份选择器目录按渠道折叠成组。"
                      FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
         </StackPanel>
@@ -456,7 +467,7 @@ function Convert-Context([int]$k) {
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <StackPanel>
-            <TextBlock Text="代理" FontSize="20" FontWeight="SemiBold" Foreground="#212327"/>
+            <TextBlock Text="代理" FontSize="20" FontWeight="Normal" Foreground="#212327"/>
             <TextBlock Text="控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。"
                        FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
           </StackPanel>
@@ -575,7 +586,7 @@ function Convert-Context([int]$k) {
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <TextBlock x:Name="SimplePageTitle" FontSize="20" FontWeight="SemiBold" Foreground="#202522"
+      <TextBlock x:Name="SimplePageTitle" FontSize="20" FontWeight="Normal" Foreground="#202522"
                  Margin="0,0,0,14"/>
       <Border x:Name="SimpleHeaderDivider" Grid.Row="0" Height="1" Background="#E5E9E3"
               VerticalAlignment="Bottom"/>
@@ -592,8 +603,8 @@ function Convert-Context([int]$k) {
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0">
-          <TextBlock Text="Agents" FontSize="20" FontWeight="SemiBold" Foreground="#202522"/>
-          <TextBlock Text="按需启用插件内置的公共 Codex 指令。"
+          <TextBlock Text="Agents" FontSize="20" FontWeight="Normal" Foreground="#202522"/>
+          <TextBlock Text="维护所有项目共用的 Markdown 指令。"
                      FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
         </StackPanel>
         <Grid Grid.Column="1">
@@ -628,14 +639,14 @@ function Convert-Context([int]$k) {
           <TextBox x:Name="AgentsContentField" Grid.Row="1" Style="{StaticResource Field}"
                    AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                   IsReadOnly="True" FontFamily="Consolas" FontSize="13" MinHeight="300" Margin="0,10,0,0"/>
+                   FontFamily="Consolas" FontSize="13" MinHeight="300" Margin="0,10,0,0"/>
           <Grid Grid.Row="2" Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel>
-              <TextBlock Text="保存时先备份并合并插件段，用户原有配置保留。"
+              <TextBlock Text="启用时先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。"
                          FontSize="11" Foreground="#747D76" TextWrapping="Wrap"/>
               <TextBlock x:Name="AgentsBackupLabel" FontSize="11" Foreground="#747D76"
                          FontFamily="Consolas" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
@@ -650,13 +661,53 @@ function Convert-Context([int]$k) {
       <Border Grid.Row="0" Height="1" Background="#E5E9E3" VerticalAlignment="Bottom"/>
     </Grid>
 
+    <Grid x:Name="AppearancePage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20" Visibility="Collapsed">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+      <Grid Margin="0,0,0,14">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0">
+          <TextBlock Text="外观" FontSize="20" FontWeight="Normal" Foreground="#202522"/>
+          <TextBlock Text="选择后立即改变 ChatGPT 的背景、侧栏、输入框和弹窗。"
+                     FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
+        </StackPanel>
+        <Button x:Name="AppearanceRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
+                Content="重启 ChatGPT" VerticalAlignment="Top"/>
+      </Grid>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
+        <StackPanel Margin="0,0,10,16">
+          <Border x:Name="AppearancePreviewFrame" Height="210" MinHeight="160" MaxWidth="640"
+                  HorizontalAlignment="Center" CornerRadius="12"
+                  Background="#E9F2E7" ClipToBounds="True" BorderBrush="#DCE5DA" BorderThickness="1">
+            <Grid>
+              <Image x:Name="AppearancePreviewImage" Stretch="UniformToFill"/>
+              <Border x:Name="AppearanceBusyOverlay" Background="#33000000" Visibility="Collapsed">
+                <TextBlock Text="正在应用…" Foreground="White" FontSize="13" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+            </Grid>
+          </Border>
+          <TextBlock Text="全部主题" FontSize="14" FontWeight="SemiBold" Foreground="#202522"
+                     Margin="0,20,0,0"/>
+          <TextBlock Text="选择后立即应用" FontSize="12" Foreground="#747D76" Margin="0,4,0,12"/>
+          <WrapPanel x:Name="AppearanceThemePanel"/>
+        </StackPanel>
+      </ScrollViewer>
+      <Border Grid.Row="0" Height="1" Background="#E5E9E3" VerticalAlignment="Bottom"/>
+    </Grid>
+
     <Grid x:Name="AboutPage" Grid.Row="0" Grid.Column="2" Margin="28,20,28,20" Visibility="Collapsed">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <TextBlock Text="关于" FontSize="20" FontWeight="SemiBold" Foreground="#202522"
+      <TextBlock Text="关于" FontSize="20" FontWeight="Normal" Foreground="#202522"
                  Margin="0,0,0,14"/>
       <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="18,0">
         <StackPanel>
@@ -829,6 +880,12 @@ $proxyPage = $window.FindName("ProxyPage")
 $simplePage = $window.FindName("SimplePage")
 $simplePageTitle = $window.FindName("SimplePageTitle")
 $agentsPage = $window.FindName("AgentsPage")
+$appearancePage = $window.FindName("AppearancePage")
+$appearancePreviewFrame = $window.FindName("AppearancePreviewFrame")
+$appearancePreviewImage = $window.FindName("AppearancePreviewImage")
+$appearanceBusyOverlay = $window.FindName("AppearanceBusyOverlay")
+$appearanceThemePanel = $window.FindName("AppearanceThemePanel")
+$appearanceRestartButton = $window.FindName("AppearanceRestartButton")
 $agentsEnabledToggle = $window.FindName("AgentsEnabledToggle")
 $agentsRestartButton = $agentsPage.FindName("AgentsRestartButton")
 $agentsContentField = $window.FindName("AgentsContentField")
@@ -1084,6 +1141,7 @@ function Show-List-Page {
   $modelsCard.Visibility = "Visible"
   $proxyPage.Visibility = "Collapsed"
   $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Collapsed"
   Set-Nav "models"
   $listPage.Visibility = "Visible"
   $detailPage.Visibility = "Collapsed"
@@ -1107,6 +1165,7 @@ function Show-Proxy-Page {
   $modelsCard.Visibility = "Collapsed"
   $proxyPage.Visibility = "Visible"
   $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Collapsed"
   Set-Nav "proxy"
   $script:proxyHost = [string]$script:proxyHost
   $script:proxyPort = [string]$script:proxyPort
@@ -1128,6 +1187,7 @@ function Show-Detail-Page {
   $modelsCard.Visibility = "Visible"
   $proxyPage.Visibility = "Collapsed"
   $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Collapsed"
   Set-Nav "models"
   $listPage.Visibility = "Collapsed"
   $detailPage.Visibility = "Visible"
@@ -1149,16 +1209,21 @@ function Show-Empty-Page([string]$Title, [string]$Section) {
   $simplePage.Visibility = "Visible"
   $aboutPage.Visibility = "Collapsed"
   $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Collapsed"
   $simplePageTitle.Text = $Title
   Set-Nav $Section
   Set-Feedback ""
 }
 
+function Test-AgentsDirty {
+  return [string]$script:agentsContent -ne [string]$script:savedAgentsContent -or `
+    [bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled
+}
+
 function Update-AgentsControls {
   $agentsContentField.IsEnabled = -not $script:busy
   $agentsEnabledToggle.IsEnabled = -not $script:busy
-  $saveAgentsButton.IsEnabled = $script:loaded -and -not $script:busy -and `
-    ([bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled)
+  $saveAgentsButton.IsEnabled = $script:loaded -and -not $script:busy -and (Test-AgentsDirty)
   $agentsBackupLabel.Text = if ($script:agentsBackupPath) { "最近备份：$script:agentsBackupPath" } else { "" }
   $agentsErrorLabel.Text = [string]$script:agentsError
 }
@@ -1172,19 +1237,34 @@ function Refresh-Agents-View {
   Update-AgentsControls
 }
 
-function Confirm-AgentsLeave {
-  # 保存期间留在当前页，防止迟到的回包把用户从刚切换的页面拉回来。
-  if ($script:savingAgents) { return $false }
-  if ($script:busy -or ([bool]$script:agentsEnabled -eq [bool]$script:savedAgentsEnabled)) { return $true }
+# 离开或关闭前统一确认 Agents 草稿；确认后同步清空内部状态和可见编辑框。
+function Confirm-AgentsDiscard([string]$Message) {
+  if ($script:savingAgents) {
+    [System.Windows.MessageBox]::Show(
+      $window,
+      "请等待公共指令保存完成后再关闭或退出。",
+      "正在保存公共指令",
+      "OK", "Information") | Out-Null
+    return $false
+  }
+  if (-not (Test-AgentsDirty)) { return $true }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
-    "Agents 启用状态尚未保存，离开会放弃这次切换。",
+    $Message,
     "放弃未保存的更改？",
     "YesNo", "Warning")
   if ($answer -ne "Yes") { return $false }
+  $script:agentsContent = [string]$script:savedAgentsContent
   $script:agentsEnabled = $script:savedAgentsEnabled
-  Update-AgentsControls
+  Refresh-Agents-View
+  Set-Feedback ""
   return $true
+}
+
+function Confirm-AgentsLeave {
+  # 保存期间留在当前页，防止迟到的回包把用户从刚切换的页面拉回来。
+  if ($script:savingAgents) { return $false }
+  return Confirm-AgentsDiscard "Agents 里还有未保存的改动，离开会丢弃它们。"
 }
 
 function Show-Agents-Page {
@@ -1193,8 +1273,206 @@ function Show-Agents-Page {
   $simplePage.Visibility = "Collapsed"
   $aboutPage.Visibility = "Collapsed"
   $agentsPage.Visibility = "Visible"
+  $appearancePage.Visibility = "Collapsed"
   Set-Feedback ""
   Refresh-Agents-View
+}
+
+function Set-Appearance-Image([System.Windows.Controls.Image]$Target, [string]$PathValue) {
+  if ([string]::IsNullOrWhiteSpace($PathValue) -or -not (Test-Path -LiteralPath $PathValue)) {
+    $Target.Source = $null
+    return
+  }
+  try {
+    $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+    $bitmap.BeginInit()
+    $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $bitmap.UriSource = New-Object System.Uri($PathValue, [System.UriKind]::Absolute)
+    $bitmap.EndInit()
+    $bitmap.Freeze()
+    $Target.Source = $bitmap
+  } catch {
+    $Target.Source = $null
+  }
+}
+
+# 让顶部预览容器跟随 1400×875 源图比例，Image 的 UniformToFill 只负责铺满同比例区域。
+function Update-AppearancePreviewAspect {
+  if ($null -eq $appearancePreviewFrame -or $appearancePreviewFrame.ActualWidth -le 0) { return }
+  $targetHeight = [Math]::Round($appearancePreviewFrame.ActualWidth * 875.0 / 1400.0, 2)
+  if ([Math]::Abs([double]$appearancePreviewFrame.Height - $targetHeight) -gt 0.5) {
+    $appearancePreviewFrame.Height = $targetHeight
+  }
+}
+
+if ($null -ne $appearancePreviewFrame) {
+  $appearancePreviewFrame.Add_SizeChanged({
+    param($sender, $eventArgs)
+    Update-AppearancePreviewAspect
+  })
+}
+
+function Apply-Appearance-State($Value) {
+  if ($null -eq $Value) { return }
+  if ($Value.theme) { $script:appearanceTheme = [string]$Value.theme }
+  $script:appearanceFollowNative = $Value.followNative -eq $true
+  $script:appearanceNativeMode = if ($Value.nativeMode -eq "dark") { "dark" } else { "light" }
+  if ($null -ne $Value.themes) { $script:appearanceThemes = @($Value.themes) }
+}
+
+function New-Appearance-Theme-Card($Theme) {
+  $cell = New-Object System.Windows.Controls.StackPanel
+  $cell.Width = 118
+  $cell.Margin = "0,0,10,14"
+
+  $preview = New-Object System.Windows.Controls.Image
+  $preview.Stretch = [System.Windows.Media.Stretch]::UniformToFill
+  Set-Appearance-Image $preview ([string]$Theme.coverPath)
+
+  $selected = [string]$Theme.id -eq [string]$script:appearanceTheme
+  $frame = New-Object System.Windows.Controls.Border
+  $frame.Width = 112
+  $frame.Height = 75
+  $frame.CornerRadius = New-Object System.Windows.CornerRadius -ArgumentList 10
+  $frame.ClipToBounds = $true
+  $borderWidth = if ($selected) { 2 } else { 1 }
+  $frame.BorderThickness = New-Object System.Windows.Thickness -ArgumentList $borderWidth
+  $frame.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(220, 228, 218))
+  $frame.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(240, 244, 240))
+  if (-not [string]::IsNullOrWhiteSpace([string]$Theme.cardBackground)) {
+    $cardColor = [System.Windows.Media.ColorConverter]::ConvertFromString([string]$Theme.cardBackground)
+    $frame.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList $cardColor
+  }
+  if ($selected) {
+    $frame.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(59, 113, 78))
+  }
+
+  $overlay = New-Object System.Windows.Controls.Grid
+  [void]$overlay.Children.Add($preview)
+  if ($selected) {
+    $check = New-Object System.Windows.Controls.TextBlock
+    $check.Text = "✓"
+    $check.Foreground = [System.Windows.Media.Brushes]::White
+    $check.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(65, 120, 81))
+    $check.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $check.HorizontalAlignment = "Right"
+    $check.VerticalAlignment = "Top"
+    $check.Margin = "0,7,7,0"
+    $check.Padding = "4,1"
+    [void]$overlay.Children.Add($check)
+  }
+  $frame.Child = $overlay
+
+  $button = New-Object System.Windows.Controls.Button
+  $button.Style = $window.FindResource("PillIcon")
+  $button.Width = 118
+  $button.Height = 75
+  $button.Padding = New-Object System.Windows.Thickness -ArgumentList 0
+  $button.Background = [System.Windows.Media.Brushes]::Transparent
+  $button.BorderThickness = New-Object System.Windows.Thickness -ArgumentList 0
+  $button.Content = $frame
+  $button.Tag = [string]$Theme.id
+  $button.ToolTip = "使用「$([string]$Theme.name)」主题"
+  $button.IsEnabled = $script:loaded -and -not $script:busy
+  [System.Windows.Automation.AutomationProperties]::SetName($button, "使用「$([string]$Theme.name)」主题")
+  $button.Add_Click({ Select-Appearance-Theme ([string]$sender.Tag) })
+  [void]$cell.Children.Add($button)
+
+  $name = New-Object System.Windows.Controls.TextBlock
+  $name.Text = [string]$Theme.name
+  $name.FontSize = 12
+  $name.TextAlignment = "Center"
+  $name.TextTrimming = "CharacterEllipsis"
+  $name.Margin = "2,5,2,0"
+  $name.Foreground = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(32, 37, 34))
+  if ($selected) { $name.FontWeight = [System.Windows.FontWeights]::SemiBold }
+  [void]$cell.Children.Add($name)
+  return $cell
+}
+
+function Refresh-Appearance-View {
+  Update-AppearancePreviewAspect
+  $themes = @($script:appearanceThemes)
+  $selected = $themes | Where-Object { [string]$_.id -eq [string]$script:appearanceTheme } | Select-Object -First 1
+  if ($selected) {
+    Set-Appearance-Image $appearancePreviewImage ([string]$selected.previewPath)
+    $previewColor = if ([string]$selected.colorScheme -eq "dark") { "#25282C" } else { "#EEF2ED" }
+    $appearancePreviewFrame.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList (
+      [System.Windows.Media.ColorConverter]::ConvertFromString($previewColor))
+  } else {
+    $appearancePreviewImage.Source = $null
+  }
+  $appearanceBusyOverlay.Visibility = if ($script:savingAppearance) { "Visible" } else { "Collapsed" }
+  $appearanceThemePanel.Children.Clear()
+  if ($themes.Count -eq 0) {
+    $emptyThemeText = New-Object System.Windows.Controls.TextBlock
+    $emptyThemeText.Text = if ($script:loaded) { "主题资源不可用" } else { "正在读取主题…" }
+    $emptyThemeText.FontSize = 12
+    $emptyThemeText.Foreground = New-Object System.Windows.Media.SolidColorBrush -ArgumentList (
+      [System.Windows.Media.Color]::FromRgb(116, 125, 118))
+    $emptyThemeText.Margin = "0,4,0,10"
+    [void]$appearanceThemePanel.Children.Add($emptyThemeText)
+  }
+  foreach ($theme in $themes) {
+    [void]$appearanceThemePanel.Children.Add((New-Appearance-Theme-Card $theme))
+  }
+  $coming = New-Object System.Windows.Controls.StackPanel
+  $coming.Width = 118
+  $coming.Margin = "0,0,10,14"
+  $placeholder = New-Object System.Windows.Controls.Border
+  $placeholder.Width = 112
+  $placeholder.Height = 75
+  $placeholder.CornerRadius = New-Object System.Windows.CornerRadius -ArgumentList 10
+  $placeholder.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(241, 241, 241))
+  $placeholder.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(232, 232, 232))
+  $placeholder.BorderThickness = New-Object System.Windows.Thickness -ArgumentList 1
+  $placeholderText = New-Object System.Windows.Controls.TextBlock
+  $placeholderText.Text = "敬请期待"
+  $placeholderText.FontSize = 12
+  $placeholderText.Foreground = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(160, 160, 160))
+  $placeholderText.HorizontalAlignment = "Center"
+  $placeholderText.VerticalAlignment = "Center"
+  $placeholder.Child = $placeholderText
+  [void]$coming.Children.Add($placeholder)
+  [void]$appearanceThemePanel.Children.Add($coming)
+  Update-AppearancePreviewAspect
+  Update-Controls
+}
+
+function Select-Appearance-Theme([string]$ThemeId) {
+  if (-not $script:loaded -or $script:busy -or $script:savingAppearance) { return }
+  $theme = @($script:appearanceThemes) | Where-Object { [string]$_.id -eq $ThemeId } | Select-Object -First 1
+  if (-not $theme -or (
+    -not $script:appearanceFollowNative -and
+    [string]$script:appearanceTheme -eq $ThemeId
+  )) { return }
+  $script:appearanceThemeBeforeSave = [string]$script:appearanceTheme
+  $script:appearanceFollowNativeBeforeSave = $script:appearanceFollowNative
+  $script:appearanceNativeModeBeforeSave = [string]$script:appearanceNativeMode
+  $script:appearanceTheme = $ThemeId
+  $script:appearanceFollowNative = $false
+  $script:savingAppearance = $true
+  $script:busy = $true
+  Set-Feedback "正在应用「$([string]$theme.name)」…"
+  Refresh-Appearance-View
+  Send-Request @{
+    action = "save"
+    restart = $false
+    scope = "appearance"
+    theme = $ThemeId
+  }
+}
+
+function Show-Appearance-Page {
+  $listPage.Visibility = "Collapsed"
+  $detailPage.Visibility = "Collapsed"
+  $simplePage.Visibility = "Collapsed"
+  $aboutPage.Visibility = "Collapsed"
+  $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Visible"
+  Set-Nav "appearance"
+  Set-Feedback ""
+  Refresh-Appearance-View
 }
 
 function Show-About-Page {
@@ -1203,6 +1481,7 @@ function Show-About-Page {
   $simplePage.Visibility = "Collapsed"
   $aboutPage.Visibility = "Visible"
   $agentsPage.Visibility = "Collapsed"
+  $appearancePage.Visibility = "Collapsed"
   Set-Nav "about"
   Set-Feedback ""
 }
@@ -1219,9 +1498,10 @@ function Update-Controls {
     $field.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   }
   $clearButton.IsEnabled = $script:loaded -and -not $script:busy
-  $restartButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -gt 0
+  $restartButton.IsEnabled = $script:loaded -and -not $script:busy
   $proxyRestartButton.IsEnabled = $restartButton.IsEnabled
   $agentsRestartButton.IsEnabled = $restartButton.IsEnabled
+  $appearanceRestartButton.IsEnabled = $restartButton.IsEnabled
   $dirty = Compare-Channels $script:channels $script:savedChannels
   # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事，按钮文案不再跟着变。
   $saveButton.Content = "保存"
@@ -1757,6 +2037,14 @@ function Receive-Response($Response) {
     $script:currentVersion = [string]$Response.version
     Refresh-VersionLabel
   }
+  if ($null -ne $Response.appearance) {
+    Apply-Appearance-State $Response.appearance
+    if ($Response.event -eq "appearance-updated") {
+      Set-Feedback ""
+      Refresh-Appearance-View
+      return
+    }
+  }
   if ($script:checkingUpdate) {
     Finish-UpdateCheck $Response
     return
@@ -1772,6 +2060,28 @@ function Receive-Response($Response) {
       Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "获取可用模型失败" }) $true
     }
     Update-Controls
+    return
+  }
+  if ($script:savingAppearance) {
+    $script:savingAppearance = $false
+    $script:busy = $false
+    if ($Response.ok -eq $true -and $null -ne $Response.appearance) {
+      if ($Response.restartRequired -eq $true) {
+        Set-Feedback "主题已保存，重启 ChatGPT 后生效"
+      } else {
+        $selected = @($script:appearanceThemes) |
+          Where-Object { [string]$_.id -eq [string]$script:appearanceTheme } |
+          Select-Object -First 1
+        $name = if ($selected) { [string]$selected.name } else { [string]$script:appearanceTheme }
+        Set-Feedback "已切换到「$name」并应用到 ChatGPT"
+      }
+    } else {
+      $script:appearanceTheme = [string]$script:appearanceThemeBeforeSave
+      $script:appearanceFollowNative = $script:appearanceFollowNativeBeforeSave
+      $script:appearanceNativeMode = [string]$script:appearanceNativeModeBeforeSave
+      Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "应用外观主题失败" }) $true
+    }
+    Refresh-Appearance-View
     return
   }
   if ($script:savingProxy) {
@@ -1794,20 +2104,17 @@ function Receive-Response($Response) {
     $script:busy = $false
     if ($Response.ok -eq $true -and $null -ne $Response.agents) {
       $script:agentsContent = [string]$Response.agents.content
+      $script:savedAgentsContent = $script:agentsContent
       $script:agentsSource = [string]$Response.agents.source
       $script:agentsBackupPath = [string]$Response.agents.backupPath
       $script:agentsError = ""
       $script:agentsEnabled = $Response.agents.enabled -eq $true
       $script:savedAgentsEnabled = $script:agentsEnabled
-      if ($script:agentsEnabled) {
-        Set-Feedback $(if ($Response.agents.keptUserFile -eq $true) {
-          "公共指令已启用，原配置已备份"
-        } else {
-          "公共指令已启用"
-        })
+      Set-Feedback $(if ($script:agentsBackupPath) {
+        "公共指令已同步，原文件已备份"
       } else {
-        Set-Feedback "公共指令已停用，用户原有配置保留"
-      }
+        "公共指令已保存"
+      })
     } else {
       Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "保存公共指令失败" }) $true
     }
@@ -1827,6 +2134,7 @@ function Receive-Response($Response) {
     }
     if ($null -ne $Response.agents) {
       $script:agentsContent = [string]$Response.agents.content
+      $script:savedAgentsContent = $script:agentsContent
       $script:agentsSource = [string]$Response.agents.source
       $script:agentsBackupPath = [string]$Response.agents.backupPath
       $script:agentsError = [string]$Response.agents.error
@@ -2066,30 +2374,35 @@ $proxyPortField.Add_TextChanged({
 $modelsTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Models-Page } })
 $proxyTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Proxy-Page } })
 $generalTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "通用" "general" } })
-$appearanceTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "外观" "appearance" } })
+$appearanceTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Appearance-Page } })
 $agentsTab.Add_Click({ Show-Agents-Page })
 
 $agentsContentField.Add_TextChanged({
   if ($script:rendering -or $script:busy) { return }
   $script:agentsContent = $agentsContentField.Text
+  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
+  Update-AgentsControls
 })
 $agentsEnabledToggle.Add_Click({
   if ($script:rendering -or $script:busy) { return }
   $script:agentsEnabled = $agentsEnabledToggle.IsChecked -eq $true
+  Set-Feedback $(if (Test-AgentsDirty) { "有未保存的更改" } else { "" })
   Update-AgentsControls
 })
 $saveAgentsButton.Add_Click({
-  if (-not $script:loaded -or $script:busy -or
-      ([bool]$script:agentsEnabled -eq [bool]$script:savedAgentsEnabled)) { return }
+  if (-not $script:loaded -or $script:busy -or -not (Test-AgentsDirty)) { return }
   $script:busy = $true
   $script:savingAgents = $true
-  Set-Feedback "正在写入公共指令…"
+  Set-Feedback "正在保存公共指令…"
   Update-AgentsControls
   Send-Request @{
     action = "save"
     restart = $false
     scope = "agents"
-    enabled = [bool]$script:agentsEnabled
+    agents = @{
+      content = [string]$script:agentsContent
+      enabled = [bool]$script:agentsEnabled
+    }
   }
 })
 $aboutTab.Add_Click({ if (Confirm-AgentsLeave) { Show-About-Page } })
@@ -2110,9 +2423,9 @@ $saveProxyButton.Add_Click({
   }
 })
 
-# 模型页和代理页的两个重启入口共用同一流程：重新写一遍配置和全部启用渠道，先问一句再动手。
+# 模型、代理、Agents 和外观页的右上角入口共用同一重启流程，先确认再动手。
 $requestRestart = {
-  if (-not $script:loaded -or $script:busy -or $script:channels.Count -eq 0) { return }
+  if (-not $script:loaded -or $script:busy) { return }
   $answer = [System.Windows.MessageBox]::Show(
     $window,
     "会重新写入 ChatGPT 配置和全部启用渠道的模型目录，然后重启客户端。",
@@ -2124,6 +2437,7 @@ $requestRestart = {
 $restartButton.Add_Click($requestRestart)
 $proxyRestartButton.Add_Click($requestRestart)
 $agentsRestartButton.Add_Click($requestRestart)
+$appearanceRestartButton.Add_Click($requestRestart)
 
 $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
@@ -2155,14 +2469,9 @@ $updateButton.Add_Click({
 $window.Add_Closing({
   param($sender, $eventArgs)
   if ($script:quitting) { return }
-  if (-not $script:busy -and ([bool]$script:agentsEnabled -ne [bool]$script:savedAgentsEnabled)) {
-    $answer = [System.Windows.MessageBox]::Show(
-      $window,
-      "Agents 启用状态尚未保存，关闭面板会放弃这次切换。",
-      "放弃未保存的更改？",
-      "YesNo", "Warning")
-    if ($answer -ne "Yes") { $eventArgs.Cancel = $true; return }
-    $script:agentsEnabled = $script:savedAgentsEnabled
+  if (-not (Confirm-AgentsDiscard "Agents 里还有未保存的改动，关闭面板会丢弃它们。")) {
+    $eventArgs.Cancel = $true
+    return
   }
   # 关窗只是收起面板：最小化到任务栏，插件继续在托盘运行。
   # 不用 Hide()：WPF 隐藏后自己不再渲染，被外部 ShowWindow 叫回来会是一片黑。
@@ -2203,6 +2512,7 @@ $openItem.Add_Click($showPanel)
 $tray.Add_MouseDoubleClick($showPanel)
 
 $quitItem.Add_Click({
+  if (-not (Confirm-AgentsDiscard "Agents 里还有未保存的改动，退出会丢弃它们。")) { return }
   $script:quitting = $true
   Send-Request @{ action = "quit" }
   $tray.Visible = $false

@@ -3,7 +3,8 @@ import {
   atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
 import {
-  loadInstructionsTemplate, readInstructionsEnabled, saveInstructionsToCodex,
+  inspectInstructionsInCodex, loadInstructionsTemplate, readInstructionsState, saveInstructionsToCodex,
+  writeInstructionsState,
 } from "./agents-config.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
@@ -697,7 +698,7 @@ export const discoverChannelModels = async (request = {}) => {
   return models;
 };
 
-/// 面板协议：load 返回插件内固定公共指令模板；保存时用户确认后写入其 Codex 配置。
+/// 面板协议：load 返回可编辑草稿；保存时只把插件标记段写入用户的 Codex 配置。
 export const handlePanelRequest = async (request, {
   configPath, proxyConfigPath, codexHome, agentsStatePath, importOptions,
   applyCodex, restoreCodex, applyCatalog, clearCatalog, restart,
@@ -711,15 +712,38 @@ export const handlePanelRequest = async (request, {
       const state = loadChannelState(configPath, importOptions);
       let agents;
       try {
-        const content = loadInstructionsTemplate();
-        let enabled = false;
-        let error = "";
+        const errors = [];
+        let saved;
+        let stateError;
         try {
-          enabled = readInstructionsEnabled(agentsStatePath);
-        } catch (stateError) {
-          error = `公共指令状态读取失败：${stateError.message}`;
+          saved = readInstructionsState(agentsStatePath);
+        } catch (error) {
+          stateError = error;
+          errors.push(`公共指令状态读取失败：${error.message}`);
         }
-        agents = { content, source: "plugin", enabled, error };
+        const codex = inspectInstructionsInCodex({ codexHome });
+        if (codex.error) errors.push(codex.error);
+        if (saved && saved.enabled !== codex.enabled) {
+          errors.push("公共指令状态与 AGENTS.md 的实际标记段不一致");
+        }
+        if (!codex.error && (stateError || (saved && saved.enabled !== codex.enabled))) {
+          try {
+            writeInstructionsState(agentsStatePath, codex.enabled
+              ? { enabled: true, content: codex.content }
+              : { enabled: false, content: saved?.content ?? codex.content });
+            errors.length = 0;
+          } catch (error) {
+            errors.push(`公共指令状态自动修复失败：${error.message}`);
+          }
+        }
+        const instructions = codex.enabled
+          ? { content: codex.content, enabled: true, source: "user" }
+          : {
+            content: saved?.content ?? codex.content,
+            enabled: false,
+            source: saved?.source ?? codex.source,
+          };
+        agents = { ...instructions, error: errors.join("；") };
       } catch (error) {
         agents = { content: "", source: "plugin", error: `公共指令模板读取失败：${error.message}` };
       }
@@ -729,11 +753,19 @@ export const handlePanelRequest = async (request, {
       };
     }
     if (request?.action === "save" && request?.scope === "agents") {
-      if (typeof request.enabled !== "boolean") throw new Error("启用状态必须是布尔值");
+      const agents = request.agents;
+      if (!agents || typeof agents.content !== "string" || typeof agents.enabled !== "boolean") {
+        throw new Error("公共指令内容必须是文本，启用状态必须是布尔值");
+      }
       return {
         ok: true,
         saved: true,
-        agents: saveInstructionsToCodex({ codexHome, statePath: agentsStatePath, enabled: request.enabled }),
+        agents: saveInstructionsToCodex({
+          codexHome,
+          statePath: agentsStatePath,
+          enabled: agents.enabled,
+          content: agents.content,
+        }),
       };
     }
     if (request?.action === "list-models") {

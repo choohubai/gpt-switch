@@ -28,7 +28,14 @@ struct StatusMenuTests {
             ["id": "relay", "name": "", "baseUrl": "https://relay.example/v1",
              "apiKey": "sk-relay", "headerName": "", "headerValue": "",
              "models": [["id": "deepseek-v4-pro", "context": 1000]]],
-        ], "current": "OpenAI"])
+        ], "current": "OpenAI", "appearance": [
+            "theme": "light",
+            "themes": [
+                ["id": "light", "name": "浅色", "previewPath": "/tmp/light.jpg", "colorScheme": "light"],
+                ["id": "dark", "name": "深色", "previewPath": "/tmp/dark.jpg", "colorScheme": "dark"],
+                ["id": "wind", "name": "有风", "previewPath": "/tmp/wind.jpg", "colorScheme": "light"],
+            ],
+        ]])
         assert(store.channels.count == 2)
         assert(store.currentChannelID == "OpenAI")
         assert(store.loaded && !store.busy)
@@ -37,33 +44,116 @@ struct StatusMenuTests {
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
-        // Agents 内容来自插件模板；保存只发 scoped agents 请求，不碰渠道。
-        store.agentsContent = "# 插件公共指令\n"
+        // 外观卡片即选即存；保存失败要退回原主题，不能出现界面和文件不一致。
+        assert(store.appearanceTheme == "light" && store.appearanceThemes.count == 3)
+        let appearanceRequestCount = requests.count
+        store.selectAppearanceTheme(store.appearanceThemes[2])
+        assert(requests.count == appearanceRequestCount + 1)
+        assert(requests.last?["scope"] as? String == "appearance")
+        assert(requests.last?["theme"] as? String == "wind")
+        assert(store.savingAppearance && store.appearanceTheme == "wind")
+        store.apply(["ok": true, "saved": true, "appearance": [
+            "theme": "wind",
+            "themes": [
+                ["id": "light", "name": "浅色", "previewPath": "/tmp/light.jpg", "colorScheme": "light"],
+                ["id": "dark", "name": "深色", "previewPath": "/tmp/dark.jpg", "colorScheme": "dark"],
+                ["id": "wind", "name": "有风", "previewPath": "/tmp/wind.jpg", "colorScheme": "light"],
+            ],
+        ]])
+        assert(!store.savingAppearance && !store.busy)
+        assert(store.appearanceTheme == "wind")
+        assert(store.feedback.contains("有风"))
+        store.selectAppearanceTheme(store.appearanceThemes[1])
+        store.apply(["ok": false, "error": "主题写入失败"])
+        assert(store.appearanceTheme == "wind", "主题保存失败时应恢复上一个主题")
+        assert(store.feedback == "主题写入失败" && store.feedbackIsError)
+        store.selectAppearanceTheme(store.appearanceThemes[1])
+        store.apply(["ok": true, "saved": true, "restartRequired": true, "appearance": [
+            "theme": "dark",
+            "themes": [
+                ["id": "light", "name": "浅色", "previewPath": "/tmp/light.jpg", "colorScheme": "light"],
+                ["id": "dark", "name": "深色", "previewPath": "/tmp/dark.jpg", "colorScheme": "dark"],
+                ["id": "wind", "name": "有风", "previewPath": "/tmp/wind.jpg", "colorScheme": "light"],
+            ],
+        ]])
+        assert(store.appearanceTheme == "dark", "主题已保存时保留新主题")
+        assert(store.feedback == "主题已保存，重启 ChatGPT 后生效")
+        assert(!store.feedbackIsError, "等待重启不是保存失败，不能显示红色提示")
+
+        // Codex 原生模式广播优先：暂停覆盖并把选中项同步到对应原生主题。
+        store.apply(["event": "appearance-updated", "appearance": [
+            "theme": "dark", "followNative": true, "nativeMode": "dark",
+        ]])
+        assert(store.appearanceTheme == "dark" && store.appearanceFollowNative)
+        assert(store.appearanceNativeMode == "dark")
+        assert(store.feedback.isEmpty, "原生模式同步只更新选中项，不再显示额外提示")
+        let requestCountAfterNativeChange = requests.count
+        store.selectAppearanceTheme(store.appearanceThemes[1])
+        assert(requests.count == requestCountAfterNativeChange + 1)
+        assert(!store.appearanceFollowNative && store.savingAppearance)
+        store.apply(["ok": false, "error": "重新启用主题失败"])
+        assert(store.appearanceFollowNative, "重新启用失败后必须恢复跟随原生状态")
+        assert(store.appearanceNativeMode == "dark")
+        assert(store.feedback == "重新启用主题失败" && store.feedbackIsError)
+        store.selectAppearanceTheme(store.appearanceThemes[1])
+        store.apply(["ok": true, "saved": true, "appearance": [
+            "theme": "dark", "followNative": false, "nativeMode": "dark",
+        ]])
+        assert(!store.savingAppearance && !store.busy)
+        store.savingProxy = true
+        store.busy = true
+        store.apply(["event": "appearance-updated", "appearance": [
+            "theme": "light", "followNative": true, "nativeMode": "light",
+        ]])
+        assert(store.savingProxy && store.busy,
+               "主动外观事件不能抢走正在等待的代理保存响应")
+        assert(store.appearanceFollowNative && store.appearanceNativeMode == "light")
+        assert(store.appearanceTheme == "light")
+        store.savingProxy = false
+        store.busy = false
+
+        // Agents 默认值可以直接编辑；保存只发 scoped agents 请求，不碰渠道。
+        store.agentsContent = "# 我编辑的公共指令\n"
         store.agentsEnabled = true
         assert(store.agentsDirty)
         let requestsBeforeAgents = requests.count
         store.saveAgents()
         assert(requests.count == requestsBeforeAgents + 1)
         assert(requests.last?["scope"] as? String == "agents")
-        assert(requests.last?["enabled"] as? Bool == true)
+        assert((requests.last?["agents"] as? [String: Any])?["content"] as? String == "# 我编辑的公共指令\n")
+        assert((requests.last?["agents"] as? [String: Any])?["enabled"] as? Bool == true)
         store.apply(["ok": true, "saved": true, "agents": [
-            "content": "# 插件公共指令\n", "source": "plugin",
+            "content": "# 我编辑的公共指令\n", "source": "user",
             "enabled": true,
-            "path": "/tmp/AGENTS.md", "keptUserFile": true,
+            "path": "/tmp/AGENTS.md", "backupPath": "/tmp/AGENTS.md.2026.bak",
+            "keptUserFile": true,
         ]])
         assert(!store.agentsDirty && !store.busy)
-        assert(store.agentsSource == "plugin")
+        assert(store.agentsSource == "user")
         assert(store.agentsEnabled)
-        assert(store.feedback.contains("已启用"))
+        assert(store.feedback.contains("已同步"))
 
-        // Agents 开关尚未保存时关闭面板，不能把状态静默丢掉。
+        // 正文或开关尚未保存时关闭面板，不能把状态静默丢掉。
+        store.agentsContent = "# 未保存的编辑\n"
+        assert(store.agentsDirty)
         store.agentsEnabled = false
         assert(store.agentsDirty)
+        let requestsBeforeReopen = requests.count
+        controller.openPanel()
+        assert(requests.count == requestsBeforeReopen, "重新显示面板不能静默覆盖 Agents 草稿")
         controller.discardChangesChoice = { false }
         assert(!controller.canDiscardChanges())
+        store.savingAgents = true
+        assert(!controller.canDiscardChanges(), "保存进行中不能关闭或退出")
+        store.savingAgents = false
+        store.busy = true
+        assert(!controller.canDiscardChanges(), "忙碌时退出也不能绕过未保存草稿确认")
+        store.busy = false
         controller.discardChangesChoice = { true }
         assert(controller.canDiscardChanges())
         assert(!store.agentsDirty)
+        assert(store.agentsContent == "# 我编辑的公共指令\n")
+        assert(store.agentsEnabled)
         controller.discardChangesChoice = nil
 
         // 渠道 ID 在输入阶段校验：格式不对时给出具体提示，保存请求不发出去。
@@ -573,6 +663,46 @@ struct StatusMenuTests {
         window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .general))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("general.png")
+        let appearanceDirectory = URL(fileURLWithPath: CommandLine.arguments[1])
+            .deletingLastPathComponent()
+            .appendingPathComponent("Appearance")
+        store.appearanceTheme = "dark"
+        store.appearanceFollowNative = true
+        store.appearanceNativeMode = "dark"
+        store.appearanceThemes = [
+            AppearanceThemeRow(id: "light", name: "浅色",
+                               previewPath: appearanceDirectory.appendingPathComponent("light-preview.jpg").path,
+                               cardBackground: "#f0f0f0",
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "dark", name: "深色",
+                               previewPath: appearanceDirectory.appendingPathComponent("dark-preview.jpg").path,
+                               cardBackground: "#303030",
+                               colorScheme: "dark"),
+            AppearanceThemeRow(id: "wind", name: "有风",
+                               previewPath: appearanceDirectory.appendingPathComponent("wind-preview.jpg").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("wind-bg.png").path,
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "qq", name: "经典 QQ",
+                               previewPath: appearanceDirectory.appendingPathComponent("qq-preview.png").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("qq-bg.png").path,
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "peace", name: "和平精英激战金秋",
+                               previewPath: appearanceDirectory.appendingPathComponent("peace-preview.jpg").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("peace-bg.png").path,
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "journey", name: "同行",
+                               previewPath: appearanceDirectory.appendingPathComponent("journey-preview.jpg").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("journey-bg.png").path,
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "ripple", name: "涟漪",
+                               previewPath: appearanceDirectory.appendingPathComponent("ripple-preview.jpg").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("ripple-bg.png").path,
+                               colorScheme: "light"),
+            AppearanceThemeRow(id: "buddy", name: "伙伴",
+                               previewPath: appearanceDirectory.appendingPathComponent("buddy-preview.jpg").path,
+                               coverPath: appearanceDirectory.appendingPathComponent("buddy-bg.png").path,
+                               colorScheme: "light"),
+        ]
         window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .appearance))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("appearance.png")

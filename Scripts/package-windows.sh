@@ -40,8 +40,10 @@ PAYLOAD="$WORK_DIR/payload"
 mkdir -p "$PAYLOAD" "$OUTPUT_DIR"
 
 cp "$SOURCE_DIR/injector.mjs" "$SOURCE_DIR/injection.js" "$SOURCE_DIR/model-config.mjs" \
-   "$SOURCE_DIR/agents-config.mjs" "$SOURCE_DIR/AGENTS.template.md" "$SOURCE_DIR/channel-config.mjs" "$SOURCE_DIR/proxy.mjs" \
+   "$SOURCE_DIR/agents-config.mjs" "$SOURCE_DIR/appearance-config.mjs" "$SOURCE_DIR/AGENTS.template.md" \
+   "$SOURCE_DIR/channel-config.mjs" "$SOURCE_DIR/proxy.mjs" \
    "$SOURCE_DIR/StatusMenu.ps1" "$PAYLOAD/"
+cp -R "$RESOURCE_DIR/Appearance" "$PAYLOAD/Appearance"
 cp "$SCRIPT_DIR/GPTSwitch.ps1" "$PAYLOAD/GPT Switch.ps1"
 
 ICON="$WORK_DIR/AppIcon.ico"

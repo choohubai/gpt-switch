@@ -21,8 +21,12 @@ import {
   startProxy, proxyBaseUrl, switchProxyAndRestart, pickerModelsFromState, pickerGroupNameFromState,
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
+import {
+  appearanceNativeMode, appearancePanelState, appearanceRuntimeTheme,
+  readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
+} from "./appearance-config.mjs";
 
-const VERSION = "0.1.52";
+const VERSION = "0.1.53";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -45,7 +49,11 @@ const STATUS_MENU_PATH = path.join(SCRIPT_DIR, "GPTSwitchStatusMenu");
 const STATUS_ICON_PATH = path.join(SCRIPT_DIR, "MenuBarIcon.png");
 const WINDOWS_PANEL_PATH = path.join(SCRIPT_DIR, "StatusMenu.ps1");
 const WINDOWS_PANEL_ICON = path.join(SCRIPT_DIR, "AppIcon.ico");
+const APPEARANCE_RESOURCE_DIR = fs.existsSync(path.join(SCRIPT_DIR, "Appearance"))
+  ? path.join(SCRIPT_DIR, "Appearance")
+  : path.join(SCRIPT_DIR, "..", "Resources", "Appearance");
 const BUNDLE_ID = "com.openai.codex";
+const NATIVE_APPEARANCE_BINDING = "__gptSwitchNativeAppearanceChanged";
 let statusMenuProcess = null;
 let proxyServer = null;
 let proxyHost = "";
@@ -529,22 +537,25 @@ const getFreePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const buildInjectionSource = (models, groupName = "", groupNames = []) => {
+const buildInjectionSource = (models, groupName = "", groupNames = [], appearance = null) => {
   const template = fs.readFileSync(path.join(SCRIPT_DIR, "injection.js"), "utf8");
   const modelMarker = "const BOOT_MODELS = [];";
   const groupMarker = 'const DEFAULT_GROUP_NAME = "";';
   const groupNamesMarker = "const KNOWN_GROUP_NAMES = [];";
   const prefixMarker = 'const MODEL_ID_PREFIX = "";';
+  const appearanceMarker = "const BOOT_APPEARANCE = null;";
   if (!template.includes(modelMarker)) throw new Error("Injection template marker is missing");
   if (!template.includes(groupMarker)) throw new Error("Injection group marker is missing");
   if (!template.includes(groupNamesMarker)) throw new Error("Injection group names marker is missing");
   if (!template.includes(prefixMarker)) throw new Error("Injection model prefix marker is missing");
+  if (!template.includes(appearanceMarker)) throw new Error("Injection appearance marker is missing");
   // 用函数式替换：模型名和渠道名是用户内容，直接当替换串时 `$&` 这类片段会被当成替换模式。
   return template
     .replace(modelMarker, () => `const BOOT_MODELS = ${JSON.stringify(models)};`)
     .replace(groupMarker, () => `const DEFAULT_GROUP_NAME = ${JSON.stringify(groupName)};`)
     .replace(groupNamesMarker, () => `const KNOWN_GROUP_NAMES = ${JSON.stringify(groupNames)};`)
-    .replace(prefixMarker, () => `const MODEL_ID_PREFIX = ${JSON.stringify(MODEL_PREFIX)};`);
+    .replace(prefixMarker, () => `const MODEL_ID_PREFIX = ${JSON.stringify(MODEL_PREFIX)};`)
+    .replace(appearanceMarker, () => `const BOOT_APPEARANCE = ${JSON.stringify(appearance)};`);
 };
 
 const fetchJson = async (url, timeoutMs = 1500, headers = null) => {
@@ -669,8 +680,10 @@ class BrowserWatch {
 }
 
 class CDPSession {
-  constructor(target) {
+  constructor(target, { onNativeAppearanceChange = null, onBindingError = null } = {}) {
     this.target = target;
+    this.onNativeAppearanceChange = onNativeAppearanceChange;
+    this.onBindingError = onBindingError;
     this.nextId = 1;
     this.pending = new Map();
     this.closed = false;
@@ -698,7 +711,20 @@ class CDPSession {
       } catch {
         return;
       }
-      if (message.id == null) return;
+      if (message.id == null) {
+        if (
+          message.method === "Runtime.bindingCalled"
+          && message.params?.name === NATIVE_APPEARANCE_BINDING
+          && this.onNativeAppearanceChange
+        ) {
+          try {
+            this.onNativeAppearanceChange(JSON.parse(message.params.payload));
+          } catch {
+            // 广播负载异常不能打断后续 CDP 命令。
+          }
+        }
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -715,6 +741,12 @@ class CDPSession {
     });
 
     await this.command("Page.enable");
+    try {
+      await this.command("Runtime.enable");
+      await this.command("Runtime.addBinding", { name: NATIVE_APPEARANCE_BINDING });
+    } catch (error) {
+      this.onBindingError?.(error);
+    }
   }
 
   command(method, params = {}) {
@@ -768,6 +800,88 @@ class CDPSession {
       throw new Error(description);
     }
     return evaluated.result?.value || null;
+  }
+
+  /// 通过主窗口的 Electron bridge 热更新 ChatGPT 原生明暗模式，并等待设置落盘响应。
+  async setNativeAppearanceTheme(themeId) {
+    const mode = appearanceNativeMode(themeId);
+    const requestId = `gpt-switch-native-theme-${crypto.randomUUID()}`;
+    const expression = `(async () => {
+      const requestId = ${JSON.stringify(requestId)};
+      const bridge = window.electronBridge;
+      if (typeof bridge?.sendMessageFromView !== "function") {
+        throw new Error("ChatGPT 原生外观设置接口不可用");
+      }
+      let cleanup = () => {};
+      const responsePromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error("ChatGPT 原生外观设置超时"));
+        }, 5000);
+        const listener = (event) => {
+          const response = event.data;
+          if (response?.type !== "fetch-response" || response?.requestId !== requestId) return;
+          cleanup();
+          if (response.responseType !== "success") {
+            reject(new Error(response.error || "ChatGPT 原生外观设置失败"));
+            return;
+          }
+          resolve(response);
+        };
+        cleanup = () => {
+          clearTimeout(timeout);
+          window.removeEventListener("message", listener);
+        };
+        window.addEventListener("message", listener);
+      });
+      try {
+        await bridge.sendMessageFromView({
+          type: "fetch",
+          requestId,
+          url: "vscode://codex/set-setting",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key: "appearanceTheme", value: ${JSON.stringify(mode)} }),
+          responsePriority: "normal",
+        });
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
+      const response = await responsePromise;
+      const result = response.bodyJsonString ? JSON.parse(response.bodyJsonString) : null;
+      if (result?.success !== true) throw new Error("ChatGPT 原生外观设置未生效");
+      return { success: true, mode: ${JSON.stringify(mode)} };
+    })()`;
+    const evaluated = await this.command("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      allowUnsafeEvalBlockedByCSP: true,
+    });
+    if (evaluated.exceptionDetails) {
+      const description = evaluated.exceptionDetails.exception?.description
+        || evaluated.exceptionDetails.text
+        || "ChatGPT 原生外观设置失败";
+      throw new Error(description);
+    }
+    if (evaluated.result?.value?.success !== true) {
+      throw new Error("ChatGPT 原生外观设置未生效");
+    }
+    return mode;
+  }
+
+  /// 读取桥接层当前真实模式；排队较久的广播必须用它剔除其他窗口迟到的旧回声。
+  async getNativeAppearanceMode() {
+    const evaluated = await this.command("Runtime.evaluate", {
+      expression: `(() => {
+        const mode = window.electronBridge?.getSystemThemeVariant?.();
+        return mode === "dark" || mode === "light" ? mode : null;
+      })()`,
+      returnByValue: true,
+    });
+    const mode = evaluated?.result?.value;
+    return mode === "dark" || mode === "light" ? mode : null;
   }
 
   close() {
@@ -826,6 +940,7 @@ const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
 const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
 const PROXY_CONFIG = path.join(HOME, ".gptswitch", "proxy.json");
 const AGENTS_STATE = path.join(HOME, ".gptswitch", "agents.json");
+const APPEARANCE_CONFIG = path.join(HOME, ".gptswitch", "appearance.json");
 
 /// 渠道配置不存在时按这个顺序找老配置导入：本插件旧目录、更早的 CodexModelUnlocker 目录。
 const channelImportOptions = () => ({
@@ -1038,45 +1153,320 @@ const main = async () => {
   // CDP 目标变化由 BrowserWatch 推过来，平时完全不用醒；事件漏了还有兜底轮询。
   let browserWatch = null;
   let targetsDirty = true;
+  let targetEventRevision = 0;
   let lastTargetPoll = 0;
   const markTargetsDirty = () => {
+    targetEventRevision += 1;
     targetsDirty = true;
     if (wakePolling) wakePolling();
   };
   const sessions = new Map();
+  let programmaticNativeAppearance = null;
+  let programmaticNativeAppearanceTimer = null;
+  const clearProgrammaticNativeAppearance = () => {
+    programmaticNativeAppearance = null;
+    if (programmaticNativeAppearanceTimer) clearTimeout(programmaticNativeAppearanceTimer);
+    programmaticNativeAppearanceTimer = null;
+  };
+  /// 程序性 set-setting 也会广播；按窗口数只吞掉这次操作产生的匹配事件，用户改另一模式仍会生效。
+  const expectProgrammaticNativeAppearance = (theme, expectedCount = 1) => {
+    const mode = appearanceNativeMode(theme);
+    programmaticNativeAppearance = {
+      mode,
+      remaining: Math.max(1, expectedCount),
+      expiresAt: Date.now() + 6000,
+    };
+    if (programmaticNativeAppearanceTimer) clearTimeout(programmaticNativeAppearanceTimer);
+    programmaticNativeAppearanceTimer = setTimeout(() => {
+      programmaticNativeAppearance = null;
+      programmaticNativeAppearanceTimer = null;
+    }, 6500);
+    programmaticNativeAppearanceTimer.unref?.();
+    return mode;
+  };
+  const consumeProgrammaticNativeAppearance = (mode) => {
+    const expected = programmaticNativeAppearance;
+    if (!expected || Date.now() >= expected.expiresAt) {
+      clearProgrammaticNativeAppearance();
+      return false;
+    }
+    if (expected.mode !== mode) {
+      clearProgrammaticNativeAppearance();
+      return false;
+    }
+    expected.remaining -= 1;
+    if (expected.remaining <= 0) clearProgrammaticNativeAppearance();
+    return true;
+  };
+  const isDesktopRendererTarget = (target) => (
+    target?.type === "page"
+    && String(target.url || "").startsWith("app://-/index.html")
+    && !String(target.url || "").includes("avatar-overlay")
+  );
+  const currentNativeAppearanceMode = async (activeSessions) => {
+    let lastError = null;
+    for (const session of activeSessions) {
+      if (!isDesktopRendererTarget(session.target)) continue;
+      try {
+        const mode = await session.getNativeAppearanceMode();
+        if (mode) return mode;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("未读到 ChatGPT 当前原生外观");
+  };
+  /**
+   * 原生明暗模式需要先于主题样式生效；多个 target 中只有主窗口提供 Electron bridge，
+   * 因此按顺序重试，任一主窗口成功即可。
+   */
+  const syncNativeAppearanceMode = async (activeSessions, theme) => {
+    let lastError = null;
+    for (const session of activeSessions) {
+      if (!isDesktopRendererTarget(session.target)) continue;
+      try {
+        return await session.setNativeAppearanceTheme(theme);
+      } catch (error) {
+        lastError = error;
+        log("appearance_native_sync_failed", {
+          targetId: session.target?.id,
+          error: String(error?.message || error),
+        });
+      }
+    }
+    throw lastError || new Error("未找到可设置 ChatGPT 原生外观的主窗口");
+  };
+  let hotRefreshQueue = Promise.resolve();
+  const queueHotRefresh = (operation) => {
+    const next = hotRefreshQueue.catch(() => {}).then(operation);
+    hotRefreshQueue = next.catch(() => {});
+    return next;
+  };
   let models = [];
   let port = 0;
   let source = "";
   let appMissingSince = null;
-
-  const injectTargets = async (targets) => {
-    const activeIds = new Set(targets.map((target) => target.id));
-    for (const [id, session] of sessions) {
-      if (!activeIds.has(id) || session.closed) {
-        session.close();
-        sessions.delete(id);
-      }
+  /// 按外观状态重建模型与主题 source；注入失败时不会提前覆盖当前运行态。
+  const buildAppearanceRuntime = (appearanceState) => {
+    const state = visiblePickerState();
+    const nextModels = state.current ? pickerModelsFromState(state) : [];
+    const appearance = appearanceRuntimeTheme(appearanceState, APPEARANCE_RESOURCE_DIR);
+    const nextSource = buildInjectionSource(
+      nextModels,
+      pickerGroupNameFromState(state),
+      pickerChannelNamesFromState(state),
+      appearance,
+    );
+    return { nextModels, nextSource };
+  };
+  /// 回滚时窗口已全部失联也必须把后续自愈目标切回磁盘中的旧主题。
+  const setAppearanceRuntimeState = (appearanceState) => {
+    const next = buildAppearanceRuntime(appearanceState);
+    models = next.nextModels;
+    source = next.nextSource;
+    return next;
+  };
+  /**
+   * 把当前文件中的主题推给所有活动窗口；原生外观广播和面板选择共用这条链路。
+   */
+  const applyAppearanceTheme = async (activeSessions, appearanceState) => {
+    const { nextModels, nextSource } = buildAppearanceRuntime(appearanceState);
+    const results = await Promise.allSettled(
+      activeSessions.map((session) => session.inject(nextSource)),
+    );
+    const failures = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") return;
+      const session = activeSessions[index];
+      failures.push({
+        targetId: session.target?.id,
+        error: String(result.reason?.message || result.reason),
+      });
+      session.close();
+      if (sessions.get(session.target?.id) === session) sessions.delete(session.target?.id);
+    });
+    if (failures.length === results.length) {
+      throw new Error(`主题未应用到任何 ChatGPT 窗口：${failures[0]?.error || "未知错误"}`);
     }
+    if (failures.length > 0) log("appearance_apply_partial", { failures });
+    models = nextModels;
+    source = nextSource;
+    return true;
+  };
 
-    if (models.length === 0) return;
-    for (const target of targets) {
-      if (sessions.has(target.id)) continue;
-      const session = new CDPSession(target);
+  /// 面板保持打开时也同步卡片和“跟随原生”状态，避免选择仍停在已失效的主题上。
+  const notifyAppearancePanel = () => {
+    if (!statusMenuProcess || statusMenuProcess.stdin.destroyed) return;
+    const payload = {
+      event: "appearance-updated",
+      version: VERSION,
+      appearance: appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR),
+    };
+    try {
+      statusMenuProcess.stdin.write(`${JSON.stringify(payload)}\n`);
+    } catch (error) {
+      log("appearance_panel_sync_failed", String(error?.message || error));
+    }
+  };
+
+  /**
+   * Codex 原生模式广播是用户主动设置的最终来源：暂停覆盖并持久化，
+   * 用户之后点击任一主题卡片时再由 writeAppearanceTheme 重新启用。
+   */
+  const handleNativeAppearanceChange = (change) => {
+    const mode = change?.mode;
+    if (mode !== "dark" && mode !== "light") return;
+    return queueHotRefresh(async () => {
+      // 首次注入时 binding 可能先到；等这轮 target 同步结束，避免同会话并发替换脚本。
+      await targetSync;
+      const activeSessions = [...sessions.values()].filter((session) => !session.closed);
+      if (activeSessions.length === 0) return false;
+      let actualMode = mode;
       try {
-        await session.connect();
-        const result = await session.inject(source);
-        sessions.set(target.id, session);
-        log("target_injected", {
-          targetId: target.id,
-          title: target.title,
-          url: target.url,
-          result,
-        });
+        actualMode = await currentNativeAppearanceMode(activeSessions);
       } catch (error) {
-        session.close();
-        log("target_injection_failed", { targetId: target.id, error: String(error?.message || error) });
+        log("appearance_native_mode_read_failed", String(error?.message || error));
       }
-    }
+      if (actualMode !== mode) {
+        log("appearance_native_event_stale", { reported: mode, actual: actualMode });
+        return false;
+      }
+      if (consumeProgrammaticNativeAppearance(actualMode)) return false;
+      const previous = readAppearanceState(APPEARANCE_CONFIG);
+      if (previous.followNative && previous.nativeMode === actualMode) return false;
+      const next = {
+        ...previous,
+        theme: actualMode,
+        followNative: true,
+        nativeMode: actualMode,
+      };
+      // 先确认运行时能撤下覆盖，再持久化；写盘失败则恢复上一份运行时主题。
+      await applyAppearanceTheme(activeSessions, next);
+      try {
+        writeNativeAppearanceOverride(APPEARANCE_CONFIG, actualMode);
+      } catch (error) {
+        await applyAppearanceTheme(activeSessions, previous).catch((rollbackError) => {
+          log("appearance_native_rollback_failed", String(rollbackError?.message || rollbackError));
+          setAppearanceRuntimeState(previous);
+        });
+        throw error;
+      }
+      notifyAppearancePanel();
+      log("appearance_follow_native", { mode: actualMode });
+      return true;
+    }).catch((error) => log("appearance_native_override_failed", String(error?.message || error)));
+  };
+
+  /**
+   * 串行同步 CDP 目标；主循环和异步 restart 会交错调用，必须避免同一 target 竞争覆盖会话。
+   * 页面重载后 targetId 可能不变，已有会话还要确认注入运行时仍在。
+   */
+  let injectionGeneration = 0;
+  let targetSync = Promise.resolve();
+  const injectTargets = (targets, { nativeAppearanceTheme = null } = {}) => {
+    const run = targetSync.then(async () => {
+      const generation = injectionGeneration;
+      const injectionSource = source;
+      const stale = () => generation !== injectionGeneration;
+      let nativeAppearanceSynced = nativeAppearanceTheme == null;
+      const activeIds = new Set(targets.map((target) => target.id));
+      for (const [id, session] of sessions) {
+        if (!activeIds.has(id) || session.closed) {
+          session.close();
+          sessions.delete(id);
+        }
+      }
+
+      if (!injectionSource || stale()) return;
+      for (const target of targets) {
+        const existing = sessions.get(target.id);
+        let recovered = false;
+        if (existing) {
+          let runtimePresent = false;
+          try {
+            const inspected = await existing.command("Runtime.evaluate", {
+              // 全局对象存在不代表页面刷新循环还活着；顺手触发一次刷新，
+              // 这样 React 重渲染撤掉分组节点或注入器自愈失败时也能恢复。
+              expression: `(() => {
+                const runtime = window.__GPT_SWITCH__;
+                if (!runtime || runtime.disposed || typeof runtime.refresh !== "function") return false;
+                runtime.refresh();
+                return true;
+              })()`,
+              returnByValue: true,
+            });
+            runtimePresent = inspected?.result?.value === true;
+          } catch {
+            // 页面正在导航时执行上下文可能暂时不可用，按丢失处理并重新建连。
+          }
+          if (stale()) return;
+          if (runtimePresent) continue;
+
+          existing.close();
+          sessions.delete(target.id);
+          recovered = true;
+          log("target_injection_lost", {
+            targetId: target.id,
+            title: target.title,
+            url: target.url,
+          });
+        }
+        const session = new CDPSession(target, {
+          onNativeAppearanceChange: handleNativeAppearanceChange,
+          onBindingError: (error) => log("appearance_binding_failed", {
+            targetId: target.id,
+            error: String(error?.message || error),
+          }),
+        });
+        try {
+          await session.connect();
+          if (stale()) {
+            session.close();
+            return;
+          }
+          // 注入脚本可能马上上报原生模式不匹配；先登记会话，避免首条 binding 丢失。
+          sessions.set(target.id, session);
+          if (!nativeAppearanceSynced) {
+            try {
+              await syncNativeAppearanceMode([session], nativeAppearanceTheme);
+              nativeAppearanceSynced = true;
+            } catch (error) {
+              if (sessions.get(target.id) === session) sessions.delete(target.id);
+              session.close();
+              log("target_native_sync_failed", {
+                targetId: target.id,
+                error: String(error?.message || error),
+              });
+              continue;
+            }
+          }
+          const result = await session.inject(injectionSource);
+          if (stale()) {
+            if (sessions.get(target.id) === session) sessions.delete(target.id);
+            session.close();
+            log("target_injection_stale", {
+              targetId: target.id,
+              title: target.title,
+              url: target.url,
+            });
+            return;
+          }
+          log("target_injected", {
+            targetId: target.id,
+            title: target.title,
+            url: target.url,
+            result,
+            recovered,
+          });
+        } catch (error) {
+          if (sessions.get(target.id) === session) sessions.delete(target.id);
+          session.close();
+          log("target_injection_failed", { targetId: target.id, error: String(error?.message || error) });
+        }
+      }
+    });
+    targetSync = run.catch(() => {});
+    return run;
   };
 
   const restart = async (existingPort = 0) => {
@@ -1088,6 +1478,7 @@ const main = async () => {
         throw new Error("ChatGPT 未能正常退出；请稍后重试");
       }
     }
+    injectionGeneration += 1;
     for (const session of sessions.values()) session.close();
     sessions.clear();
     port = 0;
@@ -1096,24 +1487,35 @@ const main = async () => {
     // 那就一个都别注入。面板送回的那份模型列表只用来落盘，不决定注入内容。
     const state = visiblePickerState();
     models = state.current ? pickerModelsFromState(state) : [];
-    source = models.length
-      ? buildInjectionSource(models, pickerGroupNameFromState(state), pickerChannelNamesFromState(state))
-      : "";
+    const appearanceState = readAppearanceState(APPEARANCE_CONFIG);
+    const appearance = appearanceRuntimeTheme(appearanceState, APPEARANCE_RESOURCE_DIR);
+    source = buildInjectionSource(
+      models,
+      pickerGroupNameFromState(state),
+      pickerChannelNamesFromState(state),
+      appearance,
+    );
     const nextPort = existingPort || await getFreePort();
     if (!existingPort) await launchApp(target, nextPort);
-    const targets = await waitForTargets(nextPort);
+    const eventRevision = targetEventRevision;
+    // 现有端口只是热刷新，页面短暂重载时最多等 2 秒；冷启动才允许等渲染进程完整起来。
+    const targets = await waitForTargets(nextPort, existingPort ? 2000 : 30_000);
     port = nextPort;
     // 端口确认可用后再连事件通道；刚启动时连不上会一直退回轮询。
     browserWatch?.close();
     browserWatch = new BrowserWatch(nextPort, markTargetsDirty);
     // 连不上不影响功能：没有事件就退回轮询。
     browserWatch.connect().catch((error) => log("browser_watch_failed", String(error?.message || error)));
-    await injectTargets(targets);
-    // 这一轮已经抓过目标了，别让主循环紧接着再抓一次。
-    targetsDirty = false;
+    await injectTargets(targets, existingPort ? {} : {
+      nativeAppearanceTheme: appearanceState.followNative ? null : appearanceState.theme,
+    });
+    // 等待期间出现的新 target 不在这份快照里，必须保留事件唤醒立即补扫。
+    targetsDirty = targetEventRevision !== eventRevision;
     lastTargetPoll = Date.now();
-    if (models.length > 0 && sessions.size === 0) throw new Error("模型注入失败，请重试并检查插件日志");
-    log("launcher_started", { version: VERSION, appPath: target, port, models });
+    if (source && sessions.size === 0) throw new Error("插件注入失败，请重试并检查插件日志");
+    log("launcher_started", {
+      version: VERSION, appPath: target, port, models, appearance: appearance?.id,
+    });
     writeState({ pid: process.pid, version: VERSION, appPath: target, port, models, startedAt: Date.now() });
   };
 
@@ -1149,6 +1551,39 @@ const main = async () => {
       return { ok: true, quitting: true, version: VERSION };
     }
     if (request?.action === "check-update") return checkForUpdate();
+    if (request?.action === "save" && request?.scope === "appearance") {
+      try {
+        const theme = writeAppearanceTheme(APPEARANCE_CONFIG, request.theme);
+        let applied = false;
+        try {
+          applied = await queueHotRefresh(async () => {
+            const activeSessions = [...sessions.values()].filter((session) => !session.closed);
+            if (activeSessions.length === 0) return false;
+            expectProgrammaticNativeAppearance(theme, activeSessions.length);
+            await syncNativeAppearanceMode(activeSessions, theme);
+            return await applyAppearanceTheme(activeSessions, readAppearanceState(APPEARANCE_CONFIG));
+          });
+        } catch (error) {
+          // 配置已经落盘；热应用异常只记录原因，面板统一提示重启后可生效。
+          log("appearance_refresh_failed", String(error?.message || error));
+        }
+        return {
+          ok: true,
+          saved: true,
+          version: VERSION,
+          applied,
+          restartRequired: !applied,
+          appearance: appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR),
+          theme,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          version: VERSION,
+          error: `保存外观主题失败：${String(error?.message || error)}`,
+        };
+      }
+    }
     const answer = await handlePanelRequest(request, {
       configPath: CHANNELS_CONFIG,
       proxyConfigPath: PROXY_CONFIG,
@@ -1215,12 +1650,16 @@ const main = async () => {
       },
       clearCatalog: () => clearCatalog(clientPath()),
     });
+    if (request?.action === "load" && answer?.ok) {
+      answer.appearance = appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR);
+    }
     // 等客户端把自己的那份配置写完（实测启动后约 8 秒）再看一眼，只记录不修改。
     if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
     // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
     // 不能 await：客户端没在跑时 waitForTargets 要等满 30 秒，面板会一直转圈。
     if (request?.action === "save" && request.scope !== "proxy" && request.scope !== "agents" && answer?.ok && port) {
-      restart(port).catch((error) => log("panel_refresh_failed", String(error?.message || error)));
+      queueHotRefresh(() => restart(port))
+        .catch((error) => log("panel_refresh_failed", String(error?.message || error)));
     }
     return { ...answer, version: VERSION };
   };

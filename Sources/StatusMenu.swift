@@ -8,6 +8,16 @@ private func appearanceColor(light: NSColor, dark: NSColor) -> Color {
     })
 }
 
+/// 后端主题目录可以给纯色卡片一个十六进制色值；解析失败时仍退回系统色。
+private func appearanceHexColor(_ value: String, fallback: Color) -> Color {
+    let digits = value.hasPrefix("#") ? String(value.dropFirst()) : value
+    guard digits.count == 6, let number = UInt64(digits, radix: 16) else { return fallback }
+    return Color(
+        red: Double((number >> 16) & 0xff) / 255,
+        green: Double((number >> 8) & 0xff) / 255,
+        blue: Double(number & 0xff) / 255)
+}
+
 /// 面板使用 WorkBuddy 同系的低饱和绿色；系统 accent 被改掉时界面也不会跟着走样。
 private let accentTop = appearanceColor(
     light: NSColor(calibratedRed: 0.25, green: 0.49, blue: 0.30, alpha: 1),
@@ -173,6 +183,25 @@ struct DiscoveredModel: Decodable {
     let context: Int?
 }
 
+struct AppearanceThemeRow: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let previewPath: String
+    let coverPath: String
+    let cardBackground: String
+    let colorScheme: String
+
+    init(id: String, name: String, previewPath: String, coverPath: String = "",
+         cardBackground: String = "", colorScheme: String) {
+        self.id = id
+        self.name = name
+        self.previewPath = previewPath
+        self.coverPath = coverPath
+        self.cardBackground = cardBackground
+        self.colorScheme = colorScheme
+    }
+}
+
 func isVersion(_ candidate: String, newerThan base: String) -> Bool {
     func parts(_ value: String) -> [Int] {
         value.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 }
@@ -197,11 +226,17 @@ final class PanelStore: ObservableObject {
     @Published var savedProxyHost = "127.0.0.1"
     @Published var savedProxyPort = "47123"
     @Published var agentsContent = ""
+    @Published var savedAgentsContent = ""
     @Published var agentsBackupPath = ""
     @Published var agentsSource = ""
     @Published var agentsError = ""
     @Published var agentsEnabled = false
     @Published var savedAgentsEnabled = false
+    @Published var appearanceTheme = "light"
+    @Published var appearanceFollowNative = false
+    @Published var appearanceNativeMode = "light"
+    @Published var appearanceThemes: [AppearanceThemeRow] = []
+    @Published var savingAppearance = false
     @Published var savingAgents = false
     @Published var savingProxy = false
     @Published var currentChannelID: String?
@@ -233,6 +268,10 @@ final class PanelStore: ObservableObject {
     private(set) var editingActiveChannel = false
     /// 要落盘的改动（删渠道、翻开关）先在这里留一份原文，存盘失败时放回去，别让面板和文件对不上。
     private var pendingRestore: [ChannelRow]?
+    /// 主题保存失败时恢复到这里，避免卡片看起来已经切换但配置文件没有写成功。
+    private var appearanceThemeBeforeSave = "light"
+    private var appearanceFollowNativeBeforeSave = false
+    private var appearanceNativeModeBeforeSave = "light"
     /// 编辑页点「保存」：落盘成功后回列表页（重启入口在那边），失败就留在原地。
     private var leaveEditorAfterSave = false
     /// 上一次写进客户端的那份渠道列表（读完配置时、重启或清空成功后各记一次）。
@@ -248,7 +287,7 @@ final class PanelStore: ObservableObject {
     var hasChannel: Bool { activeChannel != nil }
     /// 代理页也有自己的保存按钮；未保存的代理输入不能把模型页的「保存」和右上角重启拖住。
     var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
-    var agentsDirty: Bool { agentsEnabled != savedAgentsEnabled }
+    var agentsDirty: Bool { agentsContent != savedAgentsContent || agentsEnabled != savedAgentsEnabled }
     var isDirty: Bool { channels != savedChannels }
 
     /// 输入阶段就按后端的 Provider ID 规则校验，别等整份列表保存时才报错。
@@ -426,21 +465,51 @@ final class PanelStore: ObservableObject {
         ])
     }
 
-    /// 把插件内固定模板写入用户的 Codex 公共指令；写入前由后端备份原文件。
+    /// 保存可编辑草稿；启用时由本地注入器在写入前备份并合并用户 AGENTS.md。
     func saveAgents() {
-        guard loaded, !busy else { return }
+        guard loaded, !busy, agentsDirty else { return }
         busy = true
         savingAgents = true
-        feedback = "正在写入公共指令…"
+        feedback = "正在保存公共指令…"
         feedbackIsError = false
-        send(["action": "save", "restart": false, "scope": "agents", "enabled": agentsEnabled])
+        send([
+            "action": "save",
+            "restart": false,
+            "scope": "agents",
+            "agents": ["content": agentsContent, "enabled": agentsEnabled],
+        ])
     }
 
-    func discardAgentsDraft() { agentsEnabled = savedAgentsEnabled }
+    /// 离开 Agents 页时同时丢弃未保存的正文和开关。
+    func discardAgentsDraft() {
+        agentsContent = savedAgentsContent
+        agentsEnabled = savedAgentsEnabled
+    }
+
+    /// 主题卡片即选即存；保存失败时恢复原主题，尚未热应用时提示重启后生效。
+    func selectAppearanceTheme(_ theme: AppearanceThemeRow) {
+        guard loaded, !busy, !savingAppearance,
+              appearanceFollowNative || appearanceTheme != theme.id else { return }
+        appearanceThemeBeforeSave = appearanceTheme
+        appearanceFollowNativeBeforeSave = appearanceFollowNative
+        appearanceNativeModeBeforeSave = appearanceNativeMode
+        appearanceTheme = theme.id
+        appearanceFollowNative = false
+        busy = true
+        savingAppearance = true
+        feedback = "正在应用「\(theme.name)」…"
+        feedbackIsError = false
+        send([
+            "action": "save",
+            "restart": false,
+            "scope": "appearance",
+            "theme": theme.id,
+        ])
+    }
 
     /// 右上角的「重启」：重新写一遍 ChatGPT 配置和全部渠道的模型目录，然后重启。
     func applyAndRestart() {
-        guard loaded, !busy, !channels.isEmpty else { return }
+        guard loaded, !busy else { return }
         submit(action: "switch", currentID: currentChannelID ?? "")
     }
 
@@ -456,7 +525,7 @@ final class PanelStore: ObservableObject {
     }
 
     func requestRestart() {
-        guard loaded, !busy, !channels.isEmpty else { return }
+        guard loaded, !busy else { return }
         restartPrompt = true
     }
 
@@ -471,7 +540,7 @@ final class PanelStore: ObservableObject {
     }
 
     var canRestart: Bool {
-        loaded && !busy && !channels.isEmpty
+        loaded && !busy
     }
 
     var canSaveProxy: Bool {
@@ -559,11 +628,20 @@ final class PanelStore: ObservableObject {
         if let value = response["agents"] as? [String: Any],
            let content = value["content"] as? String {
             agentsContent = content
+            savedAgentsContent = content
             agentsSource = value["source"] as? String ?? ""
             agentsBackupPath = value["backupPath"] as? String ?? ""
             agentsError = value["error"] as? String ?? ""
             agentsEnabled = value["enabled"] as? Bool ?? false
             savedAgentsEnabled = agentsEnabled
+        }
+        if let value = response["appearance"] as? [String: Any] {
+            applyAppearance(value)
+            if response["event"] as? String == "appearance-updated" {
+                feedback = ""
+                feedbackIsError = false
+                return
+            }
         }
         if checkingUpdate {
             finishUpdateCheck(response)
@@ -571,6 +649,29 @@ final class PanelStore: ObservableObject {
         }
         if fetchingModels {
             finishModelFetch(response)
+            return
+        }
+        if savingAppearance {
+            savingAppearance = false
+            busy = false
+            if response["ok"] as? Bool == true,
+               let value = response["appearance"] as? [String: Any] {
+                applyAppearance(value)
+                if response["restartRequired"] as? Bool == true {
+                    feedback = "主题已保存，重启 ChatGPT 后生效"
+                    feedbackIsError = false
+                } else {
+                    let name = appearanceThemes.first(where: { $0.id == appearanceTheme })?.name ?? appearanceTheme
+                    feedback = "已切换到「\(name)」并应用到 ChatGPT"
+                    feedbackIsError = false
+                }
+            } else {
+                appearanceTheme = appearanceThemeBeforeSave
+                appearanceFollowNative = appearanceFollowNativeBeforeSave
+                appearanceNativeMode = appearanceNativeModeBeforeSave
+                feedback = response["error"] as? String ?? "应用外观主题失败"
+                feedbackIsError = true
+            }
             return
         }
         if savingProxy {
@@ -599,15 +700,16 @@ final class PanelStore: ObservableObject {
                let value = response["agents"] as? [String: Any],
                let content = value["content"] as? String {
                 agentsContent = content
+                savedAgentsContent = content
                 agentsSource = value["source"] as? String ?? ""
                 agentsBackupPath = value["backupPath"] as? String ?? ""
                 agentsError = ""
                 agentsEnabled = value["enabled"] as? Bool ?? false
                 savedAgentsEnabled = agentsEnabled
                 let keptUserFile = value["keptUserFile"] as? Bool == true
-                feedback = agentsEnabled
-                    ? (keptUserFile ? "公共指令已启用，原配置已备份" : "公共指令已启用")
-                    : "公共指令已停用，用户原有配置保留"
+                feedback = keptUserFile && !agentsBackupPath.isEmpty
+                    ? "公共指令已同步，原文件已备份"
+                    : "公共指令已保存"
                 feedbackIsError = false
             } else {
                 feedback = response["error"] as? String ?? "保存公共指令失败"
@@ -662,6 +764,28 @@ final class PanelStore: ObservableObject {
             feedbackIsError = false
             // 读配置：面板刚打开时按「文件里的就是客户端里的」算。
             appliedChannels = channels
+        }
+    }
+
+    /// 双端共用后端主题目录；路径为空时只影响预览图，不影响实际保存主题。
+    private func applyAppearance(_ value: [String: Any]) {
+        if let theme = value["theme"] as? String, !theme.isEmpty {
+            appearanceTheme = theme
+        }
+        appearanceFollowNative = value["followNative"] as? Bool ?? false
+        appearanceNativeMode = value["nativeMode"] as? String ?? "light"
+        if let rows = value["themes"] as? [[String: Any]] {
+            appearanceThemes = rows.compactMap { row in
+                guard let id = row["id"] as? String,
+                      let name = row["name"] as? String else { return nil }
+                return AppearanceThemeRow(
+                    id: id,
+                    name: name,
+                    previewPath: row["previewPath"] as? String ?? "",
+                    coverPath: row["coverPath"] as? String ?? "",
+                    cardBackground: row["cardBackground"] as? String ?? "",
+                    colorScheme: row["colorScheme"] as? String ?? "light")
+            }
         }
     }
 
@@ -859,7 +983,9 @@ struct PanelView: View {
                     AboutView(store: store)
                 case .agents:
                     AgentsSettingsView(store: store)
-                case .general, .appearance, .help:
+                case .appearance:
+                    AppearanceSettingsView(store: store)
+                case .general, .help:
                     EmptyPanelView(store: store, title: selectedSection.rawValue)
                 }
             }
@@ -894,14 +1020,14 @@ struct PanelView: View {
                 set: { presented in if !presented { store.cancelRestart() } })
     }
 
-    /// 离开 Agents 时先拦住未保存的开关；其它导航直接写入 @State，保证菜单立刻刷新。
+    /// 离开 Agents 时先拦住未保存的正文和开关；其它导航直接写入 @State，保证菜单立刻刷新。
     private func guardSectionSelection(_ next: SidebarSection) -> Bool {
         guard next != selectedSection else { return false }
         if store.savingAgents { return false }
         if store.agentsDirty {
             let alert = NSAlert()
-            alert.messageText = "Agents 启用状态尚未保存"
-            alert.informativeText = "要放弃这次切换并离开吗？"
+            alert.messageText = "Agents 有未保存的更改"
+            alert.informativeText = "要放弃草稿并离开吗？"
             alert.addButton(withTitle: "继续编辑")
             alert.addButton(withTitle: "放弃并离开")
             guard alert.runModal() == .alertSecondButtonReturn else { return false }
@@ -928,11 +1054,16 @@ private struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            Text("GPT Switch")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.9))
+                .padding(.horizontal, 14)
+                .padding(.top, 22)
+                .padding(.bottom, 18)
             Text("设置")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 14)
-                .padding(.top, 48)
                 .padding(.bottom, 8)
             ForEach(SidebarSection.settings, id: \.self) { section in
                 SidebarRow(section: section, selection: $selection, onSelect: onSelect)
@@ -1017,7 +1148,7 @@ private struct PanelHeader: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 20, weight: .semibold))
+                Text(title).font(.system(size: 20, weight: .regular))
                 Text(detail)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -1035,6 +1166,221 @@ private struct PanelHeader: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
         }
+    }
+}
+
+/// 主题选择沿用注入器返回的同一份目录；卡片选中后立即保存，顶部和网格共用预览资源。
+private struct AppearanceSettingsView: View {
+    @ObservedObject var store: PanelStore
+
+    private var selectedTheme: AppearanceThemeRow? {
+        store.appearanceThemes.first(where: { $0.id == store.appearanceTheme })
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                store: store,
+                title: "外观",
+                detail: "选择一套主题，立即改变 ChatGPT 的背景、侧栏、输入框和弹窗。",
+                showsRestart: true)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    AppearanceThemePreview(
+                        imagePath: selectedTheme?.previewPath ?? "",
+                        applying: store.savingAppearance,
+                        isDark: selectedTheme?.colorScheme == "dark")
+                        .padding(.bottom, 20)
+
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("全部主题")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("选择后立即应用")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.bottom, 12)
+
+                    if store.appearanceThemes.isEmpty {
+                        HStack(spacing: 8) {
+                            if !store.loaded {
+                                ProgressView().controlSize(.small)
+                            }
+                            Text(store.loaded ? "主题资源不可用" : "正在读取主题…")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 18)
+                    } else {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 112, maximum: 160), spacing: 12)],
+                            alignment: .leading,
+                            spacing: 16
+                        ) {
+                            ForEach(store.appearanceThemes) { theme in
+                                AppearanceThemeCard(
+                                    theme: theme,
+                                    selected: theme.id == store.appearanceTheme,
+                                    disabled: store.busy
+                                ) {
+                                    withAnimation(.easeOut(duration: 0.16)) {
+                                        store.selectAppearanceTheme(theme)
+                                    }
+                                }
+                            }
+                            AppearanceComingSoonCard()
+                        }
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(panelBackground)
+    }
+}
+
+/// 顶部大图按源图比例完整展示，避免容器过宽时拉伸或裁切素材。
+private struct AppearanceThemePreview: View {
+    let imagePath: String
+    let applying: Bool
+    let isDark: Bool
+
+    private var image: NSImage? {
+        NSImage(contentsOfFile: imagePath)
+    }
+
+    private var previewAspectRatio: CGFloat {
+        guard let image, image.size.height > 0 else { return 8.0 / 5.0 }
+        return image.size.width / image.size.height
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    LinearGradient(
+                        colors: isDark
+                            ? [Color(nsColor: .darkGray), Color.black]
+                            : [accentTop.opacity(0.14), accentBottom.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing)
+                }
+                if applying {
+                    Color.black.opacity(0.08)
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(accentBottom)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.09))
+            }
+        }
+        .aspectRatio(previewAspectRatio, contentMode: .fit)
+        .frame(maxWidth: 640)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+private struct AppearanceThemeCard: View {
+    let theme: AppearanceThemeRow
+    let selected: Bool
+    let disabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Button(action: action) {
+                GeometryReader { proxy in
+                    ZStack {
+                        if let image = NSImage(contentsOfFile: theme.coverPath) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                        } else {
+                            appearanceHexColor(
+                                theme.cardBackground,
+                                fallback: theme.colorScheme == "dark" ? Color(nsColor: .darkGray) : Color.white)
+                        }
+                        if selected {
+                            VStack {
+                                HStack {
+                                    Spacer()
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.white, accentBottom)
+                                        .padding(8)
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(
+                                selected ? accentBottom : Color.primary.opacity(hovering ? 0.22 : 0.09),
+                                lineWidth: selected ? 2 : 1)
+                    }
+                    .shadow(
+                        color: .black.opacity(hovering && !selected ? 0.13 : 0.05),
+                        radius: hovering ? 7 : 3,
+                        y: 2)
+                }
+                .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .withoutFocusRing()
+            .pointingHand()
+            .disabled(disabled)
+            .onHover { hovering = $0 }
+            .accessibilityLabel("\(theme.name)主题\(selected ? "，当前使用" : "")")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+
+            Text(theme.name)
+                .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+    }
+}
+
+private struct AppearanceComingSoonCard: View {
+    var body: some View {
+        VStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.055))
+                .aspectRatio(3.0 / 2.0, contentMode: .fit)
+                .overlay {
+                    Text("敬请期待")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.primary.opacity(0.06))
+                }
+            Text(" ")
+                .font(.system(size: 12))
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -1075,7 +1421,7 @@ private struct EmptyPanelView: View {
     }
 }
 
-/// 页面展示插件内置模板；用户点保存后才写入 Codex，不读取其现有 AGENTS.md。
+/// 公共指令默认展示内置模板；用户可以编辑草稿，启用保存后写入 Codex。
 private struct AgentsSettingsView: View {
     @ObservedObject var store: PanelStore
 
@@ -1084,7 +1430,7 @@ private struct AgentsSettingsView: View {
             PanelHeader(
                 store: store,
                 title: "Agents",
-                detail: "按需启用插件内置的公共 Codex 指令。"
+                detail: "维护所有项目共用的 Markdown 指令。"
             ) {
                 HStack(spacing: 16) {
                     HStack(spacing: 8) {
@@ -1093,6 +1439,7 @@ private struct AgentsSettingsView: View {
                             .labelsHidden()
                             .toggleStyle(.switch)
                             .disabled(store.busy)
+                            .help("启用后，保存时把编辑器内容写入 ~/.codex/AGENTS.md")
                     }
                     RestartButton(store: store)
                 }
@@ -1106,19 +1453,14 @@ private struct AgentsSettingsView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    ScrollView {
-                        Text(store.agentsContent)
-                            .font(.system(size: 13, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                    }
-                    .frame(minHeight: 280)
+                    MarkdownTextEditor(text: $store.agentsContent, isEditable: !store.busy)
+                        .frame(minHeight: 280)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 9))
                         .overlay(RoundedRectangle(cornerRadius: 9)
                             .strokeBorder(Color.primary.opacity(0.14)))
-                    Text("启用保存时会备份并保留原有内容；停用保存时只移除插件段。")
+                        .accessibilityLabel("Agents 公共指令")
+                    Text("启用时会先备份原 AGENTS.md；关闭只停止同步，不恢复原文件。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     if !store.agentsBackupPath.isEmpty {
@@ -1135,7 +1477,7 @@ private struct AgentsSettingsView: View {
                     .strokeBorder(Color.primary.opacity(0.07)))
                 HStack {
                     Text(store.agentsError.isEmpty
-                         ? (store.agentsSource == "plugin" ? "内容来自插件内置模板，不读取本机现有指令。" : "")
+                         ? "保存草稿；启用状态下同时写入公共 AGENTS.md。"
                          : store.agentsError)
                         .font(.system(size: 11))
                         .foregroundStyle(store.agentsError.isEmpty ? Color.secondary : Color.red)
@@ -1154,6 +1496,85 @@ private struct AgentsSettingsView: View {
             .padding(.bottom, 20)
         }
         .background(panelBackground)
+    }
+}
+
+/// Markdown 指令必须保留用户输入的直引号、连字符和代码字符，关闭系统文本自动替换。
+private struct MarkdownTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let isEditable: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    /// 创建支持滚动和撤销的纯文本编辑区，并关闭会改写 Markdown 的系统替换。
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        let textView = NSTextView()
+        textView.string = text
+        textView.delegate = context.coordinator
+        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.textColor = .textColor
+        textView.backgroundColor = .clear
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.isEditable = isEditable
+        textView.isSelectable = true
+        textView.allowsUndo = true
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude)
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.smartInsertDeleteEnabled = false
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    /// 只在外部载入或保存回包改变内容时替换文本，避免滚动时反复重置编辑区。
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? NSTextView,
+              textView.string != text else {
+            (scrollView.documentView as? NSTextView)?.isEditable = isEditable
+            return
+        }
+        textView.isEditable = isEditable
+        textView.string = text
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MarkdownTextEditor
+
+        init(parent: MarkdownTextEditor) {
+            self.parent = parent
+        }
+
+        /// 把原生编辑内容同步回面板草稿，驱动未保存状态和保存按钮。
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  parent.text != textView.string else { return }
+            parent.text = textView.string
+        }
     }
 }
 
@@ -2062,7 +2483,7 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         if window == nil { buildPanel() }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        if let store, !store.busy, !store.isDirty {
+        if let store, !store.busy, !store.isDirty, !store.proxyDirty, !store.agentsDirty {
             store.busy = true
             store.feedback = "正在读取配置…"
             sendRequest(["action": "load"])
@@ -2111,7 +2532,16 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
     func canDiscardChanges() -> Bool {
         // 面板还没建过（没打开过面板就点退出）时没有可丢的改动，直接放行。
         guard let store else { return true }
-        guard !store.busy else { return true }
+        if store.savingAgents {
+            #if !STATUS_MENU_TEST
+            let alert = NSAlert()
+            alert.messageText = "正在保存公共指令"
+            alert.informativeText = "请等待保存完成后再关闭或退出。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+            #endif
+            return false
+        }
         guard store.isDirty || store.proxyDirty || store.agentsDirty else { return true }
         #if STATUS_MENU_TEST
         // 自动化测试不能让人工模态框永久等待；只替换按钮选择，仍走同一套回滚。

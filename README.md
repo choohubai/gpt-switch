@@ -56,6 +56,7 @@ GPT Switch 是面向 ChatGPT / Codex 桌面应用的本地模型渠道管理工�
 - **启用、禁用即时生效。** 开关渠道或删除渠道后，模型选择器会立刻更新，不需要重启 ChatGPT。
 - **从端点导入模型。** 「获取可用模型」可以读取渠道兼容的 `/models` 端点，搜索、全选或多选后直接加入当前渠道。
 - **配置随时还原。** “关于”页提供当前版本、检查更新和还原配置；还原后会清理 GPT Switch 写入的 Codex 配置与模型目录，同时保留面板里的渠道列表。
+- **多套 ChatGPT 外观。** “外观”页提供 WorkBuddy 同系的浅色、深色和主题图片，选择后热更新 ChatGPT 的侧栏、主界面、输入框与弹窗，不需要重启客户端；如果随后在 ChatGPT 设置里改选原生深色或浅色，GPT Switch 会暂停主题覆盖，并自动选中对应的浅色或深色卡片，重新点击任一主题即可恢复。
 - **macOS 与 Windows 同源。** 两个平台使用相同的渠道配置、模型目录和请求转发逻辑，可以按需要同时配置多个供应商。
 
 ## 快速上手
@@ -119,6 +120,7 @@ GPT Switch 的请求转发服务默认监听本机 `127.0.0.1`，按模型 ID �
 | --- | --- |
 | `Sources/injector.mjs` | 启动客户端、连接本机 CDP，并维护模型选择器注入状态 |
 | `Sources/injection.js` | 把启用渠道的模型注入原生选择器，并按渠道折叠成组 |
+| `Sources/appearance-config.mjs` | 双端共享的外观主题目录、持久化与运行时色板 |
 | `Sources/proxy.mjs` | 在本机回环地址上按模型归属转发请求 |
 | `Sources/StatusMenu.swift` | macOS 菜单栏和 Swift 配置面板 |
 | `Sources/StatusMenu.ps1` | Windows 桌面配置面板 |

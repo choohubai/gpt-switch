@@ -38,10 +38,14 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Proxy-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Detail-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Empty-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Apply-Appearance-State")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Update-AppearancePreviewAspect")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Update-AgentsControls")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Refresh-Agents-View")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Agents-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Show-Appearance-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-About-Page")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
 if ((Get-ChannelIdError "bad id") -ne "渠道 ID 只能用字母、数字、- 和 _") {
@@ -52,6 +56,27 @@ if ((Get-ChannelIdError $longId) -ne "渠道 ID 不能超过 32 个字符") {
   throw "超长渠道 ID 没有提示"
 }
 if ($null -ne (Get-ChannelIdError "choohub-gpt")) { throw "合法渠道 ID 被误判" }
+
+$appearancePreviewFrame = [pscustomobject]@{
+  ActualWidth = 1120.0
+  Height = 210.0
+}
+Update-AppearancePreviewAspect
+if ([Math]::Abs([double]$appearancePreviewFrame.Height - 700.0) -gt 0.01) {
+  throw "顶部主题预览没有按 1400×875 的源图比例调整高度"
+}
+$appearancePreviewFrame.ActualWidth = 560.0
+Update-AppearancePreviewAspect
+if ([Math]::Abs([double]$appearancePreviewFrame.Height - 350.0) -gt 0.01) {
+  throw "窗口宽度变化后顶部主题预览没有保持等比例"
+}
+$sourceText = Get-Content -LiteralPath $sourcePath -Raw
+if ($sourceText -notmatch '\$appearancePreviewFrame\.Add_SizeChanged') {
+  throw "顶部主题预览没有监听容器尺寸变化"
+}
+if ($sourceText -notmatch 'x:Name="AppearancePreviewFrame"[^>]*MaxWidth="640"') {
+  throw "顶部主题预览缺少最大宽度限制"
+}
 
 $normal = @'
 {"channels":[{"id":"ChooHub","name":"ChooHub","models":[]},{"id":"feiyu","name":"feiyu","models":[]}]}
@@ -115,6 +140,15 @@ $script:proxyPort = "47124"
 if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
 
 $script:agentsContent = "原内容"
+$script:savedAgentsContent = "原内容"
+$script:agentsEnabled = $false
+$script:savedAgentsEnabled = $false
+if (Test-AgentsDirty) { throw "Agents 原样时被判成有改动" }
+$script:agentsContent = "新内容"
+if (-not (Test-AgentsDirty)) { throw "Agents 文本改变后没有识别出未保存" }
+$script:agentsContent = "原内容"
+$script:agentsEnabled = $true
+if (-not (Test-AgentsDirty)) { throw "Agents 开关改变后没有识别出未保存" }
 
 # 编辑页保存成功后必须回列表；失败或回包不完整时不能把用户踢出编辑页。
 function Get-ActiveChannel {
@@ -124,7 +158,13 @@ function Get-ActiveChannel {
 function Update-ChannelFields { }
 function Rebuild-Rows { }
 function Update-ChannelList { }
-function Set-Feedback([string]$Text, [bool]$IsError = $false) { }
+$script:lastFeedbackText = ""
+$script:lastFeedbackError = $false
+function Set-Feedback([string]$Text, [bool]$IsError = $false) {
+  $script:lastFeedbackText = $Text
+  $script:lastFeedbackError = $IsError
+}
+function Refresh-Appearance-View { }
 function Update-Controls { }
 $script:showListCalls = 0
 function Show-List-Page { $script:showListCalls += 1 }
@@ -132,6 +172,7 @@ function Show-List-Page { $script:showListCalls += 1 }
 $script:checkingUpdate = $false
 $script:fetchingModels = $false
 $script:savingProxy = $false
+$script:savingAppearance = $false
 $script:cleared = $false
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
@@ -159,6 +200,83 @@ $script:showListCalls = 0
 Receive-Response ([pscustomobject]@{ ok = $true; saved = $true; channels = @([pscustomobject]@{ id = "" }) })
 if ($script:showListCalls -ne 0) { throw "渠道回包不完整时不应返回列表页" }
 
+# 首次启动尚未热应用时，主题已经落盘，只提示重启，不能标成保存失败。
+$script:appearanceTheme = "dark"
+$script:appearanceThemeBeforeSave = "wind"
+$script:savingAppearance = $true
+$script:busy = $true
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  restartRequired = $true
+  appearance = [pscustomobject]@{ theme = "dark"; themes = @() }
+})
+if ($script:lastFeedbackText -ne "主题已保存，重启 ChatGPT 后生效" -or
+    $script:lastFeedbackError -ne $false -or $script:savingAppearance -or $script:busy) {
+  throw "重启提示的状态、颜色或忙碌标记不正确"
+}
+
+# 真正写盘失败才是红色错误，并把面板恢复到保存前的主题。
+$script:appearanceTheme = "dark"
+$script:appearanceThemeBeforeSave = "wind"
+$script:savingAppearance = $true
+$script:busy = $true
+Receive-Response ([pscustomobject]@{ ok = $false; error = "主题写入失败" })
+if ($script:appearanceTheme -ne "wind" -or
+    $script:lastFeedbackText -ne "主题写入失败" -or
+    $script:lastFeedbackError -ne $true -or $script:savingAppearance -or $script:busy) {
+  throw "主题写入失败没有恢复旧主题或没有显示红色错误"
+}
+
+# Codex 原生模式广播到达后，GPT Switch 覆盖暂停并同步选中对应原生主题。
+$script:appearanceTheme = "wind"
+$script:appearanceFollowNative = $false
+$script:savingAppearance = $false
+$script:busy = $false
+Receive-Response ([pscustomobject]@{
+  event = "appearance-updated"
+  appearance = [pscustomobject]@{
+    theme = "dark"; followNative = $true; nativeMode = "dark"; themes = @()
+  }
+})
+if (-not $script:appearanceFollowNative -or
+    $script:appearanceNativeMode -ne "dark" -or
+    $script:appearanceTheme -ne "dark" -or
+    $script:lastFeedbackText -ne "") {
+  throw "原生模式广播没有暂停覆盖、同步选中主题或清空提示"
+}
+
+# 从“跟随原生”重新启用主题失败时，完整恢复主题、跟随标记和原生模式。
+$script:appearanceTheme = "wind"
+$script:appearanceThemeBeforeSave = "wind"
+$script:appearanceFollowNativeBeforeSave = $true
+$script:appearanceNativeModeBeforeSave = "dark"
+$script:appearanceFollowNative = $false
+$script:savingAppearance = $true
+$script:busy = $true
+Receive-Response ([pscustomobject]@{ ok = $false; error = "重新启用主题失败" })
+if (-not $script:appearanceFollowNative -or
+    $script:appearanceNativeMode -ne "dark" -or
+    $script:lastFeedbackText -ne "重新启用主题失败") {
+  throw "重新启用主题失败后没有恢复完整外观状态"
+}
+
+$script:savingProxy = $true
+$script:busy = $true
+Receive-Response ([pscustomobject]@{
+  event = "appearance-updated"
+  appearance = [pscustomobject]@{
+    theme = "light"; followNative = $true; nativeMode = "light"; themes = @()
+  }
+})
+if (-not $script:savingProxy -or -not $script:busy) {
+  throw "主动外观事件抢走了正在等待的代理保存响应"
+}
+if ($script:appearanceTheme -ne "light") {
+  throw "主动外观事件没有同步选中原生浅色主题"
+}
+$script:savingProxy = $false
+$script:busy = $false
+
 # 侧栏导航使用共享的假控件记录可见性和导航样式，实际执行源码中的页面切换函数。
 function New-TestControl {
   $control = [pscustomobject]@{
@@ -182,6 +300,7 @@ $detailPage = New-TestControl
 $simplePage = New-TestControl
 $aboutPage = New-TestControl
 $agentsPage = New-TestControl
+$appearancePage = New-TestControl
 $modelsPage = New-TestControl
 $modelsCard = New-TestControl
 $proxyPage = New-TestControl
@@ -210,7 +329,7 @@ $window | Add-Member -MemberType ScriptMethod -Name FindResource -Value {
 
 # 源码函数通过 Windows PowerShell 的全局变量解析控件；测试桩也必须放在同一作用域。
 foreach ($name in @(
-  "listPage", "detailPage", "simplePage", "aboutPage", "agentsPage",
+  "listPage", "detailPage", "simplePage", "aboutPage", "agentsPage", "appearancePage",
   "modelsPage", "modelsCard", "proxyPage", "simplePageTitle",
   "agentsContentField", "agentsEnabledToggle", "saveAgentsButton", "agentsBackupLabel", "agentsErrorLabel",
   "proxyHostField", "proxyPortField", "modelsTab", "proxyTab", "generalTab",
@@ -239,7 +358,7 @@ function Assert-Navigation([string]$Active, [string]$VisiblePage) {
       throw "导航 $Active 时 $key 的高亮状态错误：实际=$($tabNames[$key].Style)，期望=$expected"
     }
   }
-  foreach ($pageName in @("listPage", "detailPage", "simplePage", "aboutPage", "agentsPage")) {
+  foreach ($pageName in @("listPage", "detailPage", "simplePage", "aboutPage", "agentsPage", "appearancePage")) {
     $actual = (Get-Variable -Name $pageName -ValueOnly).Visibility
     $expected = if ($pageName -eq $VisiblePage) { "Visible" } else { "Collapsed" }
     if ($actual -ne $expected) {
@@ -265,8 +384,8 @@ if ($proxyPage.Visibility -ne "Visible" -or $modelsPage.Visibility -ne "Collapse
 
 Show-Empty-Page "通用" "general"
 Assert-Navigation "general" "simplePage"
-Show-Empty-Page "外观" "appearance"
-Assert-Navigation "appearance" "simplePage"
+Show-Appearance-Page
+Assert-Navigation "appearance" "appearancePage"
 
 Show-Agents-Page
 Assert-Navigation "agents" "agentsPage"
@@ -282,6 +401,13 @@ foreach ($name in @("ModelsTab", "ProxyTab", "GeneralTab", "AppearanceTab", "Abo
   if (-not (Select-String -Path $sourcePath -Pattern $pattern -Quiet)) {
     throw "侧栏入口 $name 缺少 Agents 未保存确认"
   }
+}
+if ($sourceText -notmatch '(?s)\$quitItem\.Add_Click\(\{\s*if \(-not \(Confirm-AgentsDiscard') {
+  throw "托盘退出没有确认并清理未保存的 Agents 草稿"
+}
+$discardFunction = Get-SourceFunctionText "Confirm-AgentsDiscard"
+if ($discardFunction -notmatch 'Refresh-Agents-View') {
+  throw "确认放弃 Agents 草稿后没有刷新可见编辑框"
 }
 
 Write-Output "Windows 面板渠道响应和侧栏导航检查通过"
