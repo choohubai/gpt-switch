@@ -44,6 +44,7 @@ test("appearance does not paint ChatGPT's bottom scroll fade", () => {
     "utf8");
   assert.match(injection, /--color-surface:transparent;/);
   assert.doesNotMatch(injection, /--color-surface:\$\{theme\.surface\};/);
+  assert.match(injection, /border-radius:22px!important;/);
 });
 
 test("appearance persistence validates theme ids and returns panel paths", (context) => {

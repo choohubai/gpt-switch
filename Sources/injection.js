@@ -1033,6 +1033,7 @@
       :root[${APPEARANCE_ATTRIBUTE}="${theme.id}"] [${APPEARANCE_REGION_ATTRIBUTE}="composer"]{
         background:var(--gpt-switch-theme-composer)!important;
         border-color:var(--gpt-switch-theme-border)!important;
+        border-radius:22px!important;
         box-shadow:0 10px 32px rgba(31, 45, 51, .1),0 0 0 1px var(--gpt-switch-theme-border)!important;
         backdrop-filter:blur(20px) saturate(1.08);
       }
