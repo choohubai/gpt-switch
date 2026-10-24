@@ -26,7 +26,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.54";
+const VERSION = "0.1.55";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -1246,6 +1246,7 @@ const main = async () => {
   let source = "";
   let appMissingSince = null;
   let clientConnectionLostSince = 0;
+  let lastClientRunning = false;
   let nextClientRecoveryAt = 0;
   let clientRecoveryDelay = 5000;
   /// 按外观状态重建模型与主题 source；注入失败时不会提前覆盖当前运行态。
@@ -1570,10 +1571,23 @@ const main = async () => {
   };
 
   const recoverClientAfterManualRestart = async () => {
-    if (attachPort || Date.now() < nextClientRecoveryAt) return false;
+    if (attachPort) return false;
     try {
       appPath ??= clientPath();
-      if (!appPath || !appIsRunning(appPath)) return false;
+      const clientRunning = Boolean(appPath && appIsRunning(appPath));
+      if (!clientRunning) {
+        // GPT 没运行时不做退避；无论关闭多久，下一次启动都要立即接管。
+        lastClientRunning = false;
+        nextClientRecoveryAt = 0;
+        clientRecoveryDelay = 5000;
+        return false;
+      }
+      if (!lastClientRunning) {
+        lastClientRunning = true;
+        nextClientRecoveryAt = 0;
+        clientRecoveryDelay = 5000;
+      }
+      if (Date.now() < nextClientRecoveryAt) return false;
       await applySavedChannelState();
       const restarted = await queueHotRefresh(async () => {
         if (port) return false;

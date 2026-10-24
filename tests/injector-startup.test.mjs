@@ -607,6 +607,7 @@ const loadManualRestartRecovery = () => {
     "attachPort", "appPath", "clientPath", "appIsRunning", "applySavedChannelState",
     "queueHotRefresh", "restart", "log", "Date",
     `let port = 0;
+    let lastClientRunning = false;
     let nextClientRecoveryAt = 0;
     let clientRecoveryDelay = 5000;
     ${injectorSource.slice(start, end)}
@@ -780,6 +781,40 @@ test("客户端被手动重开后会恢复注入，失败时按时间退避", as
   assert.equal(controls.appPath(), "/Applications/ChatGPT.app");
   assert.equal(controls.retryAt(), 0);
   assert.equal(events[0].event, "manual_restart_recovery_failed");
+});
+
+test("客户端关闭期间不做退避，重新出现时立即接管", async () => {
+  let now = 10_000;
+  class FakeDate extends Date {
+    static now() { return now; }
+  }
+  let running = true;
+  let attempts = 0;
+  const controls = loadManualRestartRecovery()(
+    0,
+    "/Applications/ChatGPT.app",
+    () => "/Applications/ChatGPT.app",
+    () => running,
+    async () => {},
+    async (operation) => operation(),
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("测试用启动失败");
+    },
+    () => {},
+    FakeDate,
+  );
+
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(controls.retryAt(), 15_000);
+  now = 12_000;
+  running = false;
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(controls.retryAt(), 0, "客户端关闭时旧退避不得继续生效");
+  running = true;
+  assert.equal(await controls.recoverClientAfterManualRestart(), true,
+    "客户端重新出现后必须立即接管，不能等旧退避结束");
+  assert.equal(attempts, 2);
 });
 
 test("慢热刷新已经恢复端口时不再执行第二次重启", async () => {
