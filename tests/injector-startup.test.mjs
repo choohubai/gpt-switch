@@ -598,6 +598,265 @@ test("restart 清空会话期间完成的旧注入不能回填，最终必须使
   assert.equal(sessions.get(target.id), created[1]);
 });
 
+const loadManualRestartRecovery = () => {
+  const start = injectorSource.indexOf("  const recoverClientAfterManualRestart = async () => {");
+  const end = injectorSource.indexOf("\n  /// 客户端启动后还会再写一次", start);
+  assert.notEqual(start, -1, "注入器里找不到手动重启恢复逻辑");
+  assert.notEqual(end, -1, "注入器里找不到手动重启恢复逻辑的终点");
+  return new Function(
+    "attachPort", "appPath", "clientPath", "appIsRunning", "applySavedChannelState",
+    "queueHotRefresh", "restart", "log", "Date",
+    `let port = 0;
+    let nextClientRecoveryAt = 0;
+    let clientRecoveryDelay = 5000;
+    ${injectorSource.slice(start, end)}
+    return {
+      recoverClientAfterManualRestart,
+      appPath: () => appPath,
+      setPort: (value) => { port = value; },
+      retryAt: () => nextClientRecoveryAt,
+    };`,
+  );
+};
+
+const loadDisconnectClientForRestart = () => {
+  const start = injectorSource.indexOf("  const disconnectClientForRestart =");
+  const end = injectorSource.indexOf("\n  const recoverClientAfterManualRestart", start);
+  assert.notEqual(start, -1, "注入器里找不到客户端断线清理逻辑");
+  assert.notEqual(end, -1, "注入器里找不到客户端断线清理逻辑的终点");
+  return new Function(
+    "browserWatch", "sessions", "cleanupState", "log",
+    `let port = 47123;
+    let clientConnectionLostSince = 1234;
+    let appMissingSince = 5678;
+    ${injectorSource.slice(start, end)}
+    return {
+      disconnectClientForRestart,
+      snapshot: () => ({
+        port,
+        clientConnectionLostSince,
+        appMissingSince,
+      }),
+    };`,
+  );
+};
+
+const loadApplySavedChannelState = () => {
+  const start = injectorSource.indexOf("  const applySavedChannelState = async () => {");
+  const end = injectorSource.indexOf("\n  /// 用户手动关闭客户端后", start);
+  assert.notEqual(start, -1, "注入器里找不到应用已保存渠道配置的逻辑");
+  assert.notEqual(end, -1, "注入器里找不到应用已保存渠道配置的逻辑的终点");
+  return new Function(
+    "loadChannelState", "CHANNELS_CONFIG", "channelImportOptions",
+    "applyCodexForChannel", "applySavedCatalog",
+    `${injectorSource.slice(start, end)}
+    return applySavedChannelState;`,
+  );
+};
+
+test("手动恢复前会应用当前渠道、全部渠道 ID 和模型目录", async () => {
+  const applied = [];
+  const apply = loadApplySavedChannelState()(
+    () => ({
+      current: "relay",
+      channels: [
+        { id: "relay", baseUrl: "https://relay.example/v1" },
+        { id: "backup", baseUrl: "https://backup.example/v1" },
+      ],
+    }),
+    "channels.json",
+    () => ({}),
+    (channel, channelIds) => applied.push({ channel, channelIds }),
+    async () => { applied.push({ catalog: true }); },
+  );
+
+  assert.equal(await apply(), true);
+  assert.deepEqual(applied, [
+    {
+      channel: { id: "relay", baseUrl: "https://relay.example/v1" },
+      channelIds: ["relay", "backup"],
+    },
+    { catalog: true },
+  ]);
+});
+
+test("连接失效会关闭会话、清空端口并进入恢复等待", () => {
+  let watchClosed = 0;
+  let cleanupCount = 0;
+  const events = [];
+  const sessions = new Map([
+    ["main", { close() { sessions.delete("main"); } }],
+  ]);
+  const controls = loadDisconnectClientForRestart()(
+    { close() { watchClosed += 1; } },
+    sessions,
+    () => { cleanupCount += 1; },
+    (event, detail) => events.push({ event, detail }),
+  );
+
+  controls.disconnectClientForRestart("client_connection_lost", { error: "timeout" });
+  assert.deepEqual(controls.snapshot(), {
+    port: 0,
+    clientConnectionLostSince: 0,
+    appMissingSince: null,
+  });
+  assert.equal(watchClosed, 1);
+  assert.equal(sessions.size, 0);
+  assert.equal(cleanupCount, 1);
+  assert.deepEqual(events, [{
+    event: "client_connection_lost",
+    detail: { port: 47123, error: "timeout" },
+  }]);
+});
+
+test("客户端被手动重开后会恢复注入，失败时按时间退避", async () => {
+  let now = 10_000;
+  class FakeDate extends Date {
+    static now() { return now; }
+  }
+  let running = false;
+  let attempts = 0;
+  const actions = [];
+  const events = [];
+  let attachedRestarts = 0;
+  const attached = loadManualRestartRecovery()(
+    9222,
+    "/Applications/ChatGPT.app",
+    () => "/Applications/ChatGPT.app",
+    () => true,
+    async () => {},
+    async (operation) => operation(),
+    async () => { attachedRestarts += 1; },
+    () => {},
+    FakeDate,
+  );
+  assert.equal(await attached.recoverClientAfterManualRestart(), false,
+    "attach 模式不能管理外部客户端生命周期");
+  assert.equal(attachedRestarts, 0);
+
+  const controls = loadManualRestartRecovery()(
+    0,
+    null,
+    () => "/Applications/ChatGPT.app",
+    () => running,
+    async () => { actions.push("apply"); },
+    async (operation) => {
+      actions.push("queue");
+      return operation();
+    },
+    async () => {
+      attempts += 1;
+      actions.push("restart");
+      if (attempts < 3) throw new Error("测试用启动失败");
+    },
+    (event, detail) => events.push({ event, detail }),
+    FakeDate,
+  );
+
+  assert.equal(await controls.recoverClientAfterManualRestart(), false,
+    "客户端没重新出现时不能重启，并应持续定位已安装客户端");
+  running = true;
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(attempts, 1, "第一次恢复只需尝试一次");
+  assert.equal(controls.retryAt(), 15_000, "恢复失败后要等 5 秒再试");
+  now = 14_999;
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(attempts, 1, "退避期间不能反复拉起客户端");
+  now = 15_000;
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(attempts, 2);
+  assert.equal(controls.retryAt(), 25_000, "连续失败后等待时间要翻倍");
+  now = 24_999;
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  assert.equal(attempts, 2);
+  now = 25_000;
+  assert.equal(await controls.recoverClientAfterManualRestart(), true);
+  assert.equal(attempts, 3);
+  assert.deepEqual(actions, [
+    "apply", "queue", "restart",
+    "apply", "queue", "restart",
+    "apply", "queue", "restart",
+  ], "每次恢复都必须先应用已保存配置，再排队重启客户端");
+  assert.equal(controls.appPath(), "/Applications/ChatGPT.app");
+  assert.equal(controls.retryAt(), 0);
+  assert.equal(events[0].event, "manual_restart_recovery_failed");
+});
+
+test("慢热刷新已经恢复端口时不再执行第二次重启", async () => {
+  let releaseQueued;
+  let queuedOperation;
+  let restarts = 0;
+  const controls = loadManualRestartRecovery()(
+    0,
+    "/Applications/ChatGPT.app",
+    () => "/Applications/ChatGPT.app",
+    () => true,
+    async () => {},
+    (operation) => new Promise((resolve, reject) => {
+      queuedOperation = operation;
+      releaseQueued = () => Promise.resolve(operation()).then(resolve, reject);
+    }),
+    async () => { restarts += 1; },
+    () => {},
+    Date,
+  );
+
+  const recovery = controls.recoverClientAfterManualRestart();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof queuedOperation, "function");
+  controls.setPort(47123);
+  releaseQueued();
+  assert.equal(await recovery, false);
+  assert.equal(restarts, 0, "第一轮热刷新已经恢复连接时不能再次重启");
+});
+
+test("GPT Switch 启动时客户端未运行，12 小时后启动仍会自动接管", async () => {
+  let now = 10_000;
+  class FakeDate extends Date {
+    static now() { return now; }
+  }
+  let running = false;
+  let recovered = 0;
+  const controls = loadManualRestartRecovery()(
+    0,
+    null,
+    () => "/Applications/ChatGPT.app",
+    () => running,
+    async () => {},
+    async (operation) => operation(),
+    async () => { recovered += 1; },
+    () => {},
+    FakeDate,
+  );
+
+  assert.equal(await controls.recoverClientAfterManualRestart(), false);
+  now += 12 * 60 * 60 * 1000;
+  running = true;
+  assert.equal(await controls.recoverClientAfterManualRestart(), true);
+  assert.equal(recovered, 1);
+});
+
+test("CDP 连接持续断开且客户端仍在运行时进入手动重启恢复", () => {
+  const loopStart = injectorSource.indexOf("  while (true) {");
+  const loopEnd = injectorSource.indexOf("\n  for (const session", loopStart);
+  assert.notEqual(loopStart, -1);
+  assert.notEqual(loopEnd, -1);
+  const loop = injectorSource.slice(loopStart, loopEnd);
+  assert.match(loop, /clientConnectionLostSince \|\|= Date\.now\(\)/);
+  assert.match(loop, /!attachPort && Date\.now\(\) - clientConnectionLostSince >= 5000/);
+  assert.match(loop, /disconnectClientForRestart\("client_connection_lost"/);
+  assert.match(loop, /if \(!port\) await recoverClientAfterManualRestart\(\)/);
+  const dispatchStart = injectorSource.indexOf("  const dispatchRequest =");
+  const refreshStart = injectorSource.indexOf("queueHotRefresh(() => {", dispatchStart);
+  const refreshEnd = injectorSource.indexOf(".catch((error) => log(\"panel_refresh_failed\"", refreshStart);
+  assert.notEqual(refreshStart, -1);
+  assert.notEqual(refreshEnd, -1);
+  const refresh = injectorSource.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /nextClientRecoveryAt = Date\.now\(\) \+ 5000/);
+  assert.ok(refresh.indexOf("nextClientRecoveryAt") < refresh.indexOf("restart(port)"),
+    "热刷新重启前必须先设置恢复保护窗口");
+});
+
 // Intercept process launches in a child so regression checks cannot touch ChatGPT.
 const preload = `
   import os from "node:os";

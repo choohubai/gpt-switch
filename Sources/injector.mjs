@@ -26,7 +26,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.53";
+const VERSION = "0.1.54";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -1128,8 +1128,7 @@ const main = async () => {
     }
   }
 
-  // 客户端定位要跑 PowerShell（约 1~2 秒），所以懒执行：面板先出来，
-  // 只有真的要读写模型目录或重启客户端时才去找。
+  // 客户端定位可能要跑 PowerShell（约 1~2 秒）：面板先出来，常驻监听随后查找。
   let appPath;
   const clientPath = () => (appPath ??= findApp());
   const requests = [];
@@ -1246,6 +1245,9 @@ const main = async () => {
   let port = 0;
   let source = "";
   let appMissingSince = null;
+  let clientConnectionLostSince = 0;
+  let nextClientRecoveryAt = 0;
+  let clientRecoveryDelay = 5000;
   /// 按外观状态重建模型与主题 source；注入失败时不会提前覆盖当前运行态。
   const buildAppearanceRuntime = (appearanceState) => {
     const state = visiblePickerState();
@@ -1483,6 +1485,7 @@ const main = async () => {
     sessions.clear();
     port = 0;
     appMissingSince = null;
+    clientConnectionLostSince = 0;
     // 选择器里要出现的是全部启用渠道的模型（见 pickerModels）；没有当前渠道说明刚「还原」，
     // 那就一个都别注入。面板送回的那份模型列表只用来落盘，不决定注入内容。
     const state = visiblePickerState();
@@ -1513,10 +1516,81 @@ const main = async () => {
     targetsDirty = targetEventRevision !== eventRevision;
     lastTargetPoll = Date.now();
     if (source && sessions.size === 0) throw new Error("插件注入失败，请重试并检查插件日志");
+    nextClientRecoveryAt = 0;
+    clientRecoveryDelay = 5000;
     log("launcher_started", {
       version: VERSION, appPath: target, port, models, appearance: appearance?.id,
     });
     writeState({ pid: process.pid, version: VERSION, appPath: target, port, models, startedAt: Date.now() });
+  };
+
+  const applyCodexForChannel = (channel, channelIds, baseUrl = proxyUrl()) => applyChannelToCodex({
+    channel, channelIds, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
+    proxyUrl: baseUrl, knownModels: pickerModels().map((model) => model.id),
+  });
+
+  const applySavedCatalog = async () => {
+    const target = clientPath();
+    if (!target) throw appMissing();
+    const dest = resolveCatalogPath();
+    const fileCreated = !fs.existsSync(dest);
+    const catalogModels = pickerModels();
+    writeCatalog(dest, buildCatalog(readBundledCatalog(target), catalogModels));
+    const pointerAdded = ensureCatalogPointer(dest) || dest === DEFAULT_CATALOG_PATH;
+    writeCatalogRecord(CATALOG_RECORD, {
+      path: dest,
+      pointerAdded,
+      fileCreated: fileCreated || dest === DEFAULT_CATALOG_PATH,
+    });
+    log("catalog_written", { path: dest, models: catalogModels.map((model) => model.id) });
+  };
+
+  const applySavedChannelState = async () => {
+    const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
+    const active = state.channels.find((channel) => channel.id === state.current);
+    if (!active) return false;
+    applyCodexForChannel(active, state.channels.map((channel) => channel.id));
+    await applySavedCatalog();
+    return true;
+  };
+
+  /// 用户手动关闭客户端后旧 CDP 端口已经失效；应用再次出现时带调试参数重新接管。
+  const disconnectClientForRestart = (reason, detail = null) => {
+    clientConnectionLostSince = 0;
+    appMissingSince = null;
+    if (!port) return;
+    const lostPort = port;
+    port = 0;
+    browserWatch?.close();
+    browserWatch = null;
+    for (const session of sessions.values()) session.close();
+    sessions.clear();
+    cleanupState();
+    log(reason, { port: lostPort, ...(detail || {}) });
+  };
+
+  const recoverClientAfterManualRestart = async () => {
+    if (attachPort || Date.now() < nextClientRecoveryAt) return false;
+    try {
+      appPath ??= clientPath();
+      if (!appPath || !appIsRunning(appPath)) return false;
+      await applySavedChannelState();
+      const restarted = await queueHotRefresh(async () => {
+        if (port) return false;
+        await restart();
+        return true;
+      });
+      if (!restarted) return false;
+      nextClientRecoveryAt = 0;
+      clientRecoveryDelay = 5000;
+      log("manual_restart_recovered", { appPath });
+      return true;
+    } catch (error) {
+      nextClientRecoveryAt = Date.now() + clientRecoveryDelay;
+      clientRecoveryDelay = Math.min(clientRecoveryDelay * 2, 60_000);
+      log("manual_restart_recovery_failed", String(error?.message || error));
+      return false;
+    }
   };
 
   /// 客户端启动后还会再写一次 config.toml（本机实测比写入晚 8 秒）。这里只比对、只记日志，
@@ -1604,15 +1678,7 @@ const main = async () => {
             const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
             const active = state.channels.find((channel) => channel.id === state.current);
             if (!active) return false;
-            applyChannelToCodex({
-              channel: active,
-              channelIds: state.channels.map((channel) => channel.id),
-              authPath: AUTH_PATH,
-              userConfigPath: USER_CONFIG,
-              recordPath: CODEX_RECORD,
-              proxyUrl: baseUrl,
-              knownModels: pickerModels().map((model) => model.id),
-            });
+            applyCodexForChannel(active, state.channels.map((channel) => channel.id), baseUrl);
             return true;
           },
           loadState: () => loadChannelState(CHANNELS_CONFIG, channelImportOptions()),
@@ -1625,29 +1691,11 @@ const main = async () => {
         proxyHost = switched.host;
         proxyPort = switched.port;
       },
-      applyCodex: async (channel, channelIds) => applyChannelToCodex({
-        channel, channelIds, authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
-        proxyUrl: proxyUrl(), knownModels: pickerModels().map((model) => model.id),
-      }),
+      applyCodex: applyCodexForChannel,
       restoreCodex: () => restoreCodexConfig({
         authPath: AUTH_PATH, userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD,
       }),
-      applyCatalog: async () => {
-        const target = clientPath();
-        if (!target) throw appMissing();
-        const dest = resolveCatalogPath();
-        const fileCreated = !fs.existsSync(dest);
-        // 目录里放全部渠道的模型：当前渠道裸名，其他带 gpts- 前缀，选择器才分得出组。
-        const catalogModels = pickerModels();
-        writeCatalog(dest, buildCatalog(readBundledCatalog(target), catalogModels));
-        const pointerAdded = ensureCatalogPointer(dest) || dest === DEFAULT_CATALOG_PATH;
-        writeCatalogRecord(CATALOG_RECORD, {
-          path: dest,
-          pointerAdded,
-          fileCreated: fileCreated || dest === DEFAULT_CATALOG_PATH,
-        });
-        log("catalog_written", { path: dest, models: catalogModels.map((model) => model.id) });
-      },
+      applyCatalog: applySavedCatalog,
       clearCatalog: () => clearCatalog(clientPath()),
     });
     if (request?.action === "load" && answer?.ok) {
@@ -1658,7 +1706,11 @@ const main = async () => {
     // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
     // 不能 await：客户端没在跑时 waitForTargets 要等满 30 秒，面板会一直转圈。
     if (request?.action === "save" && request.scope !== "proxy" && request.scope !== "agents" && answer?.ok && port) {
-      queueHotRefresh(() => restart(port))
+      queueHotRefresh(() => {
+        // restart 会先清空 port；给主循环留出正常的重连窗口，避免误排第二次重启。
+        nextClientRecoveryAt = Date.now() + 5000;
+        return restart(port);
+      })
         .catch((error) => log("panel_refresh_failed", String(error?.message || error)));
     }
     return { ...answer, version: VERSION };
@@ -1688,8 +1740,16 @@ const main = async () => {
         lastTargetPoll = Date.now();
         try {
           await injectTargets(await fetchTargets(port));
+          clientConnectionLostSince = 0;
         } catch (error) {
           if (runOnce) throw error;
+          clientConnectionLostSince ||= Date.now();
+          if (!attachPort && Date.now() - clientConnectionLostSince >= 5000
+              && appPath && appIsRunning(appPath, true)) {
+            disconnectClientForRestart("client_connection_lost", {
+              error: String(error?.message || error),
+            });
+          }
         }
       }
     }
@@ -1698,18 +1758,14 @@ const main = async () => {
     if (port && !attachPort && appPath && !appIsRunning(appPath)) {
       appMissingSince ??= Date.now();
       if (Date.now() - appMissingSince > 5000) {
-        port = 0;
-        browserWatch?.close();
-        browserWatch = null;
-        for (const session of sessions.values()) session.close();
-        sessions.clear();
-        cleanupState();
+        disconnectClientForRestart("client_closed");
       }
     } else {
       appMissingSince = null;
     }
 
     if (!port && !statusMenuProcess) break;
+    if (!port) await recoverClientAfterManualRestart();
     await waitPolling(browserWatch?.active ? TARGET_BACKSTOP_MS : POLL_INTERVAL_MS);
   }
 

@@ -185,6 +185,7 @@ generate_release_notes() {
     printf '%s\n' '- Agents 页改为可编辑公共指令，首次使用内置模板；保存时合并用户正文并备份，停用时只移除插件段。'
     printf '%s\n' '- 修复 Agents 页切换卡顿，并补充重复标记、状态损坏和未保存退出的保护。'
     printf '%s\n' '- 新增多套 ChatGPT 外观主题，支持热应用背景、侧栏、输入框和弹窗。'
+    printf '%s\n' '- GPT Switch 常驻监听 ChatGPT，手动重启或稍后启动时自动应用配置并恢复注入。'
     printf '%s\n' '- 右上角「重启 ChatGPT」把配置写进客户端；「关于」页的「还原配置」清理插件写过的配置和模型目录，渠道列表保留。'
     printf '%s\n' '- macOS 菜单栏面板与 Windows 桌面面板共用同一套渠道配置与转发协议，DMG 与 Windows 安装包一起发布。'
     printf '\n## 模型配置\n\n'
