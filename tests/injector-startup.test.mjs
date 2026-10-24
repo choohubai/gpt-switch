@@ -608,14 +608,14 @@ const loadManualRestartRecovery = () => {
     "queueHotRefresh", "restart", "log", "Date",
     `let port = 0;
     let lastClientRunning = false;
-    let nextClientRecoveryAt = 0;
-    let clientRecoveryDelay = 5000;
+    let nextClientRestartAt = 0;
+    let clientRestartBackoffMs = 5000;
     ${injectorSource.slice(start, end)}
     return {
       recoverClientAfterManualRestart,
       appPath: () => appPath,
       setPort: (value) => { port = value; },
-      retryAt: () => nextClientRecoveryAt,
+      retryAt: () => nextClientRestartAt,
     };`,
   );
 };
@@ -887,8 +887,8 @@ test("CDP 连接持续断开且客户端仍在运行时进入手动重启恢复"
   assert.notEqual(refreshStart, -1);
   assert.notEqual(refreshEnd, -1);
   const refresh = injectorSource.slice(refreshStart, refreshEnd);
-  assert.match(refresh, /nextClientRecoveryAt = Date\.now\(\) \+ 5000/);
-  assert.ok(refresh.indexOf("nextClientRecoveryAt") < refresh.indexOf("restart(port)"),
+  assert.match(refresh, /nextClientRestartAt = Date\.now\(\) \+ 5000/);
+  assert.ok(refresh.indexOf("nextClientRestartAt") < refresh.indexOf("restart(port)"),
     "热刷新重启前必须先设置恢复保护窗口");
 });
 

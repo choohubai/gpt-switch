@@ -1247,8 +1247,8 @@ const main = async () => {
   let appMissingSince = null;
   let clientConnectionLostSince = 0;
   let lastClientRunning = false;
-  let nextClientRecoveryAt = 0;
-  let clientRecoveryDelay = 5000;
+  let nextClientRestartAt = 0;
+  let clientRestartBackoffMs = 5000;
   /// 按外观状态重建模型与主题 source；注入失败时不会提前覆盖当前运行态。
   const buildAppearanceRuntime = (appearanceState) => {
     const state = visiblePickerState();
@@ -1517,8 +1517,8 @@ const main = async () => {
     targetsDirty = targetEventRevision !== eventRevision;
     lastTargetPoll = Date.now();
     if (source && sessions.size === 0) throw new Error("插件注入失败，请重试并检查插件日志");
-    nextClientRecoveryAt = 0;
-    clientRecoveryDelay = 5000;
+    nextClientRestartAt = 0;
+    clientRestartBackoffMs = 5000;
     log("launcher_started", {
       version: VERSION, appPath: target, port, models, appearance: appearance?.id,
     });
@@ -1576,18 +1576,18 @@ const main = async () => {
       appPath ??= clientPath();
       const clientRunning = Boolean(appPath && appIsRunning(appPath));
       if (!clientRunning) {
-        // GPT 没运行时不做退避；无论关闭多久，下一次启动都要立即接管。
+        // 进程监听始终继续；GPT 没运行时清掉重启节流，下次出现立即接管。
         lastClientRunning = false;
-        nextClientRecoveryAt = 0;
-        clientRecoveryDelay = 5000;
+        nextClientRestartAt = 0;
+        clientRestartBackoffMs = 5000;
         return false;
       }
       if (!lastClientRunning) {
         lastClientRunning = true;
-        nextClientRecoveryAt = 0;
-        clientRecoveryDelay = 5000;
+        nextClientRestartAt = 0;
+        clientRestartBackoffMs = 5000;
       }
-      if (Date.now() < nextClientRecoveryAt) return false;
+      if (Date.now() < nextClientRestartAt) return false;
       await applySavedChannelState();
       const restarted = await queueHotRefresh(async () => {
         if (port) return false;
@@ -1595,13 +1595,13 @@ const main = async () => {
         return true;
       });
       if (!restarted) return false;
-      nextClientRecoveryAt = 0;
-      clientRecoveryDelay = 5000;
+      nextClientRestartAt = 0;
+      clientRestartBackoffMs = 5000;
       log("manual_restart_recovered", { appPath });
       return true;
     } catch (error) {
-      nextClientRecoveryAt = Date.now() + clientRecoveryDelay;
-      clientRecoveryDelay = Math.min(clientRecoveryDelay * 2, 60_000);
+      nextClientRestartAt = Date.now() + clientRestartBackoffMs;
+      clientRestartBackoffMs = Math.min(clientRestartBackoffMs * 2, 60_000);
       log("manual_restart_recovery_failed", String(error?.message || error));
       return false;
     }
@@ -1722,7 +1722,7 @@ const main = async () => {
     if (request?.action === "save" && request.scope !== "proxy" && request.scope !== "agents" && answer?.ok && port) {
       queueHotRefresh(() => {
         // restart 会先清空 port；给主循环留出正常的重连窗口，避免误排第二次重启。
-        nextClientRecoveryAt = Date.now() + 5000;
+        nextClientRestartAt = Date.now() + 5000;
         return restart(port);
       })
         .catch((error) => log("panel_refresh_failed", String(error?.message || error)));
