@@ -892,6 +892,99 @@ test("CDP 连接持续断开且客户端仍在运行时进入手动重启恢复"
     "热刷新重启前必须先设置恢复保护窗口");
 });
 
+test("面板首次 load 不等待客户端恢复队列", async () => {
+  const start = injectorSource.indexOf("  startPanel((request, reply) => {");
+  const end = injectorSource.indexOf("\n  });", start) + "\n  });".length;
+  assert.notEqual(start, -1);
+  assert.ok(end >= "\n  });".length);
+  const handler = injectorSource.slice(start, end);
+  const requests = [];
+  const dispatched = [];
+  const replies = [];
+  const logs = [];
+  let panelHandler = null;
+  let waits = 0;
+  let failLoad = false;
+  new Function(
+    "startPanel", "dispatchRequest", "requests", "wakePolling", "log", "VERSION", handler,
+  )(
+    (next) => { panelHandler = next; },
+    async (request) => {
+      dispatched.push(request);
+      if (failLoad) throw new Error("read failed");
+      return { ok: true, action: request.action };
+    },
+    requests,
+    () => { waits += 1; },
+    (...args) => logs.push(args),
+    "test",
+  );
+
+  panelHandler({ action: "load" }, (result) => replies.push(result));
+  panelHandler({ action: "save" }, (result) => replies.push(result));
+  await Promise.resolve();
+
+  assert.deepEqual(dispatched, [{ action: "load" }], "只读 load 必须直接回包");
+  assert.equal(requests.length, 1, "保存请求仍应进入串行队列");
+  assert.equal(requests[0].request.action, "save");
+  assert.equal(waits, 1, "排队请求仍需唤醒主循环");
+  assert.deepEqual(replies, [{ ok: true, action: "load" }]);
+
+  dispatched.length = 0;
+  replies.length = 0;
+  requests.length = 0;
+  waits = 0;
+  failLoad = true;
+  panelHandler({ action: "load" }, (result) => replies.push(result));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(dispatched, [{ action: "load" }]);
+  assert.equal(requests.length, 0, "失败的 load 也不能退回恢复队列");
+  assert.equal(waits, 0);
+  assert.deepEqual(replies, [{ ok: false, version: "test", error: "read failed" }],
+    "load 失败必须只回一次可展示的错误");
+  assert.deepEqual(logs, [["panel_action_failed", "read failed"]]);
+});
+
+test("Windows 面板由原生 GPT Switch.exe 承载", () => {
+  const start = injectorSource.indexOf("const startWindowsPanel =");
+  const end = injectorSource.indexOf("\nconst startPanel =", start);
+  assert.notEqual(start, -1, "注入器里找不到 Windows 面板启动逻辑");
+  assert.notEqual(end, -1, "注入器里找不到 Windows 面板启动逻辑终点");
+  const panelStart = injectorSource.slice(start, end);
+  assert.match(panelStart, /WINDOWS_LAUNCHER_PATH/);
+  assert.match(panelStart, /"--panel", "--parent-pid"/);
+  assert.doesNotMatch(panelStart, /"powershell\.exe"/);
+});
+
+test("Windows 客户端探测优先通过原生启动器", () => {
+  assert.match(injectorSource, /windowsLauncherLines\(\["--running-client-paths"\]\)/);
+  assert.match(injectorSource, /windowsLauncherLines\(\["--client-pids", appPath\]\)/);
+  assert.match(injectorSource, /windowsLauncherLines\(\["--packaged-app"\]\)/);
+  assert.match(injectorSource, /runWindowsLauncher\(\s+\["--activate-app"/);
+  assert.doesNotMatch(injectorSource, /windowsProcessPaths/);
+  assert.doesNotMatch(injectorSource, /spawnSync\(\s*"powershell\.exe"/);
+});
+
+test("Windows helper 启动失败或非零退出时保留真实错误", () => {
+  const start = injectorSource.indexOf("const runWindowsLauncher =");
+  const end = injectorSource.indexOf("/// Windows 没有 osascript", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const createRunner = (spawnSync) => new Function(
+    "spawnSync", "WINDOWS_LAUNCHER_PATH", "firstLine",
+    `${injectorSource.slice(start, end)}
+    return runWindowsLauncher;`,
+  )(spawnSync, "GPT Switch.exe", (value) => String(value || "").trim());
+
+  const launchError = new Error("helper missing");
+  const failedLaunch = createRunner(() => ({ error: launchError, status: null }));
+  assert.throws(() => failedLaunch(["--packaged-app"]), launchError);
+
+  const failedExit = createRunner(() => ({ error: null, status: 1, stderr: "query failed\n", stdout: "" }));
+  assert.throws(() => failedExit(["--client-pids", "ChatGPT.exe"]), /query failed/);
+});
+
 // Intercept process launches in a child so regression checks cannot touch ChatGPT.
 const preload = `
   import os from "node:os";

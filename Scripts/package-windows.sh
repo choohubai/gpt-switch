@@ -1,6 +1,7 @@
 #!/bin/zsh
 # 在 macOS 上打 Windows 安装包：NSIS 的 makensis 是跨平台编译器（brew install makensis）。
-# 安装包只放脚本、面板和图标，运行时用客户端自带的 node，不打包 node.exe。
+# 安装包放原生启动器、脚本、面板和图标，运行时用客户端自带的 node，不打包 node.exe。
+# 原生启动器必须先在 Windows 上编译，并通过 GPT_SWITCH_WINDOWS_HOST 指定。
 # 产物：$OUTPUT_DIR/${EXE_NAME} 和同名 .sha256。
 # 本地测试用的安装包不带版本号：新包直接覆盖旧包，dist 里始终只有当前这一份（发布包的名字由 local-release.sh 定）。
 set -euo pipefail
@@ -18,6 +19,12 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 EXE_NAME="${EXE_NAME:-GPT-Switch-Setup.exe}"
+WINDOWS_HOST="${GPT_SWITCH_WINDOWS_HOST:-}"
+
+if [[ -z "$WINDOWS_HOST" || ! -s "$WINDOWS_HOST" ]]; then
+  print -u2 -- "缺少原生 Windows 启动器。请用 Scripts/build-windows-host.ps1 编译后设置 GPT_SWITCH_WINDOWS_HOST。"
+  exit 1
+fi
 
 for command in makensis sips shasum; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -44,7 +51,7 @@ cp "$SOURCE_DIR/injector.mjs" "$SOURCE_DIR/injection.js" "$SOURCE_DIR/model-conf
    "$SOURCE_DIR/channel-config.mjs" "$SOURCE_DIR/proxy.mjs" \
    "$SOURCE_DIR/StatusMenu.ps1" "$PAYLOAD/"
 cp -R "$RESOURCE_DIR/Appearance" "$PAYLOAD/Appearance"
-cp "$SCRIPT_DIR/GPTSwitch.ps1" "$PAYLOAD/GPT Switch.ps1"
+cp "$WINDOWS_HOST" "$PAYLOAD/GPT Switch.exe"
 
 ICON="$WORK_DIR/AppIcon.ico"
 # sips 写 ico 要求先降到 256，直接转 1024 的图会报 Error 13。

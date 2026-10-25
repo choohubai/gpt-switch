@@ -77,7 +77,7 @@ GPT Switch 是面向 ChatGPT / Codex 桌面应用的本地模型渠道管理工�
 ### Windows
 
 1. 从 [GitHub Releases](https://github.com/choohubai/gpt-switch/releases) 下载 `GPT-Switch-Setup-<版本>.exe` 并完成安装；Windows 没有 macOS Gatekeeper 的额外放行步骤。
-2. 从开始菜单打开 GPT Switch，添加渠道并填写地址、API Key 和模型。
+2. 从开始菜单启动 GPT Switch，添加渠道并填写地址、API Key 和模型；应用和面板都由原生 `GPT Switch.exe` 承载，不会弹出 PowerShell 窗口。
 3. 点击右上角「重启 ChatGPT」，打开模型选择器即可使用。关闭面板后，GPT Switch 会继续在托盘运行。
 
 > 启用、禁用或删除已有渠道会立即更新模型选择器，不需要重启。新增渠道，或者修改地址、API Key、自定义请求头、模型列表等配置后，点一次「重启 ChatGPT」即可应用。
@@ -126,12 +126,31 @@ GPT Switch 的请求转发服务默认监听本机 `127.0.0.1`，按模型 ID �
 | `Sources/proxy.mjs` | 在本机回环地址上按模型归属转发请求 |
 | `Sources/StatusMenu.swift` | macOS 菜单栏和 Swift 配置面板 |
 | `Sources/StatusMenu.ps1` | Windows 桌面配置面板 |
+| `Sources/WindowsLauncher.cs` | Windows 原生启动器，并在 `GPT Switch.exe` 进程内承载现有 WPF 面板 |
 | `Sources/model-config.mjs` | 模型校验、模型目录合并与读写 |
 | `Sources/channel-config.mjs` | 渠道存储、Codex 配置写入与还原、端点模型发现 |
 | `Scripts/` | 构建、打包、测试和本地发布脚本 |
 | `.github/workflows/release.yml` | 打 tag 后构建并发布 macOS DMG 与 Windows 安装包 |
 
 </details>
+
+### 本地发布
+
+Windows 原生启动器必须在 Windows 上编译。先在 Windows 工作区执行：
+
+```powershell
+.\Scripts\build-windows-host.ps1 -OutputPath ".\GPT Switch.exe"
+```
+
+把生成的 `GPT Switch.exe` 放到 macOS 发布机，在干净的 `main` 分支指定其路径：
+
+```bash
+VERSION="$(plutil -extract CFBundleShortVersionString raw -o - Resources/Info.plist)"
+GPT_SWITCH_WINDOWS_HOST="/path/to/GPT Switch.exe" \
+  ./Scripts/local-release.sh prepare "$VERSION"
+```
+
+确认产物后再执行同一命令和版本的 `publish`。GitHub Actions 的 tag 发布会在 Windows runner 自动编译并测试该 EXE，再交给 macOS runner 打包。
 
 ## 兼容性说明
 

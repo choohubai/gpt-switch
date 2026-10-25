@@ -27,6 +27,8 @@ Examples:
 
 prepare checks the source, builds the macOS app, and creates a DMG, metadata,
 SHA256 file, and release notes under ~/.cache/gpt-switch/releases.
+Set GPT_SWITCH_WINDOWS_HOST to the native Windows launcher built by
+Scripts/build-windows-host.ps1; the Windows installer packages that EXE.
 publish verifies that prepared artifact belongs to the current commit, creates
 and pushes v<version>, then creates and publishes a GitHub Release.
 EOF
@@ -87,6 +89,8 @@ run_release_gate() {
   require_command shasum
   require_command hdiutil
   require_command makensis
+  [[ -n "${GPT_SWITCH_WINDOWS_HOST:-}" && -s "${GPT_SWITCH_WINDOWS_HOST}" ]] || \
+    die "缺少原生 Windows 启动器，请设置 GPT_SWITCH_WINDOWS_HOST"
 
   /usr/bin/plutil -lint "$INFO_PLIST"
   "$SCRIPT_DIR/test.sh"
@@ -177,6 +181,7 @@ generate_release_notes() {
     printf '%s\n' '- 新增代理设置，可配置监听 IP 和端口；端口被占用时自动顺延，重启 ChatGPT 时原子切换代理并同步更新客户端地址。'
     printf '%s\n' '- 面板改为左侧设置菜单与右侧内容区，新增「关于」版本、更新、还原入口。'
     printf '%s\n' '- Windows 面板按 macOS 重构左侧导航、绿色主题、渠道卡、开关、详情页和关于页。'
+    printf '%s\n' '- Windows 开始菜单和面板宿主改为原生 GPT Switch.exe，不再由 powershell.exe 启动应用。'
     printf '%s\n' '- 修复 Windows 只有一个渠道时生成多张“未填渠道 ID”空卡的问题。'
     printf '%s\n' '- 渠道 ID 在输入时就校验格式并显示提示，不合法时不会保存。'
     printf '%s\n' '- 修复渠道名含连字符时模型选择器少显示分组的问题。'

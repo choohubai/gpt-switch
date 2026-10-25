@@ -40,6 +40,8 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Empty-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Apply-Appearance-State")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Update-AppearancePreviewAspect")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Set-Appearance-Image")))
+. ([scriptblock]::Create((Get-SourceFunctionText "New-Appearance-Theme-Card")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Update-AgentsControls")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Refresh-Agents-View")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Agents-Page")))
@@ -74,8 +76,40 @@ $sourceText = Get-Content -LiteralPath $sourcePath -Raw
 if ($sourceText -notmatch '\$appearancePreviewFrame\.Add_SizeChanged') {
   throw "顶部主题预览没有监听容器尺寸变化"
 }
-if ($sourceText -notmatch 'x:Name="AppearancePreviewFrame"[^>]*MaxWidth="640"') {
+if ($sourceText -notmatch 'x:Name="AppearancePreviewFrame"[^>]*MaxWidth="560"') {
   throw "顶部主题预览缺少最大宽度限制"
+}
+if ($sourceText -notmatch 'x:Name="AppearancePreviewFrame"[^>]*HorizontalAlignment="Stretch"') {
+  throw "顶部主题预览在首次加载时没有撑满可用宽度"
+}
+Add-Type -AssemblyName PresentationFramework
+$xamlMatch = [regex]::Match($sourceText, '(?s)\[xml\]\$xaml = @"(.*?)"@')
+if (-not $xamlMatch.Success) { throw "找不到面板 XAML" }
+$xamlReader = New-Object System.Xml.XmlNodeReader ([xml]$xamlMatch.Groups[1].Value)
+$xamlPanel = [System.Windows.Markup.XamlReader]::Load($xamlReader)
+$activeNav = $xamlPanel.FindName("ModelsTab")
+$inactiveNav = $xamlPanel.FindName("ProxyTab")
+$activeGlyph = [System.Windows.Shapes.Path]$activeNav.Content.Children[0]
+if ($activeGlyph.Width -ne 14 -or $activeGlyph.Height -ne 14 -or
+    $activeGlyph.StrokeThickness -ne 1.5) {
+  throw "Windows 侧栏图标没有对齐 macOS 的 14px 尺寸和描边"
+}
+if ($activeNav.Margin.Top -ne 1 -or $activeNav.Margin.Bottom -ne 1 -or
+    $inactiveNav.Margin.Top -ne 1 -or $inactiveNav.Margin.Bottom -ne 1) {
+  throw "Windows 侧栏按钮没有对齐 macOS 的行间距"
+}
+if ($activeNav.Background.Color.A -ne 33 -or $activeNav.Background.Color.R -ne 51 -or
+    $activeNav.Background.Color.G -ne 107 -or $activeNav.Background.Color.B -ne 64) {
+  throw "Windows 侧栏选中态没有对齐 macOS 的 13% accent 底色"
+}
+$appearanceGlyph = [System.Windows.Shapes.Path]$xamlPanel.FindName("AppearanceTab").Content.Children[0]
+if (([string]$appearanceGlyph.Data) -notmatch '^M5\.75,2C5\.34' -or
+    $appearanceGlyph.StrokeThickness -ne 0 -or
+    $sourceText -notmatch '(?s)x:Name="AppearanceTab".*?Fill="\{Binding Foreground') {
+  throw "Windows 外观入口没有使用画刷图标"
+}
+if ($xamlPanel.FindName("AppearancePreviewEmptyText").Text -ne "正在读取主题…") {
+  throw "外观页加载时没有显示明确的预览状态"
 }
 
 $normal = @'
@@ -164,10 +198,12 @@ function Set-Feedback([string]$Text, [bool]$IsError = $false) {
   $script:lastFeedbackText = $Text
   $script:lastFeedbackError = $IsError
 }
-function Refresh-Appearance-View { }
+$script:refreshAppearanceCalls = 0
+function Refresh-Appearance-View { $script:refreshAppearanceCalls += 1 }
 function Update-Controls { }
 $script:showListCalls = 0
 function Show-List-Page { $script:showListCalls += 1 }
+$appearancePage = [pscustomobject]@{ Visibility = "Visible" }
 
 $script:checkingUpdate = $false
 $script:fetchingModels = $false
@@ -199,6 +235,65 @@ if ($script:showListCalls -ne 0) { throw "编辑页保存失败后不应返回�
 $script:showListCalls = 0
 Receive-Response ([pscustomobject]@{ ok = $true; saved = $true; channels = @([pscustomobject]@{ id = "" }) })
 if ($script:showListCalls -ne 0) { throw "渠道回包不完整时不应返回列表页" }
+
+# 首次 load 时用户可能已经停在外观页；回包到达后必须立刻把旧加载态换成主题列表。
+$script:loaded = $false
+$script:busy = $true
+$script:channels = @()
+$script:savedChannels = @()
+$script:channelIndex = -1
+$script:currentChannelId = ""
+$script:refreshAppearanceCalls = 0
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  current = "relay"
+  channels = $single.channels
+  appearance = [pscustomobject]@{
+    theme = "light"
+    followNative = $false
+    nativeMode = "light"
+    themes = @([pscustomobject]@{
+      id = "light"
+      name = "浅色"
+      previewPath = "light-preview.jpg"
+      coverPath = ""
+    })
+  }
+})
+if (-not $script:loaded -or $script:appearanceThemes.Count -ne 1 -or
+    $script:refreshAppearanceCalls -ne 1) {
+  throw "首次完整回包没有把外观页从加载态刷新成主题列表"
+}
+
+# 全新安装没有渠道时也不能把已经打开的外观页切回模型列表。
+$script:loaded = $false
+$script:busy = $true
+$script:channels = @()
+$script:savedChannels = @()
+$script:channelIndex = -1
+$script:currentChannelId = ""
+$script:refreshAppearanceCalls = 0
+$script:showListCalls = 0
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  current = $null
+  channels = @()
+  appearance = [pscustomobject]@{
+    theme = "light"
+    followNative = $false
+    nativeMode = "light"
+    themes = @([pscustomobject]@{
+      id = "light"
+      name = "浅色"
+      previewPath = "light-preview.jpg"
+      coverPath = ""
+    })
+  }
+})
+if (-not $script:loaded -or $script:appearanceThemes.Count -ne 1 -or
+    $script:refreshAppearanceCalls -ne 1 -or $script:showListCalls -ne 0) {
+  throw "零渠道首次回包没有保留并刷新外观页"
+}
 
 # 首次启动尚未热应用时，主题已经落盘，只提示重启，不能标成保存失败。
 $script:appearanceTheme = "dark"
@@ -394,6 +489,38 @@ Show-About-Page
 Assert-Navigation "about" "aboutPage"
 Show-Empty-Page "获取帮助" "help"
 Assert-Navigation "help" "simplePage"
+
+# 动态创建的 WPF 按钮必须显式接收 sender；PowerShell 不会自动提供这个变量。
+Add-Type -AssemblyName PresentationFramework
+$window = [pscustomobject]@{}
+$window | Add-Member -MemberType ScriptMethod -Name FindResource -Value {
+  param([string]$Name)
+  return $xamlPanel.FindResource($Name)
+}
+$script:appearanceTheme = "dark"
+$script:loaded = $true
+$script:busy = $false
+$script:selectedAppearanceTheme = ""
+function Select-Appearance-Theme([string]$ThemeId) {
+  $script:selectedAppearanceTheme = $ThemeId
+}
+$themeCard = New-Appearance-Theme-Card ([pscustomobject]@{
+  id = "dark"
+  name = "深色"
+  coverPath = ""
+})
+$themeButton = [System.Windows.Controls.Button]$themeCard.Children[0]
+$themeButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+if ($script:selectedAppearanceTheme -ne "dark") {
+  throw "Windows 主题卡片点击没有把主题 ID 传给选择函数"
+}
+$themeFrame = [System.Windows.Controls.Border]$themeButton.Content
+$themeOverlay = [System.Windows.Controls.Grid]$themeFrame.Child
+$selectedBadge = [System.Windows.Controls.Border]$themeOverlay.Children[1]
+if ($selectedBadge.Width -ne 18 -or $selectedBadge.Height -ne 18 -or
+    $selectedBadge.CornerRadius.TopLeft -ne 9) {
+  throw "Windows 主题选中标记没有使用 macOS 风格的圆形徽标"
+}
 
 # Windows 的确认框类型只能在 Windows PowerShell 中实例化；这里检查六个离开入口都没有绕过确认函数。
 foreach ($name in @("ModelsTab", "ProxyTab", "GeneralTab", "AppearanceTab", "AboutTab", "HelpTab")) {

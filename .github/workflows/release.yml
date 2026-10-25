@@ -11,10 +11,40 @@ permissions:
   contents: write
 
 jobs:
+  windows-host:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 测试原生启动器
+        shell: powershell
+        run: .\tests\WindowsLauncher.ps1.test.ps1
+
+      - name: 编译原生启动器
+        shell: powershell
+        run: |
+          .\Scripts\build-windows-host.ps1 -OutputPath "$env:RUNNER_TEMP\windows-host\GPT Switch.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-host
+          path: ${{ runner.temp }}/windows-host/GPT Switch.exe
+          if-no-files-found: error
+
   release:
+    needs: windows-host
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-native-host
+          path: ${{ runner.temp }}/windows-host
 
       - uses: actions/setup-node@v4
         with:
@@ -28,6 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPT_SWITCH_RELEASE_SKIP_SYNC: "1"
           GPT_SWITCH_RELEASE_ALLOW_DETACHED: "1"
+          GPT_SWITCH_WINDOWS_HOST: ${{ runner.temp }}/windows-host/GPT Switch.exe
         run: |
           version="${GITHUB_REF_NAME#v}"
           ./Scripts/local-release.sh prepare "$version"

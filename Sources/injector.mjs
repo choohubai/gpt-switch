@@ -49,6 +49,7 @@ const STATUS_MENU_PATH = path.join(SCRIPT_DIR, "GPTSwitchStatusMenu");
 const STATUS_ICON_PATH = path.join(SCRIPT_DIR, "MenuBarIcon.png");
 const WINDOWS_PANEL_PATH = path.join(SCRIPT_DIR, "StatusMenu.ps1");
 const WINDOWS_PANEL_ICON = path.join(SCRIPT_DIR, "AppIcon.ico");
+const WINDOWS_LAUNCHER_PATH = path.join(SCRIPT_DIR, "GPT Switch.exe");
 const APPEARANCE_RESOURCE_DIR = fs.existsSync(path.join(SCRIPT_DIR, "Appearance"))
   ? path.join(SCRIPT_DIR, "Appearance")
   : path.join(SCRIPT_DIR, "..", "Resources", "Appearance");
@@ -95,12 +96,22 @@ const quoteAppleScript = (value) => String(value)
   .replaceAll("\"", "\\\"")
   .replaceAll("\n", " ");
 
+const runWindowsLauncher = (arguments_, timeoutMs = 30_000) => {
+  const result = spawnSync(
+    WINDOWS_LAUNCHER_PATH,
+    arguments_,
+    { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(firstLine(result.stderr) || firstLine(result.stdout) || "Windows helper failed");
+  }
+  return result;
+};
+
 /// Windows 没有 osascript，用系统消息框提示启动期错误。
 const windowsMessageBox = (message, icon = "Error") => {
-  const script = "Add-Type -AssemblyName PresentationFramework;"
-    + ` [System.Windows.MessageBox]::Show(${quotePowerShell(message)}, `
-    + `${quotePowerShell(APP_TITLE)}, 'OK', ${quotePowerShell(icon)}) | Out-Null`;
-  runPowerShell(script, 120_000);
+  runWindowsLauncher(["--message", icon, String(message)], 120_000);
 };
 
 const notify = (message) => {
@@ -163,20 +174,20 @@ const startStatusMenu = (onRequest) => {
   }
 };
 
-/// Windows 面板是 PowerShell + WPF 写的桌面窗口，等价于 macOS 的菜单栏面板。
+/// 既有 WPF 面板由原生 GPT Switch.exe 在自身进程内承载，不再启动 powershell.exe。
 const startWindowsPanel = (onRequest) => {
-  if (statusMenuProcess || !fs.existsSync(WINDOWS_PANEL_PATH)) return;
+  if (statusMenuProcess
+    || !fs.existsSync(WINDOWS_LAUNCHER_PATH)
+    || !fs.existsSync(WINDOWS_PANEL_PATH)) return;
   const panelArgs = [
-    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-    "-File", WINDOWS_PANEL_PATH,
-    "-ParentPid", String(process.pid),
+    "--panel", "--parent-pid", String(process.pid),
   ];
-  if (fs.existsSync(WINDOWS_PANEL_ICON)) panelArgs.push("-IconPath", WINDOWS_PANEL_ICON);
+  if (fs.existsSync(WINDOWS_PANEL_ICON)) panelArgs.push("--icon-path", WINDOWS_PANEL_ICON);
   try {
     statusMenuProcess = spawn(
-      "powershell.exe",
+      WINDOWS_LAUNCHER_PATH,
       panelArgs,
-      { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+      { cwd: SCRIPT_DIR, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
     );
     attachPanelProcess(statusMenuProcess, onRequest);
   } catch (error) {
@@ -290,14 +301,6 @@ const WINDOWS_CODEX_BIN_DIR = path.join(LOCAL_APP_DATA, "OpenAI", "Codex", "bin"
 const WINDOWS_PACKAGED_CLIENT = /[\\/]WindowsApps[\\/]/i;
 let windowsActivationId = null;
 
-const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
-
-const runPowerShell = (script, timeoutMs = 30_000) => spawnSync(
-  "powershell.exe",
-  ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-  { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
-);
-
 const firstLine = (value) => String(value || "")
   .split(/\r?\n/)
   .map((line) => line.trim())
@@ -312,18 +315,18 @@ const windowsIsDesktopInstall = (executable) => {
   }
 };
 
-const windowsProcessPaths = (script) => String(runPowerShell(script).stdout || "")
-  .split(/\r?\n/)
-  .map((line) => line.trim())
-  .filter(Boolean);
+const windowsLauncherLines = (arguments_) => {
+  const result = runWindowsLauncher(arguments_);
+  return String(result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
 
 /// 正在运行的客户端：主进程是 ChatGPT.exe；Codex.exe 只在确认是桌面端安装时才认，
 /// 否则会把 codex CLI 当成客户端。
 const windowsRunningApp = () => {
-  const paths = windowsProcessPaths(
-    "Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe' or Name='Codex.exe'\""
-    + " | Select-Object -ExpandProperty ExecutablePath",
-  );
+  const paths = windowsLauncherLines(["--running-client-paths"]);
   const desktop = paths.find((candidate) => /[\\/]ChatGPT\.exe$/i.test(candidate));
   if (desktop && fs.existsSync(desktop)) return desktop;
   const codex = paths.find((candidate) => /[\\/]Codex\.exe$/i.test(candidate)
@@ -354,12 +357,7 @@ const windowsStandaloneApp = () => {
 
 /// 商店版（MSIX）：目录不能直接执行，只能用应用激活 API 带参数拉起。
 const windowsPackagedApp = () => {
-  const line = firstLine(runPowerShell(
-    "$package = Get-AppxPackage OpenAI.Codex;"
-    + " if ($package) {"
-    + " $application = (Get-AppxPackageManifest $package).Package.Applications.Application | Select-Object -First 1;"
-    + " \"$($package.InstallLocation)|$($package.PackageFamilyName)!$($application.Id)|$($application.Executable)\" }",
-  ).stdout);
+  const line = firstLine(windowsLauncherLines(["--packaged-app"]).join("\n"));
   const [installLocation, activationId, executable] = line.split("|");
   if (!installLocation || !activationId || !executable) return null;
   windowsActivationId = activationId;
@@ -404,11 +402,9 @@ const appIsRunning = IS_WINDOWS
 
 /// 只取这个客户端自己的进程：桌面端和 codex CLI 可能同名（Codex.exe / codex.exe），
 /// 按 taskkill /IM 会连 CLI 一起杀掉。
-const windowsClientPids = (appPath) => windowsProcessPaths(
-  `Get-CimInstance Win32_Process -Filter "Name=${quotePowerShell(path.basename(appPath))}"`
-  + ` | Where-Object { $_.ExecutablePath -eq ${quotePowerShell(appPath)} }`
-  + " | Select-Object -ExpandProperty ProcessId",
-).map(Number).filter((value) => Number.isInteger(value) && value > 0);
+const windowsClientPids = (appPath) => windowsLauncherLines(["--client-pids", appPath])
+  .map(Number)
+  .filter((value) => Number.isInteger(value) && value > 0);
 
 /// 等这个客户端退出。先用便宜的 tasklist 判断同名进程；同名进程还在时才精确核对路径，
 /// 免得把 codex CLI 当成客户端一直等下去。
@@ -442,44 +438,16 @@ const windowsQuitApp = async (appPath) => {
 
 const quitApp = IS_WINDOWS ? windowsQuitApp : macQuitApp;
 
-const WINDOWS_ACTIVATION_TYPE = `
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-[ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IApplicationActivationManager {
-    int ActivateApplication([In] string appUserModelId, [In] string arguments, [In] int options, [Out] out uint processId);
-    int ActivateForFile([In] string appUserModelId, [In] object itemArray, [In] string verb, [Out] out uint processId);
-    int ActivateForProtocol([In] string appUserModelId, [In] object itemArray, [Out] out uint processId);
-}
-[ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
-public class ApplicationActivationManager { }
-public static class GPTSwitchActivation {
-    public static uint Activate(string appUserModelId, string arguments) {
-        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-        uint processId;
-        int hr = manager.ActivateApplication(appUserModelId, arguments, 0, out processId);
-        if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-        return processId;
-    }
-}
-'@
-`;
-
 const windowsDebugArguments = (port) => `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`;
 
 const windowsActivateApp = (appPath, port) => {
   // 发现阶段可能走的是“正在运行的客户端”这条路，激活 ID 需要在这里补齐。
   if (!windowsActivationId) windowsPackagedApp();
   if (!windowsActivationId) throw new Error("未找到商店版客户端的激活信息，请改用官方独立安装版");
-  const script = "$ErrorActionPreference = \"Stop\"\n"
-    + WINDOWS_ACTIVATION_TYPE
-    + `\n[GPTSwitchActivation]::Activate(${quotePowerShell(windowsActivationId)}, `
-    + `${quotePowerShell(windowsDebugArguments(port))}) | Out-Null\n`;
-  const result = runPowerShell(script, 90_000);
-  if (result.status !== 0) {
-    throw new Error(`启动客户端失败：${firstLine(result.stderr) || firstLine(result.stdout) || result.status}`);
-  }
+  runWindowsLauncher(
+    ["--activate-app", windowsActivationId, windowsDebugArguments(port)],
+    90_000,
+  );
   log("app_activated", { activationId: windowsActivationId, port });
 };
 
@@ -1146,6 +1114,16 @@ const main = async () => {
     };
   });
   startPanel((request, reply) => {
+    // 首次读取面板只碰本地文件；客户端恢复最长会等待渲染器，不能把这次读取一起卡住。
+    if (request?.action === "load") {
+      dispatchRequest(request)
+        .then(reply)
+        .catch((error) => {
+          log("panel_action_failed", String(error?.message || error));
+          reply({ ok: false, version: VERSION, error: String(error?.message || error) });
+        });
+      return;
+    }
     requests.push({ request, reply });
     if (wakePolling) wakePolling();
   });

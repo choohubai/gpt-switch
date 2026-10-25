@@ -278,6 +278,7 @@ function Convert-Context([int]$k) {
       <Setter Property="Foreground" Value="#3E4740"/>
       <Setter Property="BorderThickness" Value="0"/>
       <Setter Property="Padding" Value="12,0"/>
+      <Setter Property="Margin" Value="0,1"/>
       <Setter Property="Height" Value="34"/>
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="FontWeight" Value="Medium"/>
@@ -293,9 +294,6 @@ function Convert-Context([int]$k) {
                                 VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="fill" Property="Background" Value="#E4EEE0"/>
-              </Trigger>
               <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Opacity" Value="0.45"/>
               </Trigger>
@@ -305,19 +303,49 @@ function Convert-Context([int]$k) {
       </Setter>
     </Style>
     <Style x:Key="NavActive" TargetType="Button" BasedOn="{StaticResource Nav}">
-      <Setter Property="Background" Value="#DCEBD9"/>
-      <Setter Property="Foreground" Value="#356C41"/>
+      <Setter Property="Background" Value="#21336B40"/>
+      <Setter Property="Foreground" Value="#336B40"/>
     </Style>
     <Style x:Key="NavGlyph" TargetType="Path">
-      <Setter Property="Width" Value="18"/>
-      <Setter Property="Height" Value="18"/>
+      <Setter Property="Width" Value="14"/>
+      <Setter Property="Height" Value="14"/>
+      <Setter Property="Margin" Value="2,0,10,0"/>
       <Setter Property="Stretch" Value="Uniform"/>
       <Setter Property="Fill" Value="Transparent"/>
       <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
-      <Setter Property="StrokeThickness" Value="1.6"/>
+      <Setter Property="StrokeThickness" Value="1.5"/>
       <Setter Property="StrokeStartLineCap" Value="Round"/>
       <Setter Property="StrokeEndLineCap" Value="Round"/>
       <Setter Property="StrokeLineJoin" Value="Round"/>
+    </Style>
+    <Style x:Key="ThemeCard" TargetType="Button">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <ContentPresenter/>
+              <Border x:Name="focus" BorderBrush="Transparent" BorderThickness="1"
+                      CornerRadius="11" IsHitTestVisible="False"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Opacity" Value="0.94"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="focus" Property="BorderBrush" Value="#336B40"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style x:Key="ChannelSwitch" TargetType="ToggleButton">
       <Setter Property="Width" Value="34"/>
@@ -368,51 +396,54 @@ function Convert-Context([int]$k) {
     </Grid.RowDefinitions>
 
     <Border x:Name="Sidebar" Grid.RowSpan="2" Grid.Column="0" Background="#EDF4EA">
-      <StackPanel Margin="8,24,8,16">
+      <StackPanel Margin="8,22,8,16">
         <TextBlock Text="GPT Switch" FontSize="16" FontWeight="SemiBold" Foreground="#202522"
-                   Margin="14,0,0,22"/>
-        <TextBlock Text="设置" FontSize="11" FontWeight="SemiBold" Foreground="#747D76"
+                   Margin="14,0,0,18"/>
+        <TextBlock Text="设置" FontSize="11" FontWeight="Medium" Foreground="#747D76"
                    Margin="14,0,0,8"/>
         <Button x:Name="ModelsTab" Style="{StaticResource NavActive}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M12,2 L21,7 21,17 12,22 3,17 3,7 Z M3,7 12,12 21,7 M12,12 12,22" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 L21,7 21,17 12,22 3,17 3,7 Z M3,7 12,12 21,7 M12,12 12,22"/>
             <TextBlock Text="模型"/>
           </StackPanel>
         </Button>
-        <Button x:Name="ProxyTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
+        <Button x:Name="ProxyTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M9,2 L15,2 15,8 9,8 Z M2,16 L8,16 8,22 2,22 Z M16,16 L22,16 22,22 16,22 Z M5,16 5,13 19,13 19,16 M12,13 12,8" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M9,2 L15,2 15,8 9,8 Z M2,16 L8,16 8,22 2,22 Z M16,16 L22,16 22,22 16,22 Z M5,16 5,13 19,13 19,16 M12,13 12,8"/>
             <TextBlock Text="代理"/>
           </StackPanel>
         </Button>
-        <Button x:Name="GeneralTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
+        <Button x:Name="GeneralTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M9.5,2 L14.5,2 15.3,4.4 17.2,5.2 19.5,4.2 22,7.8 20.1,9.5 20.1,11.5 22,13.2 19.5,16.8 17.2,15.8 15.3,16.6 14.5,19 9.5,19 8.7,16.6 6.8,15.8 4.5,16.8 2,13.2 3.9,11.5 3.9,9.5 2,7.8 4.5,4.2 6.8,5.2 8.7,4.4 Z M15,10.5 A3,3 0 1 1 9,10.5 A3,3 0 1 1 15,10.5" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M9.5,2 L14.5,2 15.3,4.4 17.2,5.2 19.5,4.2 22,7.8 20.1,9.5 20.1,11.5 22,13.2 19.5,16.8 17.2,15.8 15.3,16.6 14.5,19 9.5,19 8.7,16.6 6.8,15.8 4.5,16.8 2,13.2 3.9,11.5 3.9,9.5 2,7.8 4.5,4.2 6.8,5.2 8.7,4.4 Z M15,10.5 A3,3 0 1 1 9,10.5 A3,3 0 1 1 15,10.5"/>
             <TextBlock Text="通用"/>
           </StackPanel>
         </Button>
-        <Button x:Name="AppearanceTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
+        <Button x:Name="AppearanceTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M14.5,3 L21,9.5 10,20.5 3.5,21 4,14.5 Z M14.5,3 18,6.5 M4,14.5 9.5,20 M16,5 19,8" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}"
+                  Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                  StrokeThickness="0"
+                  Data="M5.75,2 C5.34,2 5,2.34 5,2.75 L5,14.25 C5,15.49 6.01,16.5 7.25,16.5 L9.5,16.5 L9.5,19.5 C9.5,20.88 10.62,22 12,22 C13.38,22 14.5,20.88 14.5,19.5 L14.5,16.5 L16.75,16.5 C17.99,16.5 19,15.49 19,14.25 L19,2.75 C19,2.34 18.66,2 18.25,2 Z M6.5,11 L6.5,3.5 L12.5,3.5 L12.5,5.25 C12.5,5.67 12.84,6 13.25,6 C13.66,6 14,5.67 14,5.25 L14,3.5 L15,3.5 L15,6.25 C15,6.67 15.34,7 15.75,7 C16.16,7 16.5,6.67 16.5,6.25 L16.5,3.5 L17.5,3.5 L17.5,11 Z M6.5,14.25 L6.5,12.5 L17.5,12.5 L17.5,14.25 C17.5,14.66 17.16,15 16.75,15 L13.75,15 C13.34,15 13,15.34 13,15.75 L13,19.5 C13,20.05 12.55,20.5 12,20.5 C11.45,20.5 11,20.05 11,19.5 L11,15.75 C11,15.34 10.66,15 10.25,15 L7.25,15 C6.84,15 6.5,14.66 6.5,14.25 Z"/>
             <TextBlock Text="外观"/>
           </StackPanel>
         </Button>
-        <Button x:Name="AgentsTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
+        <Button x:Name="AgentsTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M5,5 A3,3 0 1 1 5,11 A3,3 0 1 1 5,5 M16,4 A3,3 0 1 1 16,10 A3,3 0 1 1 16,4 M2,20 L2,18 C2,15 4,13 7,13 10,13 14,15 14,18 L14,20 M16,13 C19.5,13 22,14.5 22,18 L22,20" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M5,5 A3,3 0 1 1 5,11 A3,3 0 1 1 5,5 M16,4 A3,3 0 1 1 16,10 A3,3 0 1 1 16,4 M2,20 L2,18 C2,15 4,13 7,13 10,13 14,15 14,18 L14,20 M16,13 C19.5,13 22,14.5 22,18 L22,20"/>
             <TextBlock Text="Agents"/>
           </StackPanel>
         </Button>
-        <Border Height="1" Background="#CFDACB" Margin="4,12,4,10"/>
+        <Border Height="1" Background="#DCE5D8" Margin="4,10,4,10"/>
         <Button x:Name="AboutTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M12,10 L12,16 M12,7 12,7.01" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M12,10 L12,16 M12,7 12,7.01"/>
             <TextBlock Text="关于"/>
           </StackPanel>
         </Button>
-        <Button x:Name="HelpTab" Style="{StaticResource Nav}" Margin="0,2,0,0">
+        <Button x:Name="HelpTab" Style="{StaticResource Nav}">
           <StackPanel Orientation="Horizontal">
-            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M9.1,9 A3,3 0 1 1 12,14 L12,15 M12,18 12,18.01" Margin="0,0,10,0"/>
+            <Path Style="{StaticResource NavGlyph}" Data="M12,2 A10,10 0 1 1 12,22 A10,10 0 1 1 12,2 M9.1,9 A3,3 0 1 1 12,14 L12,15 M12,18 12,18.01"/>
             <TextBlock Text="获取帮助"/>
           </StackPanel>
         </Button>
@@ -679,22 +710,58 @@ function Convert-Context([int]$k) {
         <Button x:Name="AppearanceRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
                 Content="重启 ChatGPT" VerticalAlignment="Top"/>
       </Grid>
-      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
-        <StackPanel Margin="0,0,10,16">
-          <Border x:Name="AppearancePreviewFrame" Height="210" MinHeight="160" MaxWidth="640"
-                  HorizontalAlignment="Center" CornerRadius="12"
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                    PanningMode="VerticalOnly" Margin="0,16,0,0">
+        <ScrollViewer.Resources>
+          <Style TargetType="ScrollBar">
+            <Setter Property="Width" Value="8"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                  <Grid Background="Transparent">
+                    <Track x:Name="PART_Track" IsDirectionReversed="True"
+                           Orientation="{TemplateBinding Orientation}">
+                      <Track.Thumb>
+                        <Thumb MinHeight="36">
+                          <Thumb.Template>
+                            <ControlTemplate TargetType="Thumb">
+                              <Border Background="#336B40" CornerRadius="2"
+                                      Margin="2,0" Opacity="0.28"/>
+                            </ControlTemplate>
+                          </Thumb.Template>
+                        </Thumb>
+                      </Track.Thumb>
+                    </Track>
+                  </Grid>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </ScrollViewer.Resources>
+        <StackPanel Margin="0,0,0,20">
+          <Border x:Name="AppearancePreviewFrame" Height="210" MinHeight="160" MaxWidth="560"
+                  HorizontalAlignment="Stretch" CornerRadius="12"
                   Background="#E9F2E7" ClipToBounds="True" BorderBrush="#DCE5DA" BorderThickness="1">
             <Grid>
               <Image x:Name="AppearancePreviewImage" Stretch="UniformToFill"/>
+              <Border x:Name="AppearancePreviewEmpty" Background="#F2F7F0" CornerRadius="12">
+                <TextBlock x:Name="AppearancePreviewEmptyText" Text="正在读取主题…"
+                           FontSize="13" Foreground="#6E786F"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
               <Border x:Name="AppearanceBusyOverlay" Background="#33000000" Visibility="Collapsed">
                 <TextBlock Text="正在应用…" Foreground="White" FontSize="13" FontWeight="SemiBold"
                            HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
             </Grid>
           </Border>
-          <TextBlock Text="全部主题" FontSize="14" FontWeight="SemiBold" Foreground="#202522"
-                     Margin="0,20,0,0"/>
-          <TextBlock Text="选择后立即应用" FontSize="12" Foreground="#747D76" Margin="0,4,0,12"/>
+          <StackPanel Orientation="Horizontal" Margin="0,18,0,12">
+            <TextBlock Text="全部主题" FontSize="14" FontWeight="SemiBold" Foreground="#202522"
+                       VerticalAlignment="Bottom"/>
+            <TextBlock Text="选择后立即应用" FontSize="12" Foreground="#747D76"
+                       VerticalAlignment="Bottom" Margin="8,0,0,1"/>
+          </StackPanel>
           <WrapPanel x:Name="AppearanceThemePanel"/>
         </StackPanel>
       </ScrollViewer>
@@ -883,6 +950,8 @@ $agentsPage = $window.FindName("AgentsPage")
 $appearancePage = $window.FindName("AppearancePage")
 $appearancePreviewFrame = $window.FindName("AppearancePreviewFrame")
 $appearancePreviewImage = $window.FindName("AppearancePreviewImage")
+$appearancePreviewEmpty = $window.FindName("AppearancePreviewEmpty")
+$appearancePreviewEmptyText = $window.FindName("AppearancePreviewEmptyText")
 $appearanceBusyOverlay = $window.FindName("AppearanceBusyOverlay")
 $appearanceThemePanel = $window.FindName("AppearanceThemePanel")
 $appearanceRestartButton = $window.FindName("AppearanceRestartButton")
@@ -901,7 +970,7 @@ $addButton = $window.FindName("AddModelButton")
 $clearButton = $window.FindName("ClearButton")
 $restartButton = $window.FindName("RestartButton")
 
-# 面板跑在 powershell.exe 里，不显式设置就会顶着 PowerShell 的图标。
+# 面板由原生 GPT Switch.exe 承载，仍显式设置图标以覆盖宿主默认图标。
 # sips 生成的 ico 是 PNG 压缩的，先走 WIC 解码，失败再退回 System.Drawing。
 function Get-PanelIconBitmap {
   if (-not $IconPath -or -not (Test-Path -LiteralPath $IconPath)) { return $null }
@@ -1327,6 +1396,10 @@ function New-Appearance-Theme-Card($Theme) {
 
   $preview = New-Object System.Windows.Controls.Image
   $preview.Stretch = [System.Windows.Media.Stretch]::UniformToFill
+  $preview.SetValue(
+    [System.Windows.Media.RenderOptions]::BitmapScalingModeProperty,
+    [System.Windows.Media.BitmapScalingMode]::HighQuality
+  )
   Set-Appearance-Image $preview ([string]$Theme.coverPath)
 
   $selected = [string]$Theme.id -eq [string]$script:appearanceTheme
@@ -1346,25 +1419,38 @@ function New-Appearance-Theme-Card($Theme) {
   if ($selected) {
     $frame.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(59, 113, 78))
   }
+  $shadow = New-Object System.Windows.Media.Effects.DropShadowEffect
+  $shadow.BlurRadius = if ($selected) { 7 } else { 4 }
+  $shadow.ShadowDepth = 2
+  $shadow.Direction = 270
+  $shadow.Opacity = if ($selected) { 0.12 } else { 0.07 }
+  $frame.Effect = $shadow
 
   $overlay = New-Object System.Windows.Controls.Grid
   [void]$overlay.Children.Add($preview)
   if ($selected) {
-    $check = New-Object System.Windows.Controls.TextBlock
-    $check.Text = "✓"
-    $check.Foreground = [System.Windows.Media.Brushes]::White
-    $check.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(65, 120, 81))
-    $check.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $check = New-Object System.Windows.Controls.Border
+    $check.Width = 18
+    $check.Height = 18
+    $check.CornerRadius = New-Object System.Windows.CornerRadius -ArgumentList 9
+    $check.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(51, 107, 64))
     $check.HorizontalAlignment = "Right"
     $check.VerticalAlignment = "Top"
-    $check.Margin = "0,7,7,0"
-    $check.Padding = "4,1"
+    $check.Margin = "0,8,8,0"
+    $checkText = New-Object System.Windows.Controls.TextBlock
+    $checkText.Text = "✓"
+    $checkText.Foreground = [System.Windows.Media.Brushes]::White
+    $checkText.FontSize = 11
+    $checkText.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $checkText.HorizontalAlignment = "Center"
+    $checkText.VerticalAlignment = "Center"
+    $check.Child = $checkText
     [void]$overlay.Children.Add($check)
   }
   $frame.Child = $overlay
 
   $button = New-Object System.Windows.Controls.Button
-  $button.Style = $window.FindResource("PillIcon")
+  $button.Style = $window.FindResource("ThemeCard")
   $button.Width = 118
   $button.Height = 75
   $button.Padding = New-Object System.Windows.Thickness -ArgumentList 0
@@ -1375,7 +1461,7 @@ function New-Appearance-Theme-Card($Theme) {
   $button.ToolTip = "使用「$([string]$Theme.name)」主题"
   $button.IsEnabled = $script:loaded -and -not $script:busy
   [System.Windows.Automation.AutomationProperties]::SetName($button, "使用「$([string]$Theme.name)」主题")
-  $button.Add_Click({ Select-Appearance-Theme ([string]$sender.Tag) })
+  $button.Add_Click({ param($sender, $eventArgs) Select-Appearance-Theme ([string]$sender.Tag) })
   [void]$cell.Children.Add($button)
 
   $name = New-Object System.Windows.Controls.TextBlock
@@ -1394,13 +1480,21 @@ function Refresh-Appearance-View {
   Update-AppearancePreviewAspect
   $themes = @($script:appearanceThemes)
   $selected = $themes | Where-Object { [string]$_.id -eq [string]$script:appearanceTheme } | Select-Object -First 1
+  $appearancePreviewEmpty.Visibility = "Collapsed"
   if ($selected) {
     Set-Appearance-Image $appearancePreviewImage ([string]$selected.previewPath)
-    $previewColor = if ([string]$selected.colorScheme -eq "dark") { "#25282C" } else { "#EEF2ED" }
-    $appearancePreviewFrame.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList (
-      [System.Windows.Media.ColorConverter]::ConvertFromString($previewColor))
+    if ($null -eq $appearancePreviewImage.Source) {
+      $appearancePreviewEmptyText.Text = "主题预览不可用"
+      $appearancePreviewEmpty.Visibility = "Visible"
+    } else {
+      $previewColor = if ([string]$selected.colorScheme -eq "dark") { "#25282C" } else { "#EEF2ED" }
+      $appearancePreviewFrame.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList (
+        [System.Windows.Media.ColorConverter]::ConvertFromString($previewColor))
+    }
   } else {
     $appearancePreviewImage.Source = $null
+    $appearancePreviewEmptyText.Text = if ($script:loaded) { "主题资源不可用" } else { "正在读取主题…" }
+    $appearancePreviewEmpty.Visibility = "Visible"
   }
   $appearanceBusyOverlay.Visibility = if ($script:savingAppearance) { "Visible" } else { "Collapsed" }
   $appearanceThemePanel.Children.Clear()
@@ -1416,25 +1510,27 @@ function Refresh-Appearance-View {
   foreach ($theme in $themes) {
     [void]$appearanceThemePanel.Children.Add((New-Appearance-Theme-Card $theme))
   }
-  $coming = New-Object System.Windows.Controls.StackPanel
-  $coming.Width = 118
-  $coming.Margin = "0,0,10,14"
-  $placeholder = New-Object System.Windows.Controls.Border
-  $placeholder.Width = 112
-  $placeholder.Height = 75
-  $placeholder.CornerRadius = New-Object System.Windows.CornerRadius -ArgumentList 10
-  $placeholder.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(241, 241, 241))
-  $placeholder.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(232, 232, 232))
-  $placeholder.BorderThickness = New-Object System.Windows.Thickness -ArgumentList 1
-  $placeholderText = New-Object System.Windows.Controls.TextBlock
-  $placeholderText.Text = "敬请期待"
-  $placeholderText.FontSize = 12
-  $placeholderText.Foreground = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(160, 160, 160))
-  $placeholderText.HorizontalAlignment = "Center"
-  $placeholderText.VerticalAlignment = "Center"
-  $placeholder.Child = $placeholderText
-  [void]$coming.Children.Add($placeholder)
-  [void]$appearanceThemePanel.Children.Add($coming)
+  if ($themes.Count -gt 0) {
+    $coming = New-Object System.Windows.Controls.StackPanel
+    $coming.Width = 118
+    $coming.Margin = "0,0,10,14"
+    $placeholder = New-Object System.Windows.Controls.Border
+    $placeholder.Width = 112
+    $placeholder.Height = 75
+    $placeholder.CornerRadius = New-Object System.Windows.CornerRadius -ArgumentList 10
+    $placeholder.Background = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(241, 241, 241))
+    $placeholder.BorderBrush = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(232, 232, 232))
+    $placeholder.BorderThickness = New-Object System.Windows.Thickness -ArgumentList 1
+    $placeholderText = New-Object System.Windows.Controls.TextBlock
+    $placeholderText.Text = "敬请期待"
+    $placeholderText.FontSize = 12
+    $placeholderText.Foreground = New-Object System.Windows.Media.SolidColorBrush -ArgumentList ([System.Windows.Media.Color]::FromRgb(160, 160, 160))
+    $placeholderText.HorizontalAlignment = "Center"
+    $placeholderText.VerticalAlignment = "Center"
+    $placeholder.Child = $placeholderText
+    [void]$coming.Children.Add($placeholder)
+    [void]$appearanceThemePanel.Children.Add($coming)
+  }
   Update-AppearancePreviewAspect
   Update-Controls
 }
@@ -2142,6 +2238,7 @@ function Receive-Response($Response) {
       $script:savedAgentsEnabled = $script:agentsEnabled
     }
     if (Test-ResponseChannels $Response.channels) {
+      $keepAppearancePage = -not $script:loaded -and $appearancePage.Visibility -eq "Visible"
       $previousId = ""
       $active = Get-ActiveChannel
       if ($active) { $previousId = [string]$active.id }
@@ -2158,7 +2255,8 @@ function Receive-Response($Response) {
       $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($wanted, $script:channels.Count - 1) }
       Update-ChannelFields
       Rebuild-Rows
-      if ($cleared -or $Response.restarted -eq $true -or $script:channelIndex -lt 0) {
+      if (($cleared -or $Response.restarted -eq $true -or $script:channelIndex -lt 0) -and
+          -not $keepAppearancePage) {
         Show-List-Page
       } else {
         Update-ChannelList
@@ -2166,6 +2264,7 @@ function Receive-Response($Response) {
     } elseif ($ok -or $Response.saved -eq $true) {
       Set-Feedback "插件返回的渠道列表不完整，已保留当前配置" $true
     }
+    if ($appearancePage.Visibility -eq "Visible") { Refresh-Appearance-View }
   }
   if (-not $ok) {
     # 删除没能存盘就把刚拿掉的那条放回去，别让面板和文件对不上。
