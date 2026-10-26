@@ -985,6 +985,30 @@ test("Windows helper 启动失败或非零退出时保留真实错误", () => {
   assert.throws(() => failedExit(["--client-pids", "ChatGPT.exe"]), /query failed/);
 });
 
+test("Codex client version strips prerelease suffixes for catalog discovery", () => {
+  const start = injectorSource.indexOf("const readCodexClientVersion =");
+  const end = injectorSource.indexOf("\nconst readBundledCatalog =", start);
+  assert.notEqual(start, -1, "注入器缺少 Codex 客户端版本解析");
+  assert.notEqual(end, -1, "找不到 Codex 客户端版本解析终点");
+  const readVersion = new Function("spawnSync", `${injectorSource.slice(start, end)}
+    return readCodexClientVersion;`)(() => ({
+    status: 0,
+    stdout: "codex-cli 0.164.0-alpha.11.1\n",
+  }));
+  assert.equal(readVersion("/Applications/ChatGPT.app"), "0.164.0");
+});
+
+test("模型 ID 只能从端点发现结果导入", () => {
+  const swift = fs.readFileSync(new URL("../Sources/StatusMenu.swift", import.meta.url), "utf8");
+  const powershell = fs.readFileSync(new URL("../Sources/StatusMenu.ps1", import.meta.url), "utf8");
+  assert.doesNotMatch(swift, /title:\s*"添加模型"/);
+  assert.doesNotMatch(swift, /func addModel\(/);
+  assert.match(swift,
+    /LabeledField\(title:\s*"模型 ID"[\s\S]{0,160}\.disabled\(true\)/);
+  assert.doesNotMatch(powershell, /AddModelButton/);
+  assert.match(powershell, /\$idBox\.IsReadOnly = \$true/);
+});
+
 // Intercept process launches in a child so regression checks cannot touch ChatGPT.
 const preload = `
   import os from "node:os";

@@ -29,7 +29,8 @@ const CONFIG = [
 
 /// validateChannels 会把模型补成面板保存后的完整形状（没填显示名就落成模型 ID），断言里用它对齐。
 const model = (over = {}) => ({
-  displayName: String(over.id ?? ""), inputModalities: ["text", "image"], ...over,
+  displayName: String(over.id ?? ""), inputModalities: ["text", "image"],
+  supportsSearchTool: false, supportsParallelToolCalls: false, ...over,
 });
 
 const channel = (over = {}) => ({
@@ -544,7 +545,10 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
   const models = await withFetch(async (url, init) => {
     seen.push({ url, init });
     return listing({ data: [
-      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", context_length: 128000 },
+      {
+        id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", context_length: 128000,
+        supports_search_tool: true, supports_parallel_tool_calls: false,
+      },
       { id: "glm-5.3" },
       { id: "  " },
       { id: "deepseek-v4-pro" },
@@ -562,7 +566,10 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
   assert.equal(seen[0].init.headers["x-actor"], "actor");
   assert.equal(seen[0].init.headers.accept, "application/json");
   assert.deepEqual(models, [
-    { id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128 },
+    {
+      id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128,
+      supportsSearchTool: true, supportsParallelToolCalls: false,
+    },
     { id: "glm-5.3" },
     { id: "long-name" },
     { id: "control-name" },
@@ -616,16 +623,48 @@ test("discoverChannelModels reports the failures the panel shows", async () => {
     });
 });
 
+test("discoverChannelModels requests the Codex catalog for the running client", async () => {
+  let requested = "";
+  const models = await withFetch(async (url) => {
+    requested = String(url);
+    return listing({ models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
+  }, () => discoverChannelModels({
+    baseUrl: "https://relay.example/v1?region=cn",
+    clientVersion: "0.164.0",
+  }));
+  assert.equal(requested,
+    "https://relay.example/v1/models?region=cn&client_version=0.164.0");
+  assert.deepEqual(models, [{
+    id: "glm-5.3-flash", supportsSearchTool: false,
+  }]);
+});
+
 test("panel list-models answers with the endpoint's models", async (context) => {
   const paths = sandbox(context);
   const { options } = panelOptions(paths);
   const listed = await withFetch(async () => listing({ data: [{ id: "m-one" }] }),
     () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
-  assert.deepEqual(listed, { ok: true, models: [{ id: "m-one" }] });
+  assert.deepEqual(listed, {
+    ok: true,
+    models: [{ id: "m-one" }],
+  });
 
   const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
   assert.equal(bad.ok, false);
   assert.match(bad.error, /请先填渠道地址/);
+
+  let requested = "";
+  const versioned = await withFetch(async (url) => {
+    requested = String(url);
+    return listing({ models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
+  }, () => handlePanelRequest(
+    { action: "list-models", baseUrl: "https://relay.example/v1" },
+    { ...options, codexClientVersion: () => "0.164.0" },
+  ));
+  assert.equal(requested, "https://relay.example/v1/models?client_version=0.164.0");
+  assert.deepEqual(versioned.models, [{
+    id: "glm-5.3-flash", supportsSearchTool: false,
+  }]);
 });
 
 test("switching enables live web search and shows raw reasoning, clearing removes them again", (context) => {

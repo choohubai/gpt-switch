@@ -42,6 +42,8 @@ struct StatusMenuTests {
         assert(store.editingIndex == nil, "读完配置应该停在列表页")
         assert(store.channels[0].models.first?.displayName == "", "老配置没有显示名称时留空")
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
+        assert(store.channels[0].models.first?.supportsSearchTool == false, "老配置不能默认声明支持网页搜索")
+        assert(store.channels[0].models.first?.supportsParallelToolCalls == false, "老配置不能默认声明支持并行工具")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
         // 外观卡片即选即存；保存失败要退回原主题，不能出现界面和文件不一致。
@@ -258,7 +260,7 @@ struct StatusMenuTests {
         store.channels[0].models = [ModelRow(id: "deepseek-v4-pro", context: 1000)]
         store.models[0].displayName = "DeepSeek V4"
         store.models[0].context = 10000
-        store.models[0].id = "deepseek-v4-pro"
+        assert(store.models[0].id == "deepseek-v4-pro", "模型 ID 来自端点且不能在面板里改写")
         assert(store.models[0].displayName == "DeepSeek V4")
         assert(store.models[0].context == 10000)
         assert(contextConversionLabel(10000) == "10M")
@@ -268,8 +270,10 @@ struct StatusMenuTests {
         assert(store.models[0].inputModalities == ["text"], "最后一个输入类型不能被取消")
         store.toggleModality(at: 0, modality: "image", on: true)
         assert(store.models[0].inputModalities == ["text", "image"])
+        store.models[0].supportsSearchTool = true
+        store.models[0].supportsParallelToolCalls = true
 
-        store.addModel()
+        store.channels[0].models.append(ModelRow(id: "discovered-extra"))
         assert(store.models.count == 2)
         store.removeModel(at: 1)
         assert(store.models.count == 1)
@@ -287,6 +291,8 @@ struct StatusMenuTests {
         assert(submittedModels[0]["context"] as? Int == 10000)
         assert(submittedModels[0]["displayName"] as? String == "DeepSeek V4")
         assert(submittedModels[0]["inputModalities"] as? [String] == ["text", "image"])
+        assert(submittedModels[0]["supportsSearchTool"] as? Bool == true)
+        assert(submittedModels[0]["supportsParallelToolCalls"] as? Bool == true)
         assert(submitted[0]["enabled"] as? Bool == false, "在编辑页改渠道内容不能改动启用状态")
 
         store.apply(["ok": true, "saved": true, "channels": [
@@ -389,15 +395,14 @@ struct StatusMenuTests {
 
         // 删模型/删渠道后 SwiftUI 会用旧下标再求一次 body，不能越界崩掉面板进程。
         store.editChannel(at: 0)
-        store.addModel()
-        store.addModel()
+        store.channels[0].models = [ModelRow(id: "first"), ModelRow(id: "second")]
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         store.removeModel(at: 1)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         store.removeModel(at: 0)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.models.isEmpty)
-        store.addModel()
+        store.channels[0].models = [ModelRow(id: "remaining")]
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         assert(store.models.count == 1)
         // 没有「当前渠道不能删」这条限制：对着哪条点垃圾桶都先弹确认卡片。
@@ -464,7 +469,7 @@ struct StatusMenuTests {
 
         // 删模型也要先确认，取消不删。
         store.editChannel(at: 0)
-        store.addModel()
+        store.channels[0].models = [ModelRow(id: "discovered")]
         store.requestModelDelete(at: 0)
         assert(store.deletePrompt == .model(0), "模型垃圾桶要先确认")
         store.cancelDelete()
@@ -514,9 +519,11 @@ struct StatusMenuTests {
         assert(requests.last?["apiKey"] as? String == "sk-fetch")
         assert(requests.last?["headerName"] as? String == "x-actor")
         assert(store.busy && store.fetchingModels, "获取期间要锁住面板")
-        store.channels[0].models = [ModelRow(id: "kept", displayName: "手动改的名字", context: 64)]
+        store.channels[0].models = [ModelRow(
+            id: "kept", displayName: "手动改的名字", context: 64,
+            supportsSearchTool: true, supportsParallelToolCalls: true)]
         store.apply(["ok": true, "models": [
-            ["id": "kept", "context": 128],
+            ["id": "kept", "context": 128, "supportsSearchTool": false],
             ["id": "brand-new", "displayName": "Brand New"],
         ]])
         assert(!store.busy && !store.fetchingModels)
@@ -528,7 +535,11 @@ struct StatusMenuTests {
         store.addSelectedModels()
         assert(!store.discovering)
         assert(store.models.count == 1, "已经在目录里的不重复加")
-        assert(store.feedback == "勾选的模型都已经在目录里")
+        assert(store.models[0].supportsSearchTool == false, "端点明确返回 false 时要覆盖旧能力")
+        assert(store.models[0].supportsParallelToolCalls == true, "端点没返回的能力要保留原值")
+        assert(store.models[0].displayName == "手动改的名字", "刷新能力不能改人工设置的名字")
+        assert(store.models[0].context == 64, "刷新能力不能改人工设置的窗口")
+        assert(store.feedback == "已更新 1 个模型，点「保存」后生效")
 
         store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: nil)]
         store.discoveredSelection = ["brand-new"]

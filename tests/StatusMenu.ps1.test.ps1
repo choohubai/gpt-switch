@@ -48,6 +48,7 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Appearance-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-About-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Add-SelectedModels")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
 if ((Get-ChannelIdError "bad id") -ne "渠道 ID 只能用字母、数字、- 和 _") {
@@ -118,7 +119,7 @@ $empty = @'
 {"channels":[{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""}]}
 '@ | ConvertFrom-Json
 $detailed = @'
-{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","apiKey":"sk-relay","headerName":"x-actor","headerValue":"token","enabled":false,"models":[{"id":"m-one","displayName":"M One","context":128,"inputModalities":["text","image"]}]}]}
+{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","apiKey":"sk-relay","headerName":"x-actor","headerValue":"token","enabled":false,"models":[{"id":"m-one","displayName":"M One","context":128,"inputModalities":["text","image"],"supportsSearchTool":true,"supportsParallelToolCalls":true}]}]}
 '@ | ConvertFrom-Json
 
 if (-not (Test-ResponseChannels $normal.channels)) { throw "正常渠道回包被拒绝" }
@@ -147,7 +148,9 @@ if ($drawable.Count -ne 0) { throw "空 ID 草稿泄漏到了渠道列表" }
 $converted = Convert-ResponseChannels $detailed.channels
 if ($converted[0].baseUrl -ne "https://relay.example/v1" -or $converted[0].headerName -ne "x-actor" -or
     $converted[0].enabled -ne $false -or $converted[0].models[0].context -ne 128 -or
-    (@($converted[0].models[0].inputModalities) -join ",") -ne "text,image") {
+    (@($converted[0].models[0].inputModalities) -join ",") -ne "text,image" -or
+    $converted[0].models[0].supportsSearchTool -ne $true -or
+    $converted[0].models[0].supportsParallelToolCalls -ne $true) {
   throw "渠道回包转换丢了字段"
 }
 $noEnabled = @'
@@ -191,6 +194,7 @@ function Get-ActiveChannel {
 function Update-ChannelFields { }
 function Rebuild-Rows { }
 function Update-ChannelList { }
+function Hide-ModelPicker { }
 $script:lastFeedbackText = ""
 $script:lastFeedbackError = $false
 function Set-Feedback([string]$Text, [bool]$IsError = $false) {
@@ -225,6 +229,36 @@ Receive-Response ([pscustomobject]@{
   channels = $single.channels
 })
 if ($script:showListCalls -ne 1) { throw "编辑页保存成功后没有返回列表页" }
+
+# 重新导入已有模型只覆盖端点明确返回的能力，保留人工修改的显示名和窗口。
+$script:channels = Convert-ResponseChannels (@'
+{"channels":[{"id":"relay","models":[{"id":"kept","displayName":"手动改的名字","context":64,"inputModalities":["text","image"],"supportsSearchTool":true,"supportsParallelToolCalls":true}]}]}
+'@ | ConvertFrom-Json).channels
+$script:channelIndex = 0
+$script:discoveredModels = @(
+  [pscustomobject]@{
+    id = "kept"
+    supportsSearchTool = $false
+  },
+  [pscustomobject]@{
+    id = "brand-new"
+    displayName = "Brand New"
+  }
+)
+$script:discoveredSelection = @{ kept = $true; "brand-new" = $true }
+Add-SelectedModels
+if ($script:channels[0].models.Count -ne 2 -or
+    $script:channels[0].models[0].supportsSearchTool -ne $false -or
+    $script:channels[0].models[0].supportsParallelToolCalls -ne $true -or
+    $script:channels[0].models[0].displayName -ne "手动改的名字" -or
+    $script:channels[0].models[0].context -ne 64 -or
+    $script:channels[0].models[1].supportsSearchTool -ne $false -or
+    $script:channels[0].models[1].supportsParallelToolCalls -ne $false) {
+  throw "重新导入模型没有按能力刷新，或误改了已有模型设置"
+}
+if ($script:lastFeedbackText -ne "已添加 1 个、更新 1 个模型，点「保存」后生效") {
+  throw "重新导入模型后的反馈不准确"
+}
 
 $script:showListCalls = 0
 $script:modelEditorActive = $true

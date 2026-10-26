@@ -56,6 +56,9 @@ export const validateModels = (models) => {
       displayName: parseDisplayName(model.displayName, index) || id,
       context: parseContextK(model.context, index),
       inputModalities: parseModalities(model.inputModalities, index),
+      // 模型目录里的布尔能力没有“未知”值；缺省按下线处理，只声明已经确认支持的能力。
+      supportsSearchTool: model.supportsSearchTool === true,
+      supportsParallelToolCalls: model.supportsParallelToolCalls === true,
     };
   });
 };
@@ -74,14 +77,13 @@ export const atomicWrite = (filePath, contents) => {
 /// 渠道模型都走第三方端点，必须按「非 Responses Lite」的 Codex 形状声明：Lite 会把工具声明塞进
 /// input[0].additional_tools、改发 custom_tool_call、还要一个内部请求头，上游不认的时候模型只能把工具
 /// 调用当文本吐出来。取值照 DeepSeek 官方的 models.json（agent_integrations/codex）。
-/// 网页搜索统一声明为支持：全局 web_search 固定 "live"，渠道里配到的模型都按支持搜索处理。
 const THIRD_PARTY_MODEL = {
   use_responses_lite: false,
   tool_mode: null,
   shell_type: "shell_command",
   web_search_tool_type: "text",
-  supports_search_tool: true,
-  supports_parallel_tool_calls: true,
+  supports_search_tool: false,
+  supports_parallel_tool_calls: false,
   // 第三方端点不认 service_tier，Fast 档摆出来只会让请求被拒。
   service_tiers: [],
   additional_speed_tiers: [],
@@ -119,8 +121,9 @@ export const buildCatalog = (bundled, models) => {
       applyWindow(existing, tokens);
       if (model.displayName) existing.display_name = model.displayName;
       existing.input_modalities = modalities;
-      // 内置同名条目可能带着 Lite 的搜索声明，渠道模型的搜索能力统一覆盖成支持。
-      existing.supports_search_tool = true;
+      // 同 slug 的官方条目不代表当前渠道已经具备相同能力。
+      existing.supports_search_tool = model.supportsSearchTool === true;
+      existing.supports_parallel_tool_calls = model.supportsParallelToolCalls === true;
       existing.visibility = "list";
       continue;
     }
@@ -128,6 +131,8 @@ export const buildCatalog = (bundled, models) => {
     const entry = {
       ...JSON.parse(JSON.stringify(template)),
       ...THIRD_PARTY_MODEL,
+      supports_search_tool: model.supportsSearchTool === true,
+      supports_parallel_tool_calls: model.supportsParallelToolCalls === true,
       slug: model.id,
       display_name: displayName,
       description: displayName,

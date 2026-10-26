@@ -598,11 +598,9 @@ function Convert-Context([int]$k) {
           <StackPanel x:Name="RowsPanel"/>
           <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" Margin="0,24" Visibility="Collapsed">
             <TextBlock Text="暂无自定义模型" FontSize="14" Foreground="#202522" HorizontalAlignment="Center"/>
-            <TextBlock Text="点下面的「添加模型」，例如 gpt-6-astra" FontSize="12" Foreground="#88898A"
+            <TextBlock Text="点上方「获取可用模型」后勾选要导入的模型" FontSize="12" Foreground="#88898A"
                        HorizontalAlignment="Center" Margin="0,6,0,0"/>
           </StackPanel>
-          <Button x:Name="AddModelButton" Style="{StaticResource Dashed}" Content="＋ 添加模型"
-                  HorizontalAlignment="Stretch" Margin="0,8,0,0"/>
         </StackPanel>
       </ScrollViewer>
       <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
@@ -840,7 +838,7 @@ function Convert-Context([int]$k) {
         </StackPanel>
       </Border>
     </Grid>
-    <!-- 端点清单先在这里勾选，点「添加所选」才进模型目录。 -->
+    <!-- 端点清单先在这里勾选，点「导入所选」才进模型目录。 -->
     <Grid x:Name="DiscoverLayer" Grid.Row="0" Grid.RowSpan="2" Grid.ColumnSpan="3"
           Background="#1F000000" Visibility="Collapsed">
       <Border Width="460" HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -854,12 +852,12 @@ function Convert-Context([int]$k) {
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="选择要添加的模型" FontSize="17" FontWeight="SemiBold"
+            <TextBlock Grid.Column="0" Text="选择要导入的模型" FontSize="17" FontWeight="SemiBold"
                        Foreground="#212327" VerticalAlignment="Center"/>
             <Button x:Name="DiscoverClose" Grid.Column="1" Style="{StaticResource Link}" Content="✕" FontSize="13"
                     VerticalAlignment="Top" Margin="8,0,0,0"/>
           </Grid>
-          <TextBlock Text="以下是模型提供商的可用模型，勾选要添加的模型。" FontSize="13" Foreground="#656667"
+          <TextBlock Text="以下是模型提供商的可用模型；已有模型会刷新端点明确返回的能力。" FontSize="13" Foreground="#656667"
                      TextWrapping="Wrap" Margin="0,12,0,0"/>
           <Grid Margin="0,14,0,0">
             <Grid.ColumnDefinitions>
@@ -880,7 +878,7 @@ function Convert-Context([int]$k) {
           </ScrollViewer>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
             <Button x:Name="DiscoverCancel" Style="{StaticResource Pill}" Content="取消" Height="38" Padding="22,0"/>
-            <Button x:Name="DiscoverAdd" Style="{StaticResource Pill}" Content="添加所选" Height="38" Padding="22,0"
+            <Button x:Name="DiscoverAdd" Style="{StaticResource Pill}" Content="导入所选" Height="38" Padding="22,0"
                     Margin="10,0,0,0"/>
           </StackPanel>
         </StackPanel>
@@ -894,7 +892,6 @@ function Convert-Context([int]$k) {
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
-$addButton = $window.FindName("AddModelButton")
 $clearButton = $window.FindName("ClearButton")
 $restartButton = $window.FindName("RestartButton")
 $saveButton = $window.FindName("SaveButton")
@@ -964,7 +961,6 @@ $proxyHostField = $window.FindName("ProxyHostField")
 $proxyPortField = $window.FindName("ProxyPortField")
 $saveProxyButton = $window.FindName("SaveProxyButton")
 $proxyRestartButton = $proxyPage.FindName("ProxyRestartButton")
-$addButton = $window.FindName("AddModelButton")
 $clearButton = $window.FindName("ClearButton")
 $restartButton = $window.FindName("RestartButton")
 
@@ -1583,7 +1579,6 @@ function Show-About-Page {
 function Update-Controls {
   $hasChannel = $null -ne (Get-ActiveChannel)
   $models = Get-ActiveModels
-  $addButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   $addChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -lt 50
   $deleteChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $hasChannel
   $deleteChannelButton.ToolTip = "删除渠道"
@@ -1629,6 +1624,8 @@ function Compare-Models($Left, $Right) {
     $leftModalities = @($Left[$index].inputModalities) -join ","
     $rightModalities = @($Right[$index].inputModalities) -join ","
     if ($leftModalities -ne $rightModalities) { return $true }
+    if ($Left[$index].supportsSearchTool -ne $Right[$index].supportsSearchTool) { return $true }
+    if ($Left[$index].supportsParallelToolCalls -ne $Right[$index].supportsParallelToolCalls) { return $true }
   }
   return $false
 }
@@ -1649,6 +1646,8 @@ function Convert-ResponseChannels($Source) {
         @{
           id = [string]$_.id; displayName = [string]$_.displayName
           context = [int]$_.context; inputModalities = @($_.inputModalities)
+          supportsSearchTool = $_.supportsSearchTool -eq $true
+          supportsParallelToolCalls = $_.supportsParallelToolCalls -eq $true
         }
       })
     }
@@ -1677,6 +1676,8 @@ function Copy-Channels($Source) {
         @{
           id = $_.id; displayName = $_.displayName
           context = $_.context; inputModalities = @($_.inputModalities)
+          supportsSearchTool = $_.supportsSearchTool -eq $true
+          supportsParallelToolCalls = $_.supportsParallelToolCalls -eq $true
         }
       })
     }
@@ -1816,6 +1817,7 @@ function Rebuild-Rows {
     [void]$content.Children.Add($trashRow)
 
     $idBox = New-ModelBox @{ index = $index; field = "id" } ([string]$model.id) 300
+    $idBox.IsReadOnly = $true
     $idBox.HorizontalAlignment = "Stretch"
     [void]$content.Children.Add((New-ModelFieldBlock "模型 ID" @($idBox)))
 
@@ -1862,6 +1864,24 @@ function Rebuild-Rows {
       [void]$modalityRow.Children.Add($check)
     }
     [void]$content.Children.Add($modalityRow)
+    $capabilityRow = New-Object System.Windows.Controls.StackPanel
+    $capabilityRow.Orientation = "Horizontal"
+    $capabilityRow.Margin = "0,8,0,0"
+    foreach ($capability in @(
+      @{ field = "supportsSearchTool"; label = "网页搜索"; value = $model.supportsSearchTool },
+      @{ field = "supportsParallelToolCalls"; label = "并行工具"; value = $model.supportsParallelToolCalls }
+    )) {
+      $check = New-Object System.Windows.Controls.CheckBox
+      $check.Content = $capability.label
+      $check.FontSize = 14
+      $check.IsEnabled = $enabled
+      $check.Tag = @{ index = $index; field = $capability.field }
+      $check.IsChecked = $capability.value -eq $true
+      $check.Margin = if ($capability.field -eq "supportsSearchTool") { "0,0,14,0" } else { "0" }
+      $check.Add_Click({ param($sender, $eventArgs) Toggle-ToolCapability $sender })
+      [void]$capabilityRow.Children.Add($check)
+    }
+    [void]$content.Children.Add($capabilityRow)
 
     $card.Child = $content
     [void]$rowsPanel.Children.Add($card)
@@ -1913,6 +1933,17 @@ function Toggle-Modality($Sender) {
     $current = $remaining
   }
   $channel.models[$index].inputModalities = $current
+  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+function Toggle-ToolCapability($Sender) {
+  if ($script:rendering -or $script:busy) { return }
+  $channel = Get-ActiveChannel
+  if (-not $channel) { return }
+  $index = [int]$Sender.Tag.index
+  if ($index -lt 0 -or $index -ge $channel.models.Count) { return }
+  $channel.models[$index].($Sender.Tag.field) = $Sender.IsChecked -eq $true
   Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
 }
@@ -1977,7 +2008,7 @@ function Fetch-Models {
   }
 }
 
-# 端点清单先弹卡片勾选，点「添加所选」才进模型目录。
+# 端点清单先弹卡片勾选，点「导入所选」才进模型目录。
 function Show-ModelPicker($Models) {
   $script:discoveredModels = @($Models)
   $script:discoveredSelection = @{}
@@ -2023,7 +2054,7 @@ function Update-DiscoveryList {
   Refresh-DiscoverySelection
 }
 
-# 只刷「全选」和「添加所选」的状态，不重建列表，免得勾一下就丢焦点。
+# 只刷「全选」和「导入所选」的状态，不重建列表，免得勾一下就丢焦点。
 function Refresh-DiscoverySelection {
   $all = $discoverList.Children.Count -gt 0
   foreach ($check in $discoverList.Children) {
@@ -2040,28 +2071,52 @@ function Toggle-Discovered($Sender) {
   Refresh-DiscoverySelection
 }
 
-# 勾上的补进当前渠道；已经在目录里的不重复加。
+# 勾上的补进当前渠道；已有模型只应用端点明确返回的能力，保留人工设置的名字和窗口。
 function Add-SelectedModels {
   $channel = Get-ActiveChannel
   if (-not $channel) { Hide-ModelPicker; Update-Controls; return }
   $existing = @{}
-  foreach ($model in @($channel.models)) { $existing[[string]$model.id] = $true }
+  foreach ($model in @($channel.models)) { $existing[[string]$model.id] = $model }
   $added = 0
+  $updated = 0
   foreach ($row in $script:discoveredModels) {
     $id = [string]$row.id
-    if (-not $script:discoveredSelection.ContainsKey($id) -or $existing.ContainsKey($id)) { continue }
-    $channel.models = @($channel.models) + @{
+    if (-not $script:discoveredSelection.ContainsKey($id)) { continue }
+    if ($existing.ContainsKey($id)) {
+      $model = $existing[$id]
+      $hasCapabilities = $false
+      foreach ($field in @("supportsSearchTool", "supportsParallelToolCalls")) {
+        if (@($row.PSObject.Properties.Name) -contains $field -and $null -ne $row.$field) {
+          $model[$field] = [bool]$row.$field
+          $hasCapabilities = $true
+        }
+      }
+      if ($hasCapabilities) { $updated += 1 }
+      continue
+    }
+    $model = @{
       id = $id
       displayName = [string]$row.displayName
       context = $(if ($null -ne $row.context) { [int]$row.context } else { 272 })
       inputModalities = @("text", "image")
+      supportsSearchTool = $row.supportsSearchTool -eq $true
+      supportsParallelToolCalls = $row.supportsParallelToolCalls -eq $true
     }
-    $existing[$id] = $true
+    $channel.models = @($channel.models) + $model
+    $existing[$id] = $model
     $added += 1
   }
   Hide-ModelPicker
   Rebuild-Rows
-  Set-Feedback $(if ($added -gt 0) { "已添加 $added 个模型，点「保存」后生效" } else { "勾选的模型都已经在目录里" })
+  $message = if ($updated -gt 0) {
+    $addedText = if ($added -gt 0) { "添加 $added 个、" } else { "" }
+    "已${addedText}更新 $updated 个模型，点「保存」后生效"
+  } elseif ($added -gt 0) {
+    "已添加 $added 个模型，点「保存」后生效"
+  } else {
+    "端点没有返回新的模型或能力"
+  }
+  Set-Feedback $message
   Update-Controls
 }
 
@@ -2359,20 +2414,6 @@ function Submit([string]$Action, [string]$Note = "", [string]$Current = "") {
     })
   }
 }
-
-$addButton.Add_Click({
-  if (-not $script:loaded -or $script:busy) { return }
-  $channel = Get-ActiveChannel
-  if (-not $channel) { return }
-  $channel.models = @($channel.models) + @{
-    id = ""; displayName = ""; context = 272; inputModalities = @("text", "image")
-  }
-  Rebuild-Rows
-  Set-Feedback "有未保存的更改"
-  Update-Controls
-  $newCard = $rowsPanel.Children[$rowsPanel.Children.Count - 1]
-  $newCard.Child.Children[1].Children[1].Children[0].Focus() | Out-Null
-})
 
 $saveButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }

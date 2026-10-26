@@ -69,17 +69,22 @@ struct ModelRow: Codable, Equatable {
     var displayName: String
     var context: Int
     var inputModalities: [String]
+    var supportsSearchTool: Bool
+    var supportsParallelToolCalls: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, displayName, context, inputModalities
+        case id, displayName, context, inputModalities, supportsSearchTool, supportsParallelToolCalls
     }
 
     init(id: String = "", displayName: String = "", context: Int = 272,
-         inputModalities: [String] = ["text", "image"]) {
+         inputModalities: [String] = ["text", "image"],
+         supportsSearchTool: Bool = false, supportsParallelToolCalls: Bool = false) {
         self.id = id
         self.displayName = displayName
         self.context = context
         self.inputModalities = inputModalities
+        self.supportsSearchTool = supportsSearchTool
+        self.supportsParallelToolCalls = supportsParallelToolCalls
     }
 
     init(from decoder: Decoder) throws {
@@ -89,6 +94,9 @@ struct ModelRow: Codable, Equatable {
         context = try container.decodeIfPresent(Int.self, forKey: .context) ?? 272
         inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities)
             ?? ["text", "image"]
+        supportsSearchTool = try container.decodeIfPresent(Bool.self, forKey: .supportsSearchTool) ?? false
+        supportsParallelToolCalls = try container.decodeIfPresent(
+            Bool.self, forKey: .supportsParallelToolCalls) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -97,11 +105,14 @@ struct ModelRow: Codable, Equatable {
         try container.encode(displayName, forKey: .displayName)
         try container.encode(context, forKey: .context)
         try container.encode(inputModalities, forKey: .inputModalities)
+        try container.encode(supportsSearchTool, forKey: .supportsSearchTool)
+        try container.encode(supportsParallelToolCalls, forKey: .supportsParallelToolCalls)
     }
 
     var payload: [String: Any] {
         [
             "id": id, "displayName": displayName, "context": context, "inputModalities": inputModalities,
+            "supportsSearchTool": supportsSearchTool, "supportsParallelToolCalls": supportsParallelToolCalls,
         ]
     }
 }
@@ -181,6 +192,17 @@ struct DiscoveredModel: Decodable {
     let id: String
     let displayName: String?
     let context: Int?
+    let supportsSearchTool: Bool?
+    let supportsParallelToolCalls: Bool?
+
+    init(id: String, displayName: String?, context: Int?,
+         supportsSearchTool: Bool? = nil, supportsParallelToolCalls: Bool? = nil) {
+        self.id = id
+        self.displayName = displayName
+        self.context = context
+        self.supportsSearchTool = supportsSearchTool
+        self.supportsParallelToolCalls = supportsParallelToolCalls
+    }
 }
 
 struct AppearanceThemeRow: Identifiable, Equatable {
@@ -400,13 +422,6 @@ final class PanelStore: ObservableObject {
     }
 
     // MARK: 模型编辑
-
-    func addModel() {
-        guard loaded, !busy, hasChannel else { return }
-        models.append(ModelRow())
-        feedback = "有未保存的更改"
-        feedbackIsError = false
-    }
 
     func removeModel(at index: Int) {
         guard !busy, models.indices.contains(index) else { return }
@@ -821,20 +836,41 @@ final class PanelStore: ObservableObject {
         feedbackIsError = false
     }
 
-    /// 勾上的补进当前渠道；已经在目录里的不重复加。
+    /// 勾上的补进当前渠道；已有模型只应用端点明确返回的能力，保留人工设置的名字和窗口。
     func addSelectedModels() {
         guard channels.indices.contains(activeIndex) else { return }
-        let existing = Set(channels[activeIndex].models.map(\.id))
-        let picked = discoveredModels.filter { discoveredSelection.contains($0.id) && !existing.contains($0.id) }
-        channels[activeIndex].models.append(contentsOf: picked.map { row in
+        let picked = discoveredModels.filter { discoveredSelection.contains($0.id) }
+        var added = 0
+        var updated = 0
+        for row in picked {
+            if let index = channels[activeIndex].models.firstIndex(where: { $0.id == row.id }) {
+                var hasCapabilities = false
+                if let value = row.supportsSearchTool {
+                    channels[activeIndex].models[index].supportsSearchTool = value
+                    hasCapabilities = true
+                }
+                if let value = row.supportsParallelToolCalls {
+                    channels[activeIndex].models[index].supportsParallelToolCalls = value
+                    hasCapabilities = true
+                }
+                if hasCapabilities { updated += 1 }
+                continue
+            }
             var model = ModelRow(id: row.id)
             model.displayName = row.displayName ?? ""
             if let context = row.context { model.context = context }
-            return model
-        })
-        let added = picked.count
+            model.supportsSearchTool = row.supportsSearchTool == true
+            model.supportsParallelToolCalls = row.supportsParallelToolCalls == true
+            channels[activeIndex].models.append(model)
+            added += 1
+        }
         cancelDiscovery()
-        feedback = added > 0 ? "已添加 \(added) 个模型，点「保存」后生效" : "勾选的模型都已经在目录里"
+        if updated > 0 {
+            let addedText = added > 0 ? "添加 \(added) 个、" : ""
+            feedback = "已\(addedText)更新 \(updated) 个模型，点「保存」后生效"
+        } else {
+            feedback = added > 0 ? "已添加 \(added) 个模型，点「保存」后生效" : "端点没有返回新的模型或能力"
+        }
         feedbackIsError = false
     }
 
@@ -1751,7 +1787,7 @@ private struct SearchField: View {
     }
 }
 
-/// 端点公布的清单先在这里勾选，点「添加所选」才进模型目录。
+/// 端点公布的清单先在这里勾选，点「导入所选」才进模型目录。
 struct ModelPickerCard: View {
     @ObservedObject var store: PanelStore
 
@@ -1770,7 +1806,7 @@ struct ModelPickerCard: View {
             Color.black.opacity(0.12)
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
-                    Text("选择要添加的模型").font(.system(size: 17, weight: .semibold))
+                    Text("选择要导入的模型").font(.system(size: 17, weight: .semibold))
                     Spacer(minLength: 0)
                     Button { store.cancelDiscovery() } label: {
                         Image(systemName: "xmark").font(.system(size: 12, weight: .medium))
@@ -1779,7 +1815,7 @@ struct ModelPickerCard: View {
                     .foregroundStyle(.secondary)
                     .pointingHand()
                 }
-                Text("以下是模型提供商的可用模型，勾选要添加的模型。")
+                Text("以下是模型提供商的可用模型；已有模型会刷新端点明确返回的能力。")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 14) {
@@ -1810,7 +1846,7 @@ struct ModelPickerCard: View {
                         .buttonStyle(.bordered)
                         .controlSize(.large)
                         .pointingHand()
-                    Button("添加所选") { store.addSelectedModels() }
+                    Button("导入所选") { store.addSelectedModels() }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
                         .pointingHand()
@@ -2086,8 +2122,13 @@ struct ChannelDetailView: View {
                     ForEach(Array(store.models.indices), id: \.self) { index in
                         ModelCard(store: store, index: index)
                     }
-                    DashedRowButton(title: "添加模型", systemImage: "plus") { store.addModel() }
-                        .disabled(!store.hasChannel || store.busy)
+                    if store.models.isEmpty {
+                        Text("点击「获取可用模型」，从渠道公布的模型列表中导入。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 24)
+                    }
                 }
                 .padding(.horizontal, 28)
                 .padding(.bottom, 20)
@@ -2166,7 +2207,7 @@ struct ModelCard: View {
                 .pointingHand()
                 .disabled(store.busy)
             }
-            LabeledField(title: "模型 ID", placeholder: "gpt-6-astra", text: model.id)
+            LabeledField(title: "模型 ID", placeholder: "gpt-6-astra", text: model.id).disabled(true)
             // 客户端按模型 ID 发请求、按显示名称渲染选择器：名字只影响列表里怎么显示。
             LabeledField(title: "显示名称", placeholder: "留空就用模型 ID", text: model.displayName)
             HStack(alignment: .bottom, spacing: 12) {
@@ -2192,6 +2233,12 @@ struct ModelCard: View {
                 HStack(spacing: 16) {
                     Toggle("文本", isOn: modality("text"))
                     Toggle("图片", isOn: modality("image"))
+                }
+                .toggleStyle(.checkbox)
+                .font(.system(size: 14))
+                HStack(spacing: 16) {
+                    Toggle("网页搜索", isOn: model.supportsSearchTool)
+                    Toggle("并行工具", isOn: model.supportsParallelToolCalls)
                 }
                 .toggleStyle(.checkbox)
                 .font(.system(size: 14))

@@ -985,6 +985,18 @@ const macCodexBinary = (appPath) => [
   path.join(appPath, "Contents", "Resources", "codex"),
 ].find((candidate) => fs.existsSync(candidate)) || null;
 
+/// Codex 模型目录协议只接受 major.minor.patch；桌面端自带版本可能带 prerelease 后缀。
+const readCodexClientVersion = (binary) => {
+  const result = spawnSync(binary, ["--version"], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0) return "";
+  return /(\d+\.\d+\.\d+)/.exec(result.stdout || "")?.[1] || "";
+};
+
 const readBundledCatalog = (appPath) => {
   if (IS_WINDOWS) {
     const binary = windowsCodexBinary(appPath);
@@ -1656,6 +1668,15 @@ const main = async () => {
       codexHome: CODEX_HOME,
       agentsStatePath: AGENTS_STATE,
       importOptions: channelImportOptions(),
+      codexClientVersion: () => {
+        try {
+          const target = clientPath();
+          const binary = IS_WINDOWS ? windowsCodexBinary(target) : macCodexBinary(target);
+          return binary ? readCodexClientVersion(binary) : "";
+        } catch {
+          return "";
+        }
+      },
       restart: async () => {
         // 配置里的目标地址若被其他进程占用，startProxy 会顺延；候选服务必须先启动再切客户端。
         const settings = readProxySettings(PROXY_CONFIG);
