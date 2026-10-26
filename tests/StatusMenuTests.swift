@@ -725,5 +725,6 @@ struct StatusMenuTests {
         for section in SidebarSection.allCases {
             assert(SidebarSection(rawValue: section.rawValue) == section)
         }
+        assert(SidebarSection.appearance.systemImage == "paintpalette")
     }
 }

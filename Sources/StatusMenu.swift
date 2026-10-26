@@ -54,7 +54,7 @@ enum SidebarSection: String, CaseIterable, Hashable {
         case .models: return "cube"
         case .proxy: return "network"
         case .general: return "gearshape"
-        case .appearance: return "paintbrush"
+        case .appearance: return "paintpalette"
         case .agents: return "person.2"
         case .about: return "info.circle"
         case .help: return "questionmark.circle"
