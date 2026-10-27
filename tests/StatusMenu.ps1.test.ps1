@@ -74,6 +74,9 @@ if ([Math]::Abs([double]$appearancePreviewFrame.Height - 350.0) -gt 0.01) {
   throw "窗口宽度变化后顶部主题预览没有保持等比例"
 }
 $sourceText = Get-Content -LiteralPath $sourcePath -Raw
+if ($sourceText -match 'label = "并行工具"') {
+  throw "模型卡片不应再显示并行工具开关"
+}
 if ($sourceText -notmatch '\$appearancePreviewFrame\.Add_SizeChanged') {
   throw "顶部主题预览没有监听容器尺寸变化"
 }
@@ -121,7 +124,7 @@ $empty = @'
 {"channels":[{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""},{"id":""}]}
 '@ | ConvertFrom-Json
 $detailed = @'
-{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","apiKey":"sk-relay","headerName":"x-actor","headerValue":"token","enabled":false,"models":[{"id":"m-one","displayName":"M One","context":128,"inputModalities":["text","image"],"supportsSearchTool":true,"supportsParallelToolCalls":true}]}]}
+{"channels":[{"id":"relay","name":"Relay","baseUrl":"https://relay.example/v1","apiKey":"sk-relay","headerName":"x-actor","headerValue":"token","enabled":false,"models":[{"id":"m-one","displayName":"M One","context":128,"inputModalities":["text","image"],"supportsSearchTool":true,"supportsParallelToolCalls":false}]}]}
 '@ | ConvertFrom-Json
 
 if (-not (Test-ResponseChannels $normal.channels)) { throw "正常渠道回包被拒绝" }
@@ -241,10 +244,12 @@ $script:discoveredModels = @(
   [pscustomobject]@{
     id = "kept"
     supportsSearchTool = $false
+    supportsParallelToolCalls = $false
   },
   [pscustomobject]@{
     id = "brand-new"
     displayName = "Brand New"
+    supportsParallelToolCalls = $false
   }
 )
 $script:discoveredSelection = @{ kept = $true; "brand-new" = $true }
@@ -255,7 +260,7 @@ if ($script:channels[0].models.Count -ne 2 -or
     $script:channels[0].models[0].displayName -ne "手动改的名字" -or
     $script:channels[0].models[0].context -ne 64 -or
     $script:channels[0].models[1].supportsSearchTool -ne $false -or
-    $script:channels[0].models[1].supportsParallelToolCalls -ne $false) {
+    $script:channels[0].models[1].supportsParallelToolCalls -ne $true) {
   throw "重新导入模型没有按能力刷新，或误改了已有模型设置"
 }
 if ($script:lastFeedbackText -ne "已添加 1 个、更新 1 个模型，点「保存」后生效") {

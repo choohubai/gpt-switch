@@ -638,11 +638,10 @@ const readModelListing = (body) => {
       id,
       ...(displayName ? { displayName } : {}),
       ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
-      // 缺字段表示端点没有给出结论；导入已有模型时才不能把人工确认值误清成 false。
+      // 搜索缺字段表示端点没有给出结论；导入已有模型时才不能把人工确认值误清成 false。
       ...(typeof entry.supports_search_tool === "boolean"
         ? { supportsSearchTool: entry.supports_search_tool } : {}),
-      ...(typeof entry.supports_parallel_tool_calls === "boolean"
-        ? { supportsParallelToolCalls: entry.supports_parallel_tool_calls } : {}),
+      supportsParallelToolCalls: true,
     });
   }
   return models;

@@ -35,6 +35,7 @@ export const pickerModelsFromState = (state) => {
     const isCurrent = channel?.id === state?.current;
     return (channel?.models ?? []).map((model) => ({
       ...model,
+      supportsParallelToolCalls: true,
       id: isCurrent ? model.id : proxyModelId(channel.id, model.id),
       displayName: label ? `${model.displayName || model.id}（${label}）` : (model.displayName || model.id),
     }));

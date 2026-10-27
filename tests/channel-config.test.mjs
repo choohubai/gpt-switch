@@ -30,7 +30,7 @@ const CONFIG = [
 /// validateChannels 会把模型补成面板保存后的完整形状（没填显示名就落成模型 ID），断言里用它对齐。
 const model = (over = {}) => ({
   displayName: String(over.id ?? ""), inputModalities: ["text", "image"],
-  supportsSearchTool: false, supportsParallelToolCalls: false, ...over,
+  supportsSearchTool: false, supportsParallelToolCalls: true, ...over,
 });
 
 const channel = (over = {}) => ({
@@ -69,6 +69,10 @@ test("validateChannels trims rows, keeps ids unique and rejects bad input", () =
   assert.equal(named.name, "自用中转");
   assert.deepEqual(validateChannels([{ id: "x", baseUrl: "https://a.example", models: [{ id: "m" }] }])[0].models,
     [model({ id: "m", context: 272 })]);
+  assert.equal(validateChannels([{
+    id: "x", baseUrl: "https://a.example",
+    models: [{ id: "m", supportsParallelToolCalls: false }],
+  }])[0].models[0].supportsParallelToolCalls, true, "旧配置里的 false 也要归一为默认支持");
   for (const invalid of [null, {}, [{}], [{ id: "" }], [{ id: "bad id" }], [{ id: 123 }],
     [{ id: "x".repeat(33) }],
     [{ id: "a", baseUrl: "https://a" }, { id: "a", baseUrl: "https://b" }],
@@ -568,19 +572,19 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
   assert.deepEqual(models, [
     {
       id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128,
-      supportsSearchTool: true, supportsParallelToolCalls: false,
+      supportsSearchTool: true, supportsParallelToolCalls: true,
     },
-    { id: "glm-5.3" },
-    { id: "long-name" },
-    { id: "control-name" },
-  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；名字缺失或存不进去就不填，保存时统一兜底");
+    { id: "glm-5.3", supportsParallelToolCalls: true },
+    { id: "long-name", supportsParallelToolCalls: true },
+    { id: "control-name", supportsParallelToolCalls: true },
+  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；并行工具统一开启");
 
   const mapped = await withFetch(async () => listing({
     models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },
   }), () => discoverChannelModels({ baseUrl: "https://relay.example" }));
   assert.deepEqual(mapped, [
-    { id: "glm-5.3", displayName: "GLM 5.3" },
-    { id: "deepseek-v4-pro" },
+    { id: "glm-5.3", displayName: "GLM 5.3", supportsParallelToolCalls: true },
+    { id: "deepseek-v4-pro", supportsParallelToolCalls: true },
   ], "models 对象用属性名当 id，非对象条目忽略");
 });
 
@@ -635,7 +639,7 @@ test("discoverChannelModels requests the Codex catalog for the running client", 
   assert.equal(requested,
     "https://relay.example/v1/models?region=cn&client_version=0.164.0");
   assert.deepEqual(models, [{
-    id: "glm-5.3-flash", supportsSearchTool: false,
+    id: "glm-5.3-flash", supportsSearchTool: false, supportsParallelToolCalls: true,
   }]);
 });
 
@@ -646,7 +650,7 @@ test("panel list-models answers with the endpoint's models", async (context) => 
     () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
   assert.deepEqual(listed, {
     ok: true,
-    models: [{ id: "m-one" }],
+    models: [{ id: "m-one", supportsParallelToolCalls: true }],
   });
 
   const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
@@ -663,7 +667,7 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   ));
   assert.equal(requested, "https://relay.example/v1/models?client_version=0.164.0");
   assert.deepEqual(versioned.models, [{
-    id: "glm-5.3-flash", supportsSearchTool: false,
+    id: "glm-5.3-flash", supportsSearchTool: false, supportsParallelToolCalls: true,
   }]);
 });
 

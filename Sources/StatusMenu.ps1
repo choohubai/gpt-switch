@@ -1625,7 +1625,6 @@ function Compare-Models($Left, $Right) {
     $rightModalities = @($Right[$index].inputModalities) -join ","
     if ($leftModalities -ne $rightModalities) { return $true }
     if ($Left[$index].supportsSearchTool -ne $Right[$index].supportsSearchTool) { return $true }
-    if ($Left[$index].supportsParallelToolCalls -ne $Right[$index].supportsParallelToolCalls) { return $true }
   }
   return $false
 }
@@ -1647,7 +1646,7 @@ function Convert-ResponseChannels($Source) {
           id = [string]$_.id; displayName = [string]$_.displayName
           context = [int]$_.context; inputModalities = @($_.inputModalities)
           supportsSearchTool = $_.supportsSearchTool -eq $true
-          supportsParallelToolCalls = $_.supportsParallelToolCalls -eq $true
+          supportsParallelToolCalls = $true
         }
       })
     }
@@ -1677,7 +1676,7 @@ function Copy-Channels($Source) {
           id = $_.id; displayName = $_.displayName
           context = $_.context; inputModalities = @($_.inputModalities)
           supportsSearchTool = $_.supportsSearchTool -eq $true
-          supportsParallelToolCalls = $_.supportsParallelToolCalls -eq $true
+          supportsParallelToolCalls = $true
         }
       })
     }
@@ -1868,8 +1867,7 @@ function Rebuild-Rows {
     $capabilityRow.Orientation = "Horizontal"
     $capabilityRow.Margin = "0,8,0,0"
     foreach ($capability in @(
-      @{ field = "supportsSearchTool"; label = "网页搜索"; value = $model.supportsSearchTool },
-      @{ field = "supportsParallelToolCalls"; label = "并行工具"; value = $model.supportsParallelToolCalls }
+      @{ field = "supportsSearchTool"; label = "网页搜索"; value = $model.supportsSearchTool }
     )) {
       $check = New-Object System.Windows.Controls.CheckBox
       $check.Content = $capability.label
@@ -1877,7 +1875,7 @@ function Rebuild-Rows {
       $check.IsEnabled = $enabled
       $check.Tag = @{ index = $index; field = $capability.field }
       $check.IsChecked = $capability.value -eq $true
-      $check.Margin = if ($capability.field -eq "supportsSearchTool") { "0,0,14,0" } else { "0" }
+      $check.Margin = "0"
       $check.Add_Click({ param($sender, $eventArgs) Toggle-ToolCapability $sender })
       [void]$capabilityRow.Children.Add($check)
     }
@@ -2085,7 +2083,7 @@ function Add-SelectedModels {
     if ($existing.ContainsKey($id)) {
       $model = $existing[$id]
       $hasCapabilities = $false
-      foreach ($field in @("supportsSearchTool", "supportsParallelToolCalls")) {
+      foreach ($field in @("supportsSearchTool")) {
         if (@($row.PSObject.Properties.Name) -contains $field -and $null -ne $row.$field) {
           $model[$field] = [bool]$row.$field
           $hasCapabilities = $true
@@ -2100,7 +2098,7 @@ function Add-SelectedModels {
       context = $(if ($null -ne $row.context) { [int]$row.context } else { 272 })
       inputModalities = @("text", "image")
       supportsSearchTool = $row.supportsSearchTool -eq $true
-      supportsParallelToolCalls = $row.supportsParallelToolCalls -eq $true
+      supportsParallelToolCalls = $true
     }
     $channel.models = @($channel.models) + $model
     $existing[$id] = $model

@@ -56,9 +56,9 @@ export const validateModels = (models) => {
       displayName: parseDisplayName(model.displayName, index) || id,
       context: parseContextK(model.context, index),
       inputModalities: parseModalities(model.inputModalities, index),
-      // 模型目录里的布尔能力没有“未知”值；缺省按下线处理，只声明已经确认支持的能力。
+      // 搜索缺省下线；并行工具按产品默认对所有模型开启。
       supportsSearchTool: model.supportsSearchTool === true,
-      supportsParallelToolCalls: model.supportsParallelToolCalls === true,
+      supportsParallelToolCalls: true,
     };
   });
 };
@@ -83,7 +83,7 @@ const THIRD_PARTY_MODEL = {
   shell_type: "shell_command",
   web_search_tool_type: "text",
   supports_search_tool: false,
-  supports_parallel_tool_calls: false,
+  supports_parallel_tool_calls: true,
   // 第三方端点不认 service_tier，Fast 档摆出来只会让请求被拒。
   service_tiers: [],
   additional_speed_tiers: [],
@@ -123,7 +123,7 @@ export const buildCatalog = (bundled, models) => {
       existing.input_modalities = modalities;
       // 同 slug 的官方条目不代表当前渠道已经具备相同能力。
       existing.supports_search_tool = model.supportsSearchTool === true;
-      existing.supports_parallel_tool_calls = model.supportsParallelToolCalls === true;
+      existing.supports_parallel_tool_calls = true;
       existing.visibility = "list";
       continue;
     }
@@ -132,7 +132,7 @@ export const buildCatalog = (bundled, models) => {
       ...JSON.parse(JSON.stringify(template)),
       ...THIRD_PARTY_MODEL,
       supports_search_tool: model.supportsSearchTool === true,
-      supports_parallel_tool_calls: model.supportsParallelToolCalls === true,
+      supports_parallel_tool_calls: true,
       slug: model.id,
       display_name: displayName,
       description: displayName,

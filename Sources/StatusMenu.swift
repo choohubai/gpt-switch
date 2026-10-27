@@ -78,13 +78,13 @@ struct ModelRow: Codable, Equatable {
 
     init(id: String = "", displayName: String = "", context: Int = 272,
          inputModalities: [String] = ["text", "image"],
-         supportsSearchTool: Bool = false, supportsParallelToolCalls: Bool = false) {
+         supportsSearchTool: Bool = false, supportsParallelToolCalls: Bool = true) {
         self.id = id
         self.displayName = displayName
         self.context = context
         self.inputModalities = inputModalities
         self.supportsSearchTool = supportsSearchTool
-        self.supportsParallelToolCalls = supportsParallelToolCalls
+        self.supportsParallelToolCalls = true
     }
 
     init(from decoder: Decoder) throws {
@@ -95,8 +95,7 @@ struct ModelRow: Codable, Equatable {
         inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities)
             ?? ["text", "image"]
         supportsSearchTool = try container.decodeIfPresent(Bool.self, forKey: .supportsSearchTool) ?? false
-        supportsParallelToolCalls = try container.decodeIfPresent(
-            Bool.self, forKey: .supportsParallelToolCalls) ?? false
+        supportsParallelToolCalls = true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -106,13 +105,13 @@ struct ModelRow: Codable, Equatable {
         try container.encode(context, forKey: .context)
         try container.encode(inputModalities, forKey: .inputModalities)
         try container.encode(supportsSearchTool, forKey: .supportsSearchTool)
-        try container.encode(supportsParallelToolCalls, forKey: .supportsParallelToolCalls)
+        try container.encode(true, forKey: .supportsParallelToolCalls)
     }
 
     var payload: [String: Any] {
         [
             "id": id, "displayName": displayName, "context": context, "inputModalities": inputModalities,
-            "supportsSearchTool": supportsSearchTool, "supportsParallelToolCalls": supportsParallelToolCalls,
+            "supportsSearchTool": supportsSearchTool, "supportsParallelToolCalls": true,
         ]
     }
 }
@@ -193,15 +192,13 @@ struct DiscoveredModel: Decodable {
     let displayName: String?
     let context: Int?
     let supportsSearchTool: Bool?
-    let supportsParallelToolCalls: Bool?
 
     init(id: String, displayName: String?, context: Int?,
-         supportsSearchTool: Bool? = nil, supportsParallelToolCalls: Bool? = nil) {
+         supportsSearchTool: Bool? = nil) {
         self.id = id
         self.displayName = displayName
         self.context = context
         self.supportsSearchTool = supportsSearchTool
-        self.supportsParallelToolCalls = supportsParallelToolCalls
     }
 }
 
@@ -849,10 +846,6 @@ final class PanelStore: ObservableObject {
                     channels[activeIndex].models[index].supportsSearchTool = value
                     hasCapabilities = true
                 }
-                if let value = row.supportsParallelToolCalls {
-                    channels[activeIndex].models[index].supportsParallelToolCalls = value
-                    hasCapabilities = true
-                }
                 if hasCapabilities { updated += 1 }
                 continue
             }
@@ -860,7 +853,6 @@ final class PanelStore: ObservableObject {
             model.displayName = row.displayName ?? ""
             if let context = row.context { model.context = context }
             model.supportsSearchTool = row.supportsSearchTool == true
-            model.supportsParallelToolCalls = row.supportsParallelToolCalls == true
             channels[activeIndex].models.append(model)
             added += 1
         }
@@ -2238,7 +2230,6 @@ struct ModelCard: View {
                 .font(.system(size: 14))
                 HStack(spacing: 16) {
                     Toggle("网页搜索", isOn: model.supportsSearchTool)
-                    Toggle("并行工具", isOn: model.supportsParallelToolCalls)
                 }
                 .toggleStyle(.checkbox)
                 .font(.system(size: 14))

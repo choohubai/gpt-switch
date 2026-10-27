@@ -194,7 +194,7 @@ test("picker models keep the current channel bare and mark the others", () => {
   assert.equal(models[0].context, 128, "上下文窗口跟着过去");
   assert.equal(models[2].context, 128);
   assert.equal(models[0].supportsSearchTool, true, "当前渠道的搜索能力跟着裸模型 ID");
-  assert.equal(models[0].supportsParallelToolCalls, false);
+  assert.equal(models[0].supportsParallelToolCalls, true, "旧配置里的 false 也要按默认支持注入");
   assert.equal(models[2].supportsSearchTool, false, "同名的另一渠道保留自己的搜索能力");
   assert.equal(models[2].supportsParallelToolCalls, true);
   assert.equal(pickerGroupNameFromState(state), "ChooHub");
