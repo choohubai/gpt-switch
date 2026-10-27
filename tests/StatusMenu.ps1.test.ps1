@@ -104,7 +104,9 @@ if ($activeNav.Background.Color.A -ne 33 -or $activeNav.Background.Color.R -ne 5
   throw "Windows 侧栏选中态没有对齐 macOS 的 13% accent 底色"
 }
 $appearanceGlyph = [System.Windows.Shapes.Path]$xamlPanel.FindName("AppearanceTab").Content.Children[0]
-if (([string]$appearanceGlyph.Data) -notmatch '^M12,21 A9,9.*M7\.5,10\.5' -or
+$appearanceButtonSource = [regex]::Match(
+  $sourceText, '(?s)<Button x:Name="AppearanceTab".*?</Button>').Value
+if ($appearanceButtonSource -notmatch '(?s)<Path[^>]*Data="M12,21 A9,9.*?M7\.5,10\.5' -or
     $appearanceGlyph.StrokeThickness -ne 1.5) {
   throw "Windows 外观入口没有使用调色盘图标"
 }
