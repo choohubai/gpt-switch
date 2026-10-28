@@ -100,16 +100,6 @@ const applyWindow = (entry, tokens) => {
   entry.effective_context_window_percent = EFFECTIVE_CONTEXT_PERCENT;
 };
 
-/// 搜索、网页获取和并行工具都由 Agent 管理；渠道模型不能继承或保留客户端模板里的声明。
-const removeAgentToolCapabilities = (entry) => {
-  delete entry.apply_patch_tool_type;
-  // 目录 schema 要求这里必须是数组；空列表表示不声明任何实验工具。
-  entry.experimental_supported_tools = [];
-  delete entry.supports_search_tool;
-  delete entry.web_search_tool_type;
-  delete entry.supports_parallel_tool_calls;
-};
-
 export const buildCatalog = (bundled, models) => {
   const base = Array.isArray(bundled?.models)
     ? bundled.models.map((entry) => JSON.parse(JSON.stringify(entry)))
@@ -125,7 +115,6 @@ export const buildCatalog = (bundled, models) => {
       applyWindow(existing, tokens);
       if (model.displayName) existing.display_name = model.displayName;
       existing.input_modalities = modalities;
-      removeAgentToolCapabilities(existing);
       existing.visibility = "list";
       continue;
     }
@@ -142,7 +131,6 @@ export const buildCatalog = (bundled, models) => {
       availability_nux: null,
       upgrade: null,
     };
-    removeAgentToolCapabilities(entry);
     applyWindow(entry, tokens);
     base.push(entry);
     bySlug.set(model.id, entry);
