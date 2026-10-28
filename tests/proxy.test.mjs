@@ -170,14 +170,13 @@ test("picker models keep the current channel bare and mark the others", () => {
       { id: "ChooHub", name: "ChooHub", models: [
         {
           id: "glm-5.3", displayName: "glm-5.3", context: 128, inputModalities: ["text"],
-          supportsSearchTool: true, supportsParallelToolCalls: false,
+          supportsSearchTool: true, supportsParallelToolCalls: true,
         },
         { id: "grok-4.7", displayName: "grok-4.7", context: 200, inputModalities: ["text", "image"] },
       ] },
       { id: "feiyu", name: "feiyu", models: [
         {
           id: "glm-5.3", displayName: "glm-5.3", context: 128, inputModalities: ["text"],
-          supportsSearchTool: false, supportsParallelToolCalls: true,
         },
         { id: "deepseek-flash", displayName: "deepseek-flash", context: 128, inputModalities: ["text"] },
       ] },
@@ -193,10 +192,8 @@ test("picker models keep the current channel bare and mark the others", () => {
   ], "每个渠道的显示名都带渠道后缀，分组表头认它");
   assert.equal(models[0].context, 128, "上下文窗口跟着过去");
   assert.equal(models[2].context, 128);
-  assert.equal(models[0].supportsSearchTool, true, "当前渠道的搜索能力跟着裸模型 ID");
-  assert.equal(models[0].supportsParallelToolCalls, true, "旧配置里的 false 也要按默认支持注入");
-  assert.equal(models[2].supportsSearchTool, false, "同名的另一渠道保留自己的搜索能力");
-  assert.equal(models[2].supportsParallelToolCalls, true);
+  assert.equal("supportsSearchTool" in models[0], false, "旧配置的 Agent 工具字段不能进入 picker");
+  assert.equal("supportsParallelToolCalls" in models[0], false);
   assert.equal(pickerGroupNameFromState(state), "ChooHub");
   assert.equal(pickerGroupNameFromState({ channels: [], current: null }), "");
   assert.deepEqual(pickerChannelNamesFromState(state), ["ChooHub", "feiyu"], "选择器分组表头要用的渠道名清单");

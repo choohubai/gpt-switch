@@ -1624,7 +1624,6 @@ function Compare-Models($Left, $Right) {
     $leftModalities = @($Left[$index].inputModalities) -join ","
     $rightModalities = @($Right[$index].inputModalities) -join ","
     if ($leftModalities -ne $rightModalities) { return $true }
-    if ($Left[$index].supportsSearchTool -ne $Right[$index].supportsSearchTool) { return $true }
   }
   return $false
 }
@@ -1645,8 +1644,6 @@ function Convert-ResponseChannels($Source) {
         @{
           id = [string]$_.id; displayName = [string]$_.displayName
           context = [int]$_.context; inputModalities = @($_.inputModalities)
-          supportsSearchTool = $_.supportsSearchTool -eq $true
-          supportsParallelToolCalls = $true
         }
       })
     }
@@ -1675,8 +1672,6 @@ function Copy-Channels($Source) {
         @{
           id = $_.id; displayName = $_.displayName
           context = $_.context; inputModalities = @($_.inputModalities)
-          supportsSearchTool = $_.supportsSearchTool -eq $true
-          supportsParallelToolCalls = $true
         }
       })
     }
@@ -1843,7 +1838,7 @@ function Rebuild-Rows {
     [void]$content.Children.Add($contextRow)
 
     $modalityLabel = New-Object System.Windows.Controls.TextBlock
-    $modalityLabel.Text = "输入类型与能力"
+    $modalityLabel.Text = "输入类型"
     $modalityLabel.FontSize = 13
     $modalityLabel.FontWeight = "Medium"
     $modalityLabel.Foreground = "#656667"
@@ -1863,23 +1858,6 @@ function Rebuild-Rows {
       [void]$modalityRow.Children.Add($check)
     }
     [void]$content.Children.Add($modalityRow)
-    $capabilityRow = New-Object System.Windows.Controls.StackPanel
-    $capabilityRow.Orientation = "Horizontal"
-    $capabilityRow.Margin = "0,8,0,0"
-    foreach ($capability in @(
-      @{ field = "supportsSearchTool"; label = "网页搜索"; value = $model.supportsSearchTool }
-    )) {
-      $check = New-Object System.Windows.Controls.CheckBox
-      $check.Content = $capability.label
-      $check.FontSize = 14
-      $check.IsEnabled = $enabled
-      $check.Tag = @{ index = $index; field = $capability.field }
-      $check.IsChecked = $capability.value -eq $true
-      $check.Margin = "0"
-      $check.Add_Click({ param($sender, $eventArgs) Toggle-ToolCapability $sender })
-      [void]$capabilityRow.Children.Add($check)
-    }
-    [void]$content.Children.Add($capabilityRow)
 
     $card.Child = $content
     [void]$rowsPanel.Children.Add($card)
@@ -1931,17 +1909,6 @@ function Toggle-Modality($Sender) {
     $current = $remaining
   }
   $channel.models[$index].inputModalities = $current
-  Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
-  Update-Controls
-}
-
-function Toggle-ToolCapability($Sender) {
-  if ($script:rendering -or $script:busy) { return }
-  $channel = Get-ActiveChannel
-  if (-not $channel) { return }
-  $index = [int]$Sender.Tag.index
-  if ($index -lt 0 -or $index -ge $channel.models.Count) { return }
-  $channel.models[$index].($Sender.Tag.field) = $Sender.IsChecked -eq $true
   Set-Feedback $(if (Compare-Channels $script:channels $script:savedChannels) { "有未保存的更改" } else { "" })
   Update-Controls
 }
@@ -2069,36 +2036,22 @@ function Toggle-Discovered($Sender) {
   Refresh-DiscoverySelection
 }
 
-# 勾上的补进当前渠道；已有模型只应用端点明确返回的能力，保留人工设置的名字和窗口。
+# 勾上的补进当前渠道；已有模型保留人工设置的名字和窗口。
 function Add-SelectedModels {
   $channel = Get-ActiveChannel
   if (-not $channel) { Hide-ModelPicker; Update-Controls; return }
   $existing = @{}
   foreach ($model in @($channel.models)) { $existing[[string]$model.id] = $model }
   $added = 0
-  $updated = 0
   foreach ($row in $script:discoveredModels) {
     $id = [string]$row.id
     if (-not $script:discoveredSelection.ContainsKey($id)) { continue }
-    if ($existing.ContainsKey($id)) {
-      $model = $existing[$id]
-      $hasCapabilities = $false
-      foreach ($field in @("supportsSearchTool")) {
-        if (@($row.PSObject.Properties.Name) -contains $field -and $null -ne $row.$field) {
-          $model[$field] = [bool]$row.$field
-          $hasCapabilities = $true
-        }
-      }
-      if ($hasCapabilities) { $updated += 1 }
-      continue
-    }
+    if ($existing.ContainsKey($id)) { continue }
     $model = @{
       id = $id
       displayName = [string]$row.displayName
       context = $(if ($null -ne $row.context) { [int]$row.context } else { 272 })
       inputModalities = @("text", "image")
-      supportsSearchTool = $row.supportsSearchTool -eq $true
-      supportsParallelToolCalls = $true
     }
     $channel.models = @($channel.models) + $model
     $existing[$id] = $model
@@ -2106,14 +2059,7 @@ function Add-SelectedModels {
   }
   Hide-ModelPicker
   Rebuild-Rows
-  $message = if ($updated -gt 0) {
-    $addedText = if ($added -gt 0) { "添加 $added 个、" } else { "" }
-    "已${addedText}更新 $updated 个模型，点「保存」后生效"
-  } elseif ($added -gt 0) {
-    "已添加 $added 个模型，点「保存」后生效"
-  } else {
-    "端点没有返回新的模型或能力"
-  }
+  $message = if ($added -gt 0) { "已添加 $added 个模型，点「保存」后生效" } else { "勾选的模型都已经在目录里" }
   Set-Feedback $message
   Update-Controls
 }

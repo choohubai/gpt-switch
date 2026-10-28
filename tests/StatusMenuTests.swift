@@ -42,8 +42,6 @@ struct StatusMenuTests {
         assert(store.editingIndex == nil, "读完配置应该停在列表页")
         assert(store.channels[0].models.first?.displayName == "", "老配置没有显示名称时留空")
         assert(store.channels[0].models.first?.inputModalities == ["text", "image"], "老配置默认文本+图片")
-        assert(store.channels[0].models.first?.supportsSearchTool == false, "老配置不能默认声明支持网页搜索")
-        assert(store.channels[0].models.first?.supportsParallelToolCalls == true, "老配置也默认支持并行工具")
         assert(store.proxyHost == "127.0.0.1" && store.proxyPort == "47123", "没配代理时用默认值")
 
         // 外观卡片即选即存；保存失败要退回原主题，不能出现界面和文件不一致。
@@ -270,8 +268,6 @@ struct StatusMenuTests {
         assert(store.models[0].inputModalities == ["text"], "最后一个输入类型不能被取消")
         store.toggleModality(at: 0, modality: "image", on: true)
         assert(store.models[0].inputModalities == ["text", "image"])
-        store.models[0].supportsSearchTool = true
-        store.models[0].supportsParallelToolCalls = false
 
         store.channels[0].models.append(ModelRow(id: "discovered-extra"))
         assert(store.models.count == 2)
@@ -291,8 +287,8 @@ struct StatusMenuTests {
         assert(submittedModels[0]["context"] as? Int == 10000)
         assert(submittedModels[0]["displayName"] as? String == "DeepSeek V4")
         assert(submittedModels[0]["inputModalities"] as? [String] == ["text", "image"])
-        assert(submittedModels[0]["supportsSearchTool"] as? Bool == true)
-        assert(submittedModels[0]["supportsParallelToolCalls"] as? Bool == true, "并行工具不能被面板写回 false")
+        assert(submittedModels[0]["supportsSearchTool"] == nil, "GPT Switch 不再保存搜索能力")
+        assert(submittedModels[0]["supportsParallelToolCalls"] == nil, "GPT Switch 不再保存并行工具能力")
         assert(submitted[0]["enabled"] as? Bool == false, "在编辑页改渠道内容不能改动启用状态")
 
         store.apply(["ok": true, "saved": true, "channels": [
@@ -520,8 +516,7 @@ struct StatusMenuTests {
         assert(requests.last?["headerName"] as? String == "x-actor")
         assert(store.busy && store.fetchingModels, "获取期间要锁住面板")
         store.channels[0].models = [ModelRow(
-            id: "kept", displayName: "手动改的名字", context: 64,
-            supportsSearchTool: true, supportsParallelToolCalls: true)]
+            id: "kept", displayName: "手动改的名字", context: 64)]
         store.apply(["ok": true, "models": [
             ["id": "kept", "context": 128, "supportsSearchTool": false, "supportsParallelToolCalls": false],
             ["id": "brand-new", "displayName": "Brand New", "supportsParallelToolCalls": false],
@@ -535,11 +530,9 @@ struct StatusMenuTests {
         store.addSelectedModels()
         assert(!store.discovering)
         assert(store.models.count == 1, "已经在目录里的不重复加")
-        assert(store.models[0].supportsSearchTool == false, "端点明确返回 false 时要覆盖旧能力")
-        assert(store.models[0].supportsParallelToolCalls == true, "并行工具始终默认开启")
         assert(store.models[0].displayName == "手动改的名字", "刷新能力不能改人工设置的名字")
         assert(store.models[0].context == 64, "刷新能力不能改人工设置的窗口")
-        assert(store.feedback == "已更新 1 个模型，点「保存」后生效")
+        assert(store.feedback == "勾选的模型都已经在目录里")
 
         store.discoveredModels = [DiscoveredModel(id: "brand-new", displayName: "Brand New", context: nil)]
         store.discoveredSelection = ["brand-new"]
@@ -556,7 +549,6 @@ struct StatusMenuTests {
         assert(store.models[1].displayName == "Brand New")
         assert(store.models[1].context == 128)
         assert(store.models[1].inputModalities == ["text", "image"], "新加进来的模型默认文本+图片")
-        assert(store.models[1].supportsParallelToolCalls == true, "新模型默认支持并行工具")
         assert(store.models[0].displayName == "手动改的名字", "已有的那条不动")
         assert(store.feedback == "已添加 2 个模型，点「保存」后生效")
         assert(store.isDirty, "加进来的模型要保存后才生效")

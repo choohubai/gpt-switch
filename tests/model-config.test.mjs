@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,39 +16,33 @@ test("model validation accepts IDs with default context and rejects invalid rows
   assert.deepEqual(validateModels([{ id: " alias-id " }]),
     [{
       id: "alias-id", displayName: "alias-id", context: 272, inputModalities: ["text", "image"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     }],
     "没填显示名就存模型 ID");
   assert.deepEqual(validateModels([{ id: "x", webSearch: true }]),
     [{
       id: "x", displayName: "x", context: 272, inputModalities: ["text", "image"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     }],
     "按模型配置网页搜索作废后，旧配置里的 webSearch 字段在保存时被丢掉");
   assert.deepEqual(validateModels([{ id: "alias-id", displayName: " 旧名称 " }]),
     [{
       id: "alias-id", displayName: "旧名称", context: 272, inputModalities: ["text", "image"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     }]);
   assert.deepEqual(validateModels([{ id: "x", context: " 1000 " }]),
     [{
       id: "x", displayName: "x", context: 1000, inputModalities: ["text", "image"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     }]);
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["image"] }]),
     [{
       id: "x", displayName: "x", context: 272, inputModalities: ["image"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     }]);
   assert.deepEqual(validateModels([{
     id: "verified", supportsSearchTool: true, supportsParallelToolCalls: true,
   }])[0], {
     id: "verified", displayName: "verified", context: 272, inputModalities: ["text", "image"],
-    supportsSearchTool: true, supportsParallelToolCalls: true,
   });
-  assert.equal(validateModels([{
-    id: "forced", supportsParallelToolCalls: false,
-  }])[0].supportsParallelToolCalls, true, "旧配置里的 false 也要归一为默认支持");
+  assert.equal("supportsParallelToolCalls" in validateModels([{
+    id: "legacy", supportsParallelToolCalls: true,
+  }])[0], false, "旧配置里的 Agent 工具能力字段保存时被丢掉");
   // 勾了两次的输入类型去重，顺序按面板勾选顺序。
   assert.deepEqual(validateModels([{ id: "x", inputModalities: ["text", "text"] }])
     .at(0).inputModalities, ["text"]);
@@ -75,21 +70,19 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
     visibility: "list",
     use_responses_lite: true,
     shell_type: "unified_exec",
+    apply_patch_tool_type: "freeform",
+    experimental_supported_tools: ["send_user_message_async", "clock"],
     extra: "keep",
   }] };
   const catalog = buildCatalog(bundled, [
     {
       id: "gpt-6-astra", displayName: "", context: 272, inputModalities: ["text", "image"],
-      supportsSearchTool: false, supportsParallelToolCalls: false,
     },
     {
       id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 1000, inputModalities: ["text"],
-      supportsSearchTool: true, supportsParallelToolCalls: false,
     },
   ]);
   assert.equal(catalog.models.length, 2);
-  assert.equal(catalog.models[0].supports_search_tool, false, "同 slug 也要服从渠道模型的显式能力");
-  assert.equal(catalog.models[0].supports_parallel_tool_calls, true);
   assert.equal(catalog.models[1].slug, "deepseek-v4-pro");
   assert.equal(catalog.models[1].display_name, "DeepSeek V4 Pro");
   assert.equal(catalog.models[1].description, "DeepSeek V4 Pro");
@@ -102,10 +95,12 @@ test("catalog overlay keeps bundled models and applies k windows", () => {
   assert.equal(catalog.models[1].use_responses_lite, false);
   assert.equal(catalog.models[1].tool_mode, null);
   assert.equal(catalog.models[1].shell_type, "shell_command");
-  assert.equal(catalog.models[1].web_search_tool_type, "text");
-  assert.equal(catalog.models[1].supports_search_tool, true, "只有模型条目显式开启才声明搜索");
-  assert.equal(catalog.models[1].web_search_tool_type, "text");
-  assert.equal(catalog.models[1].supports_parallel_tool_calls, true);
+  assert.equal("supports_search_tool" in catalog.models[1], false, "搜索由 Agent 声明");
+  assert.equal("web_search_tool_type" in catalog.models[1], false);
+  assert.equal("supports_parallel_tool_calls" in catalog.models[1], false, "并行工具由 Agent 声明");
+  assert.equal("apply_patch_tool_type" in catalog.models[1], false);
+  assert.deepEqual(catalog.models[1].experimental_supported_tools, [],
+    "当前客户端的目录 schema 要求这个字段，空列表表示不声明实验工具");
   assert.deepEqual(catalog.models[1].service_tiers, []);
   assert.deepEqual(buildCatalog(bundled, []).models, bundled.models);
 });
@@ -125,32 +120,84 @@ test("catalog keeps the bundled display name and applies panel display names", (
   assert.equal(chained.models[0].display_name, "gpt-6-astra");
 });
 
-test("catalog keeps search scoped to each channel model and enables parallel tools", () => {
-  const catalog = buildCatalog({ models: [{ slug: "gpt-6-astra", supports_search_tool: false }] }, [
+test("catalog omits Agent tool capabilities", () => {
+  const catalog = buildCatalog({ models: [{
+    slug: "gpt-6-astra",
+    apply_patch_tool_type: "freeform",
+    experimental_supported_tools: ["send_user_message_async", "clock"],
+    supports_search_tool: false,
+  }] }, [
     {
       id: "deepseek-v4.1-flash", displayName: "DeepSeek", context: 1000, inputModalities: ["text"],
-      supportsSearchTool: false, supportsParallelToolCalls: true,
     },
     {
       id: "glm-5.3", displayName: "GLM", context: 200, inputModalities: ["text"],
-      supportsSearchTool: true, supportsParallelToolCalls: false,
     },
     {
       id: "gpt-6-astra-private", displayName: "GPT private", context: 200, inputModalities: ["text"],
-      supportsSearchTool: false, supportsParallelToolCalls: false,
     },
   ]);
-  assert.equal(catalog.models[1].supports_search_tool, false);
-  assert.equal(catalog.models[1].supports_parallel_tool_calls, true);
-  assert.equal(catalog.models[2].supports_search_tool, true);
-  assert.equal(catalog.models[2].supports_parallel_tool_calls, true);
-  assert.equal(catalog.models[3].supports_search_tool, false, "新模型不能继承模板的搜索能力");
-  assert.equal(catalog.models[3].supports_parallel_tool_calls, true);
+  assert.equal("supports_search_tool" in catalog.models[1], false);
+  assert.equal("supports_parallel_tool_calls" in catalog.models[1], false);
+  assert.equal("supports_search_tool" in catalog.models[2], false);
+  assert.equal("supports_parallel_tool_calls" in catalog.models[2], false);
+  assert.equal("supports_search_tool" in catalog.models[3], false);
+  assert.equal("web_search_tool_type" in catalog.models[3], false, "新模型不能从模板继承搜索声明");
+  assert.equal("supports_parallel_tool_calls" in catalog.models[3], false);
+  assert.equal("apply_patch_tool_type" in catalog.models[3], false);
+  assert.deepEqual(catalog.models[3].experimental_supported_tools, []);
 
-  const sameSlug = buildCatalog({ models: [{ slug: "gpt-6-astra", supports_search_tool: false }] },
+  const sameSlug = buildCatalog({ models: [{
+    slug: "gpt-6-astra",
+    apply_patch_tool_type: "freeform",
+    experimental_supported_tools: ["send_user_message_async", "clock"],
+    supports_search_tool: false,
+    web_search_tool_type: "text",
+    supports_parallel_tool_calls: true,
+  }] },
     validateModels([{ id: "gpt-6-astra" }]));
-  assert.equal(sameSlug.models[0].supports_search_tool, false, "旧配置缺省时不能虚报搜索能力");
-  assert.equal(sameSlug.models[0].supports_parallel_tool_calls, true, "并行工具对所有模型默认开启");
+  assert.equal("supports_search_tool" in sameSlug.models[0], false);
+  assert.equal("web_search_tool_type" in sameSlug.models[0], false);
+  assert.equal("supports_parallel_tool_calls" in sameSlug.models[0], false,
+    "同 slug 也不能保留模型级的并行工具声明");
+  assert.equal("apply_patch_tool_type" in sameSlug.models[0], false);
+  assert.deepEqual(sameSlug.models[0].experimental_supported_tools, [],
+    "客户端要求这个字段必填，空列表表示没有实验工具声明");
+});
+
+test("generated catalog is accepted by the installed Codex parser", (context) => {
+  const candidates = process.platform === "darwin"
+    ? [
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+        "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+      ]
+    : [];
+  const binary = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!binary) {
+    context.skip("本机没有可执行的 Codex 客户端");
+    return;
+  }
+  const bundled = spawnSync(binary, ["debug", "models", "--bundled"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(bundled.status, 0, bundled.stderr);
+  const bundledCatalog = JSON.parse(bundled.stdout.slice(bundled.stdout.indexOf("{")));
+  const catalogPath = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "gpt-switch-catalog-contract-")),
+    "catalog.json",
+  );
+  context.after(() => fs.rmSync(path.dirname(catalogPath), { recursive: true, force: true }));
+  writeCatalog(catalogPath, buildCatalog(bundledCatalog, [
+    { id: "third-party-test", displayName: "Test", context: 128, inputModalities: ["text"] },
+    { id: "gpt-6-astra", displayName: "Astra", context: 128, inputModalities: ["text"] },
+  ]));
+  const parsed = spawnSync(binary, [
+    "-c", `model_catalog_json="${catalogPath}"`,
+    "debug", "models",
+  ], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.equal(JSON.parse(parsed.stdout).models.some((model) => model.slug === "third-party-test"), true);
 });
 
 test("catalog cleanup only touches the plugin-managed catalog", () => {

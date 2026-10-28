@@ -181,11 +181,9 @@ const removeTopLevelLine = (text, name) => {
 const COMPACT_PROMPT = "你正在进行上下文压缩检查点。请为接手这个任务的另一个 LLM 写一份交接摘要："
   + "用用户当前使用的语言写，并在摘要开头注明「后续回复与推理继续使用该语言」。";
 
-/// 全局搜索模式保持 live，是否对某个模型提供搜索工具由模型目录逐项决定；
 /// 第三方模型的推理是裸文本，不开显示开关时桌面端看不到。
 /// 这几个键都是全局的，启用时写入、还原时放回原值。
 const GLOBAL_KEYS = [
-  { name: "web_search", value: '"live"' },
   { name: "show_raw_agent_reasoning", value: "true" },
   { name: "compact_prompt", value: tomlString(COMPACT_PROMPT) },
 ];
@@ -493,6 +491,8 @@ export const restoreCodexConfig = ({ authPath, userConfigPath, recordPath }) => 
     }
     const provider = record.modelProvider;
     text = provider?.existed ? setModelProvider(text, provider.value) : removeModelProvider(text);
+    // 旧记录无法证明当前值来自插件；不接管或恢复归 Agent 管理的搜索配置。
+    delete record.globalKeys?.web_search;
     for (const [name, original] of Object.entries(record.globalKeys ?? {})) {
       text = original ? setTopLevelLine(text, name, original) : removeTopLevelLine(text, name);
     }
@@ -638,10 +638,6 @@ const readModelListing = (body) => {
       id,
       ...(displayName ? { displayName } : {}),
       ...(tokens ? { context: Math.min(10_000, Math.max(1, Math.round(tokens / 1000))) } : {}),
-      // 搜索缺字段表示端点没有给出结论；导入已有模型时才不能把人工确认值误清成 false。
-      ...(typeof entry.supports_search_tool === "boolean"
-        ? { supportsSearchTool: entry.supports_search_tool } : {}),
-      supportsParallelToolCalls: true,
     });
   }
   return models;

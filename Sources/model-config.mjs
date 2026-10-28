@@ -56,9 +56,6 @@ export const validateModels = (models) => {
       displayName: parseDisplayName(model.displayName, index) || id,
       context: parseContextK(model.context, index),
       inputModalities: parseModalities(model.inputModalities, index),
-      // 搜索缺省下线；并行工具按产品默认对所有模型开启。
-      supportsSearchTool: model.supportsSearchTool === true,
-      supportsParallelToolCalls: true,
     };
   });
 };
@@ -81,9 +78,6 @@ const THIRD_PARTY_MODEL = {
   use_responses_lite: false,
   tool_mode: null,
   shell_type: "shell_command",
-  web_search_tool_type: "text",
-  supports_search_tool: false,
-  supports_parallel_tool_calls: true,
   // 第三方端点不认 service_tier，Fast 档摆出来只会让请求被拒。
   service_tiers: [],
   additional_speed_tiers: [],
@@ -106,6 +100,16 @@ const applyWindow = (entry, tokens) => {
   entry.effective_context_window_percent = EFFECTIVE_CONTEXT_PERCENT;
 };
 
+/// 搜索、网页获取和并行工具都由 Agent 管理；渠道模型不能继承或保留客户端模板里的声明。
+const removeAgentToolCapabilities = (entry) => {
+  delete entry.apply_patch_tool_type;
+  // 目录 schema 要求这里必须是数组；空列表表示不声明任何实验工具。
+  entry.experimental_supported_tools = [];
+  delete entry.supports_search_tool;
+  delete entry.web_search_tool_type;
+  delete entry.supports_parallel_tool_calls;
+};
+
 export const buildCatalog = (bundled, models) => {
   const base = Array.isArray(bundled?.models)
     ? bundled.models.map((entry) => JSON.parse(JSON.stringify(entry)))
@@ -121,9 +125,7 @@ export const buildCatalog = (bundled, models) => {
       applyWindow(existing, tokens);
       if (model.displayName) existing.display_name = model.displayName;
       existing.input_modalities = modalities;
-      // 同 slug 的官方条目不代表当前渠道已经具备相同能力。
-      existing.supports_search_tool = model.supportsSearchTool === true;
-      existing.supports_parallel_tool_calls = true;
+      removeAgentToolCapabilities(existing);
       existing.visibility = "list";
       continue;
     }
@@ -131,8 +133,6 @@ export const buildCatalog = (bundled, models) => {
     const entry = {
       ...JSON.parse(JSON.stringify(template)),
       ...THIRD_PARTY_MODEL,
-      supports_search_tool: model.supportsSearchTool === true,
-      supports_parallel_tool_calls: true,
       slug: model.id,
       display_name: displayName,
       description: displayName,
@@ -142,6 +142,7 @@ export const buildCatalog = (bundled, models) => {
       availability_nux: null,
       upgrade: null,
     };
+    removeAgentToolCapabilities(entry);
     applyWindow(entry, tokens);
     base.push(entry);
     bySlug.set(model.id, entry);

@@ -74,8 +74,11 @@ if ([Math]::Abs([double]$appearancePreviewFrame.Height - 350.0) -gt 0.01) {
   throw "窗口宽度变化后顶部主题预览没有保持等比例"
 }
 $sourceText = Get-Content -LiteralPath $sourcePath -Raw
-if ($sourceText -match 'label = "并行工具"') {
-  throw "模型卡片不应再显示并行工具开关"
+if ($sourceText -match 'label = "(网页搜索|并行工具)"') {
+  throw "模型卡片不应再显示工具能力开关"
+}
+if ($sourceText -notmatch '\.Text = "输入类型"') {
+  throw "模型卡片应只标注输入类型"
 }
 if ($sourceText -notmatch '\$appearancePreviewFrame\.Add_SizeChanged') {
   throw "顶部主题预览没有监听容器尺寸变化"
@@ -154,8 +157,8 @@ $converted = Convert-ResponseChannels $detailed.channels
 if ($converted[0].baseUrl -ne "https://relay.example/v1" -or $converted[0].headerName -ne "x-actor" -or
     $converted[0].enabled -ne $false -or $converted[0].models[0].context -ne 128 -or
     (@($converted[0].models[0].inputModalities) -join ",") -ne "text,image" -or
-    $converted[0].models[0].supportsSearchTool -ne $true -or
-    $converted[0].models[0].supportsParallelToolCalls -ne $true) {
+    $converted[0].models[0].ContainsKey("supportsSearchTool") -or
+    $converted[0].models[0].ContainsKey("supportsParallelToolCalls")) {
   throw "渠道回包转换丢了字段"
 }
 $noEnabled = @'
@@ -235,7 +238,7 @@ Receive-Response ([pscustomobject]@{
 })
 if ($script:showListCalls -ne 1) { throw "编辑页保存成功后没有返回列表页" }
 
-# 重新导入已有模型只覆盖端点明确返回的能力，保留人工修改的显示名和窗口。
+# 重新导入已有模型保留人工修改的显示名和窗口，忽略端点返回的搜索能力。
 $script:channels = Convert-ResponseChannels (@'
 {"channels":[{"id":"relay","models":[{"id":"kept","displayName":"手动改的名字","context":64,"inputModalities":["text","image"],"supportsSearchTool":true,"supportsParallelToolCalls":true}]}]}
 '@ | ConvertFrom-Json).channels
@@ -255,15 +258,13 @@ $script:discoveredModels = @(
 $script:discoveredSelection = @{ kept = $true; "brand-new" = $true }
 Add-SelectedModels
 if ($script:channels[0].models.Count -ne 2 -or
-    $script:channels[0].models[0].supportsSearchTool -ne $false -or
-    $script:channels[0].models[0].supportsParallelToolCalls -ne $true -or
     $script:channels[0].models[0].displayName -ne "手动改的名字" -or
     $script:channels[0].models[0].context -ne 64 -or
-    $script:channels[0].models[1].supportsSearchTool -ne $false -or
-    $script:channels[0].models[1].supportsParallelToolCalls -ne $true) {
+    $script:channels[0].models[0].ContainsKey("supportsParallelToolCalls") -or
+    $script:channels[0].models[1].ContainsKey("supportsParallelToolCalls")) {
   throw "重新导入模型没有按能力刷新，或误改了已有模型设置"
 }
-if ($script:lastFeedbackText -ne "已添加 1 个、更新 1 个模型，点「保存」后生效") {
+if ($script:lastFeedbackText -ne "已添加 1 个模型，点「保存」后生效") {
   throw "重新导入模型后的反馈不准确"
 }
 

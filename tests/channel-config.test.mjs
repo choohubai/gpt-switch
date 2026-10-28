@@ -30,7 +30,7 @@ const CONFIG = [
 /// validateChannels 会把模型补成面板保存后的完整形状（没填显示名就落成模型 ID），断言里用它对齐。
 const model = (over = {}) => ({
   displayName: String(over.id ?? ""), inputModalities: ["text", "image"],
-  supportsSearchTool: false, supportsParallelToolCalls: true, ...over,
+  ...over,
 });
 
 const channel = (over = {}) => ({
@@ -69,10 +69,14 @@ test("validateChannels trims rows, keeps ids unique and rejects bad input", () =
   assert.equal(named.name, "自用中转");
   assert.deepEqual(validateChannels([{ id: "x", baseUrl: "https://a.example", models: [{ id: "m" }] }])[0].models,
     [model({ id: "m", context: 272 })]);
-  assert.equal(validateChannels([{
+  assert.equal("supportsSearchTool" in validateChannels([{
     id: "x", baseUrl: "https://a.example",
-    models: [{ id: "m", supportsParallelToolCalls: false }],
-  }])[0].models[0].supportsParallelToolCalls, true, "旧配置里的 false 也要归一为默认支持");
+    models: [{ id: "m", supportsSearchTool: true }],
+  }])[0].models[0], false, "旧配置里的模型搜索字段保存时被丢掉");
+  assert.equal("supportsParallelToolCalls" in validateChannels([{
+    id: "x", baseUrl: "https://a.example",
+    models: [{ id: "m", supportsParallelToolCalls: true }],
+  }])[0].models[0], false, "旧配置里的模型工具能力字段保存时被丢掉");
   for (const invalid of [null, {}, [{}], [{ id: "" }], [{ id: "bad id" }], [{ id: 123 }],
     [{ id: "x".repeat(33) }],
     [{ id: "a", baseUrl: "https://a" }, { id: "a", baseUrl: "https://b" }],
@@ -572,19 +576,18 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
   assert.deepEqual(models, [
     {
       id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128,
-      supportsSearchTool: true, supportsParallelToolCalls: true,
     },
-    { id: "glm-5.3", supportsParallelToolCalls: true },
-    { id: "long-name", supportsParallelToolCalls: true },
-    { id: "control-name", supportsParallelToolCalls: true },
-  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；并行工具统一开启");
+    { id: "glm-5.3" },
+    { id: "long-name" },
+    { id: "control-name" },
+  ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；不导入 Agent 工具能力");
 
   const mapped = await withFetch(async () => listing({
     models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },
   }), () => discoverChannelModels({ baseUrl: "https://relay.example" }));
   assert.deepEqual(mapped, [
-    { id: "glm-5.3", displayName: "GLM 5.3", supportsParallelToolCalls: true },
-    { id: "deepseek-v4-pro", supportsParallelToolCalls: true },
+    { id: "glm-5.3", displayName: "GLM 5.3" },
+    { id: "deepseek-v4-pro" },
   ], "models 对象用属性名当 id，非对象条目忽略");
 });
 
@@ -639,7 +642,7 @@ test("discoverChannelModels requests the Codex catalog for the running client", 
   assert.equal(requested,
     "https://relay.example/v1/models?region=cn&client_version=0.164.0");
   assert.deepEqual(models, [{
-    id: "glm-5.3-flash", supportsSearchTool: false, supportsParallelToolCalls: true,
+    id: "glm-5.3-flash",
   }]);
 });
 
@@ -650,7 +653,7 @@ test("panel list-models answers with the endpoint's models", async (context) => 
     () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
   assert.deepEqual(listed, {
     ok: true,
-    models: [{ id: "m-one", supportsParallelToolCalls: true }],
+    models: [{ id: "m-one" }],
   });
 
   const bad = await handlePanelRequest({ action: "list-models", baseUrl: "" }, options);
@@ -667,17 +670,17 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   ));
   assert.equal(requested, "https://relay.example/v1/models?client_version=0.164.0");
   assert.deepEqual(versioned.models, [{
-    id: "glm-5.3-flash", supportsSearchTool: false, supportsParallelToolCalls: true,
+    id: "glm-5.3-flash",
   }]);
 });
 
-test("switching enables live web search and shows raw reasoning, clearing removes them again", (context) => {
+test("switching adds raw reasoning without changing the Agent web search setting", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
   fs.writeFileSync(userConfigPath, CONFIG);
   fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
   applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
   let written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^web_search = "live"$/m);
+  assert.equal(written.includes("web_search"), false, "Agent 没写搜索配置时 GPT Switch 也不补");
   assert.match(written, /^show_raw_agent_reasoning = true$/m);
   assert.match(written, /^compact_prompt = ".*继续使用该语言.*"$/m, "压缩提示要求跟着用户的语言走");
   applyChannelToCodex({
@@ -685,21 +688,53 @@ test("switching enables live web search and shows raw reasoning, clearing remove
     authPath, userConfigPath, recordPath,
   });
   written = fs.readFileSync(userConfigPath, "utf8");
-  assert.equal((written.match(/^web_search/gm) || []).length, 1, "来回切不要写出第二行");
+  assert.equal(written.includes("web_search"), false);
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "用户没写过的键还原时删掉");
 });
 
-test("switching overrides the user's web search value and clearing restores it", (context) => {
+test("switching leaves the Agent web search value untouched", (context) => {
   const { userConfigPath, authPath, recordPath } = sandbox(context);
-  const original = `web_search = "disabled"\n${CONFIG}`;
+  const original = `web_search = "live"\n${CONFIG}`;
   fs.writeFileSync(userConfigPath, original);
   fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
   applyChannelToCodex({ channel: channel(), authPath, userConfigPath, recordPath });
   const written = fs.readFileSync(userConfigPath, "utf8");
   assert.match(written, /^web_search = "live"$/m);
+  assert.equal((written.match(/^web_search/gm) || []).length, 1);
+  assert.equal("web_search" in JSON.parse(fs.readFileSync(recordPath, "utf8")).globalKeys, false,
+    "当前版本不再备份或接管 Agent 的搜索键");
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
-  assert.equal(fs.readFileSync(userConfigPath, "utf8"), original, "还原放回用户原来的值");
+  const restored = fs.readFileSync(userConfigPath, "utf8");
+  assert.match(restored, /^web_search = "live"$/m, "还原时也不碰 Agent 当前搜索配置");
+  assert.match(restored, /^model_provider = "OpenAI"$/m);
+});
+
+test("clearing leaves legacy Agent web search values untouched", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-old" }));
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  const cases = [
+    { current: null, backup: null },
+    { current: "live", backup: "disabled" },
+    { current: "indexed", backup: "disabled" },
+  ];
+  for (const item of cases) {
+    const current = item.current ? `web_search = "${item.current}"\n` : "";
+    const expected = item.current ? current : "";
+    fs.writeFileSync(userConfigPath, current);
+    fs.writeFileSync(recordPath, JSON.stringify({
+      auth: null,
+      modelProvider: null,
+      tablesAdded: [],
+      globalKeys: {
+        web_search: item.backup === null ? null : `web_search = "${item.backup}"`,
+      },
+    }));
+    restoreCodexConfig({ authPath, userConfigPath, recordPath });
+    assert.equal(fs.readFileSync(userConfigPath, "utf8"), expected,
+      "旧备份不能覆盖或删除 Agent 当前值");
+  }
 });
 
 test("switching keeps the current model and only falls back when the channel lacks it", (context) => {

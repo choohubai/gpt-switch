@@ -69,22 +69,17 @@ struct ModelRow: Codable, Equatable {
     var displayName: String
     var context: Int
     var inputModalities: [String]
-    var supportsSearchTool: Bool
-    var supportsParallelToolCalls: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, displayName, context, inputModalities, supportsSearchTool, supportsParallelToolCalls
+        case id, displayName, context, inputModalities
     }
 
     init(id: String = "", displayName: String = "", context: Int = 272,
-         inputModalities: [String] = ["text", "image"],
-         supportsSearchTool: Bool = false, supportsParallelToolCalls: Bool = true) {
+         inputModalities: [String] = ["text", "image"]) {
         self.id = id
         self.displayName = displayName
         self.context = context
         self.inputModalities = inputModalities
-        self.supportsSearchTool = supportsSearchTool
-        self.supportsParallelToolCalls = true
     }
 
     init(from decoder: Decoder) throws {
@@ -94,8 +89,6 @@ struct ModelRow: Codable, Equatable {
         context = try container.decodeIfPresent(Int.self, forKey: .context) ?? 272
         inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities)
             ?? ["text", "image"]
-        supportsSearchTool = try container.decodeIfPresent(Bool.self, forKey: .supportsSearchTool) ?? false
-        supportsParallelToolCalls = true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -104,14 +97,11 @@ struct ModelRow: Codable, Equatable {
         try container.encode(displayName, forKey: .displayName)
         try container.encode(context, forKey: .context)
         try container.encode(inputModalities, forKey: .inputModalities)
-        try container.encode(supportsSearchTool, forKey: .supportsSearchTool)
-        try container.encode(true, forKey: .supportsParallelToolCalls)
     }
 
     var payload: [String: Any] {
         [
             "id": id, "displayName": displayName, "context": context, "inputModalities": inputModalities,
-            "supportsSearchTool": supportsSearchTool, "supportsParallelToolCalls": true,
         ]
     }
 }
@@ -191,14 +181,11 @@ struct DiscoveredModel: Decodable {
     let id: String
     let displayName: String?
     let context: Int?
-    let supportsSearchTool: Bool?
 
-    init(id: String, displayName: String?, context: Int?,
-         supportsSearchTool: Bool? = nil) {
+    init(id: String, displayName: String?, context: Int?) {
         self.id = id
         self.displayName = displayName
         self.context = context
-        self.supportsSearchTool = supportsSearchTool
     }
 }
 
@@ -833,36 +820,21 @@ final class PanelStore: ObservableObject {
         feedbackIsError = false
     }
 
-    /// 勾上的补进当前渠道；已有模型只应用端点明确返回的能力，保留人工设置的名字和窗口。
+    /// 勾上的补进当前渠道；已有模型保留人工设置的名字和窗口。
     func addSelectedModels() {
         guard channels.indices.contains(activeIndex) else { return }
         let picked = discoveredModels.filter { discoveredSelection.contains($0.id) }
         var added = 0
-        var updated = 0
         for row in picked {
-            if let index = channels[activeIndex].models.firstIndex(where: { $0.id == row.id }) {
-                var hasCapabilities = false
-                if let value = row.supportsSearchTool {
-                    channels[activeIndex].models[index].supportsSearchTool = value
-                    hasCapabilities = true
-                }
-                if hasCapabilities { updated += 1 }
-                continue
-            }
+            if channels[activeIndex].models.contains(where: { $0.id == row.id }) { continue }
             var model = ModelRow(id: row.id)
             model.displayName = row.displayName ?? ""
             if let context = row.context { model.context = context }
-            model.supportsSearchTool = row.supportsSearchTool == true
             channels[activeIndex].models.append(model)
             added += 1
         }
         cancelDiscovery()
-        if updated > 0 {
-            let addedText = added > 0 ? "添加 \(added) 个、" : ""
-            feedback = "已\(addedText)更新 \(updated) 个模型，点「保存」后生效"
-        } else {
-            feedback = added > 0 ? "已添加 \(added) 个模型，点「保存」后生效" : "端点没有返回新的模型或能力"
-        }
+        feedback = added > 0 ? "已添加 \(added) 个模型，点「保存」后生效" : "勾选的模型都已经在目录里"
         feedbackIsError = false
     }
 
@@ -2219,17 +2191,12 @@ struct ModelCard: View {
                     .padding(.bottom, 6)
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("输入类型与能力")
+                Text("输入类型")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 16) {
                     Toggle("文本", isOn: modality("text"))
                     Toggle("图片", isOn: modality("image"))
-                }
-                .toggleStyle(.checkbox)
-                .font(.system(size: 14))
-                HStack(spacing: 16) {
-                    Toggle("网页搜索", isOn: model.supportsSearchTool)
                 }
                 .toggleStyle(.checkbox)
                 .font(.system(size: 14))
