@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -91,14 +92,15 @@ test("validateChannels trims rows, keeps ids unique and rejects bad input", () =
 
 test("proxy settings default to loopback and use the CC Switch port range", (context) => {
   const { proxyConfigPath } = sandbox(context);
-  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47123 });
+  const direct = { outboundProxy: "", outboundUsername: "", outboundPassword: "" };
+  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47123, ...direct });
   assert.deepEqual(validateProxySettings({ host: " 127.0.0.1 ", port: "47124" }),
-    { host: "127.0.0.1", port: 47124 });
+    { host: "127.0.0.1", port: 47124, ...direct });
   assert.deepEqual(validateProxySettings({ host: "192.168.1.20", port: 47124 }),
-    { host: "192.168.1.20", port: 47124 });
+    { host: "192.168.1.20", port: 47124, ...direct });
   assert.deepEqual(writeProxySettings(proxyConfigPath, { host: "127.0.0.1", port: 47125 }),
-    { host: "127.0.0.1", port: 47125 });
-  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47125 });
+    { host: "127.0.0.1", port: 47125, ...direct });
+  assert.deepEqual(readProxySettings(proxyConfigPath), { host: "127.0.0.1", port: 47125, ...direct });
   for (const invalid of [
     { host: "localhost", port: 47123 },
     { host: "999.1.1.1", port: 47123 },
@@ -108,6 +110,89 @@ test("proxy settings default to loopback and use the CC Switch port range", (con
   ]) {
     assert.throws(() => validateProxySettings(invalid));
   }
+});
+
+test("outbound proxy reads old configs and rejects self loops", (context) => {
+  const { proxyConfigPath } = sandbox(context);
+  fs.mkdirSync(path.dirname(proxyConfigPath), { recursive: true });
+  fs.writeFileSync(proxyConfigPath, JSON.stringify({ host: "127.0.0.1", port: 47123 }));
+  assert.equal(readProxySettings(proxyConfigPath).outboundProxy, "", "老配置没有出站字段就是直连");
+
+  const saved = validateProxySettings({
+    host: "127.0.0.1",
+    port: 47123,
+    outboundProxy: " http://127.0.0.1:7897/ ",
+    outboundUsername: " user ",
+    outboundPassword: "p@ss:word",
+  });
+  assert.deepEqual(saved, {
+    host: "127.0.0.1",
+    port: 47123,
+    outboundProxy: "http://127.0.0.1:7897",
+    outboundUsername: "user",
+    outboundPassword: "p@ss:word",
+  });
+  assert.deepEqual(validateProxySettings({ ...saved, outboundProxy: "" }), {
+    host: "127.0.0.1", port: 47123, outboundProxy: "", outboundUsername: "", outboundPassword: "",
+  }, "清空地址要把用户名密码一起清掉");
+  writeProxySettings(proxyConfigPath, saved);
+  assert.deepEqual(readProxySettings(proxyConfigPath), saved);
+  assert.equal(fs.statSync(proxyConfigPath).mode & 0o777, 0o600, "带密码的配置只有本人能读");
+
+  for (const [invalid, message] of [
+    [{ outboundProxy: "socks5://127.0.0.1:7897" }, "只支持 http"],
+    [{ outboundProxy: "http://127.0.0.1:47123" }, "不能指向本地转发服务自己"],
+    [{ outboundProxy: "http://0.0.0.0:47123" }, "不能指向本地转发服务自己"],
+    [{ outboundProxy: "http://user:pass@127.0.0.1:7897" }, "用户名和密码请分开填"],
+    [{ outboundProxy: "http://127.0.0.1:7897/v1" }, "不要带路径"],
+    [{ outboundProxy: "not a url" }, "不是合法的 URL"],
+    [{ outboundProxy: "http://127.0.0.1:7897", outboundPassword: "secret" }, "填了密码就要填用户名"],
+    [{ outboundProxy: "http://127.0.0.1:7897", outboundUsername: "u", outboundPassword: "p\nw" }, "不能包含控制字符"],
+  ]) {
+    assert.throws(() => validateProxySettings({ host: "127.0.0.1", port: 47123, ...invalid }),
+      new RegExp(message));
+  }
+  // 监听在 0.0.0.0 时，用本机网卡地址连同一个端口同样会转回自己。
+  const lan = Object.values(os.networkInterfaces()).flat()
+    .find((item) => item && item.family === "IPv4" && !item.internal);
+  if (lan) {
+    assert.throws(() => validateProxySettings({
+      host: "0.0.0.0", port: 47123, outboundProxy: `http://${lan.address}:47123`,
+    }), /不能指向本地转发服务自己/);
+  }
+});
+
+test("panel test-proxy probes through the drafted proxy without saving", async (context) => {
+  const paths = sandbox(context);
+  const { options } = panelOptions(paths);
+  const seen = [];
+  const proxy = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  context.after(() => proxy.close());
+
+  const tested = await handlePanelRequest({
+    action: "test-proxy",
+    proxy: { host: "127.0.0.1", port: 47123, outboundProxy: `http://127.0.0.1:${proxy.address().port}` },
+  }, { ...options, proxyTestUrl: "http://probe.test/" });
+  assert.equal(tested.ok, true);
+  assert.equal(typeof tested.latencyMs, "number");
+  assert.deepEqual(seen, ["http://probe.test/"], "探测请求要经过面板里填的代理");
+  assert.equal(fs.existsSync(paths.proxyConfigPath), false, "测试不落盘");
+
+  const empty = await handlePanelRequest({ action: "test-proxy", proxy: { host: "127.0.0.1", port: 47123 } }, options);
+  assert.equal(empty.ok, false);
+  assert.match(empty.error, /请先填代理地址/);
+
+  const unreachable = await handlePanelRequest({
+    action: "test-proxy",
+    proxy: { host: "127.0.0.1", port: 47123, outboundProxy: `http://127.0.0.1:${await closedPort()}` },
+  }, options);
+  assert.equal(unreachable.ok, false);
+  assert.match(unreachable.error, /测试连接失败/);
 });
 
 test("proxy save persists values without applying them to the running service", async (context) => {
@@ -122,7 +207,9 @@ test("proxy save persists values without applying them to the running service", 
   assert.equal(readProxySettings(paths.proxyConfigPath).port, 47129);
   const loaded = await handlePanelRequest({ action: "load" }, options);
   assert.equal(loaded.ok, true);
-  assert.deepEqual(loaded.proxy, { host: "127.0.0.1", port: 47129 });
+  assert.deepEqual(loaded.proxy, {
+    host: "127.0.0.1", port: 47129, outboundProxy: "", outboundUsername: "", outboundPassword: "",
+  });
 });
 
 test("switching reports the saved proxy value used by the restart", async (context) => {
@@ -138,7 +225,9 @@ test("switching reports the saved proxy value used by the restart", async (conte
     ...options,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.proxy, { host: "127.0.0.1", port: 47131 });
+  assert.deepEqual(result.proxy, {
+    host: "127.0.0.1", port: 47131, outboundProxy: "", outboundUsername: "", outboundPassword: "",
+  });
 });
 
 test("toml helpers read the existing provider and rewrite only their own table", () => {
@@ -529,30 +618,40 @@ test("panel clear restores codex config, keeps the channels and restarts with no
   assert.match(failed.error, /Codex 配置已还原，但清理或重启失败/);
 });
 
-/// /models 探针：临时顶掉全局 fetch，只检查请求和解析，不真的发网络。
-const withFetch = async (handler, run) => {
-  const original = globalThis.fetch;
-  globalThis.fetch = handler;
+/// /models 探针：起一个真的本地端点，发现模型走的就是运行期那条出站请求。
+const withEndpoint = async (handler, run) => {
+  const server = http.createServer((req, res) => handler(req, res));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    return await run();
+    return await run(`http://127.0.0.1:${server.address().port}`);
   } finally {
-    globalThis.fetch = original;
+    await new Promise((resolve) => server.close(resolve));
   }
+};
+
+/// 先占一个端口再放掉：用它当「没人监听」的地址，比随便挑一个端口可靠。
+const closedPort = async () => {
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 };
 
 /// 断言失败信息里带着某段文字，省得为正则转义 URL 里的斜杠。
 const rejectsWith = (run, expected) =>
   assert.rejects(run, (error) => error.message.includes(expected));
 
-/// 用真的 Response，让读取和解析走的是运行期那条路。
-const listing = (body, status = 200, headers = {}) =>
-  new Response(JSON.stringify(body), { status, headers });
+const listing = (res, body, status = 200, headers = {}) => {
+  res.writeHead(status, { "content-type": "application/json", ...headers });
+  res.end(JSON.stringify(body));
+};
 
 test("discoverChannelModels reads both listing shapes and normalizes rows", async () => {
   const seen = [];
-  const models = await withFetch(async (url, init) => {
-    seen.push({ url, init });
-    return listing({ data: [
+  const models = await withEndpoint((req, res) => {
+    seen.push({ url: req.url, headers: req.headers });
+    listing(res, { data: [
       {
         id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", context_length: 128000,
         supports_search_tool: true, supports_parallel_tool_calls: false,
@@ -566,13 +665,13 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
       { id: "long-name", name: "x".repeat(200) },
       { id: "control-name", name: "bad\nname" },
     ], models: { ignored: {} } });
-  }, () => discoverChannelModels({
-    baseUrl: "https://choohub.net/v1/", apiKey: "sk-x", headerName: "x-actor", headerValue: "actor",
+  }, (base) => discoverChannelModels({
+    baseUrl: `${base}/v1/`, apiKey: "sk-x", headerName: "x-actor", headerValue: "actor",
   }));
-  assert.equal(seen[0].url, "https://choohub.net/v1/models", "去掉末尾斜杠、保留路径段");
-  assert.equal(seen[0].init.headers.authorization, "Bearer sk-x");
-  assert.equal(seen[0].init.headers["x-actor"], "actor");
-  assert.equal(seen[0].init.headers.accept, "application/json");
+  assert.equal(seen[0].url, "/v1/models", "去掉末尾斜杠、保留路径段");
+  assert.equal(seen[0].headers.authorization, "Bearer sk-x");
+  assert.equal(seen[0].headers["x-actor"], "actor");
+  assert.equal(seen[0].headers.accept, "application/json");
   assert.deepEqual(models, [
     {
       id: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro", context: 128,
@@ -582,9 +681,9 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
     { id: "control-name" },
   ], "data 数组优先；去重、跳过 null／不是对象／没有 id 的行，token 折成 k；不导入 Agent 工具能力");
 
-  const mapped = await withFetch(async () => listing({
+  const mapped = await withEndpoint((req, res) => listing(res, {
     models: { "glm-5.3": { name: "GLM 5.3" }, "deepseek-v4-pro": { id: "ignored" }, bad: 3, list: [] },
-  }), () => discoverChannelModels({ baseUrl: "https://relay.example" }));
+  }), (base) => discoverChannelModels({ baseUrl: base }));
   assert.deepEqual(mapped, [
     { id: "glm-5.3", displayName: "GLM 5.3" },
     { id: "deepseek-v4-pro" },
@@ -594,53 +693,61 @@ test("discoverChannelModels reads both listing shapes and normalizes rows", asyn
 test("discoverChannelModels reports the failures the panel shows", async () => {
   await rejectsWith(() => discoverChannelModels({ baseUrl: "" }), "请先填渠道地址");
   await rejectsWith(() => discoverChannelModels({ baseUrl: "ftp://a.example" }), "http:// 或 https://");
-  await withFetch(async () => { throw new Error("offline"); }, async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
-      "连不上 https://a.example/v1/models");
+  const offline = await closedPort();
+  await rejectsWith(() => discoverChannelModels({ baseUrl: `http://127.0.0.1:${offline}/v1` }),
+    `连不上 http://127.0.0.1:${offline}/v1/models`);
+  await withEndpoint((req, res) => listing(res, {}, 401), async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }), "返回 401，检查 API 密钥");
   });
-  await withFetch(async () => listing({}, 401), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "返回 401，检查 API 密钥");
-  });
-  await withFetch(async () => new Response("<html>", { status: 200 }), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+  await withEndpoint((req, res) => {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end("<html>");
+  }, async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }),
       "返回的不是 JSON，这个地址返回的是网页；中转站一般要带上 /v1");
   });
   // 不是 HTML 的坏响应别乱猜地址。
-  await withFetch(async () => new Response("nope", { status: 200 }), async () => {
+  await withEndpoint((req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("nope");
+  }, async (base) => {
     await assert.rejects(
-      () => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
-      (error) => error.message === "https://a.example/v1/models 返回的不是 JSON",
+      () => discoverChannelModels({ baseUrl: `${base}/v1` }),
+      (error) => error.message === `${base}/v1/models 返回的不是 JSON`,
     );
   });
-  await withFetch(async () => listing({ nope: true }), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }),
+  await withEndpoint((req, res) => listing(res, { nope: true }), async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }),
       "没有 data 数组也没有 models 对象");
   });
-  await withFetch(async () => listing({ data: [] }), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "没有公布任何模型");
+  await withEndpoint((req, res) => listing(res, { data: [] }), async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }), "没有公布任何模型");
   });
   // 端点自己报的体积过大就别去读了。
-  await withFetch(async () => listing({ data: [] }, 200, { "content-length": "9000000" }), async () => {
-    await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "超过 8MB");
+  await withEndpoint((req, res) => listing(res, { data: [] }, 200, { "content-length": "9000000" }), async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }), "超过 8MB");
   });
-  // 谎报长度的流也要按实际读到的字节数掐掉。
-  await withFetch(async () => new Response("x".repeat(9 * 1024 * 1024), { status: 200, headers: { "content-length": "10" } }),
-    async () => {
-      await rejectsWith(() => discoverChannelModels({ baseUrl: "https://a.example/v1" }), "超过 8MB");
-    });
+  // 不带长度、边算边发的流也要按实际读到的字节数掐掉。
+  await withEndpoint((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.on("error", () => {});
+    res.end("x".repeat(9 * 1024 * 1024));
+  }, async (base) => {
+    await rejectsWith(() => discoverChannelModels({ baseUrl: `${base}/v1` }), "超过 8MB");
+  });
 });
 
 test("discoverChannelModels requests the Codex catalog for the running client", async () => {
   let requested = "";
-  const models = await withFetch(async (url) => {
-    requested = String(url);
-    return listing({ models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
-  }, () => discoverChannelModels({
-    baseUrl: "https://relay.example/v1?region=cn",
+  const models = await withEndpoint((req, res) => {
+    requested = req.url;
+    listing(res, { models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
+  }, (base) => discoverChannelModels({
+    baseUrl: `${base}/v1?region=cn`,
     clientVersion: "0.164.0",
   }));
   assert.equal(requested,
-    "https://relay.example/v1/models?region=cn&client_version=0.164.0");
+    "/v1/models?region=cn&client_version=0.164.0");
   assert.deepEqual(models, [{
     id: "glm-5.3-flash",
   }]);
@@ -649,8 +756,8 @@ test("discoverChannelModels requests the Codex catalog for the running client", 
 test("panel list-models answers with the endpoint's models", async (context) => {
   const paths = sandbox(context);
   const { options } = panelOptions(paths);
-  const listed = await withFetch(async () => listing({ data: [{ id: "m-one" }] }),
-    () => handlePanelRequest({ action: "list-models", baseUrl: "https://relay.example/v1" }, options));
+  const listed = await withEndpoint((req, res) => listing(res, { data: [{ id: "m-one" }] }),
+    (base) => handlePanelRequest({ action: "list-models", baseUrl: `${base}/v1` }, options));
   assert.deepEqual(listed, {
     ok: true,
     models: [{ id: "m-one" }],
@@ -661,14 +768,14 @@ test("panel list-models answers with the endpoint's models", async (context) => 
   assert.match(bad.error, /请先填渠道地址/);
 
   let requested = "";
-  const versioned = await withFetch(async (url) => {
-    requested = String(url);
-    return listing({ models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
-  }, () => handlePanelRequest(
-    { action: "list-models", baseUrl: "https://relay.example/v1" },
+  const versioned = await withEndpoint((req, res) => {
+    requested = req.url;
+    listing(res, { models: [{ slug: "glm-5.3-flash", supports_search_tool: false }] });
+  }, (base) => handlePanelRequest(
+    { action: "list-models", baseUrl: `${base}/v1` },
     { ...options, codexClientVersion: () => "0.164.0" },
   ));
-  assert.equal(requested, "https://relay.example/v1/models?client_version=0.164.0");
+  assert.equal(requested, "/v1/models?client_version=0.164.0");
   assert.deepEqual(versioned.models, [{
     id: "glm-5.3-flash",
   }]);

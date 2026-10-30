@@ -231,6 +231,12 @@ final class PanelStore: ObservableObject {
     @Published var proxyPort = "47123"
     @Published var savedProxyHost = "127.0.0.1"
     @Published var savedProxyPort = "47123"
+    @Published var proxyOutbound = ""
+    @Published var proxyOutboundUser = ""
+    @Published var proxyOutboundPassword = ""
+    @Published var savedProxyOutbound = ""
+    @Published var savedProxyOutboundUser = ""
+    @Published var savedProxyOutboundPassword = ""
     @Published var agentsContent = ""
     @Published var savedAgentsContent = ""
     @Published var agentsBackupPath = ""
@@ -245,6 +251,7 @@ final class PanelStore: ObservableObject {
     @Published var savingAppearance = false
     @Published var savingAgents = false
     @Published var savingProxy = false
+    @Published var testingProxy = false
     @Published var currentChannelID: String?
     @Published var editingIndex: Int?
     @Published var loaded = false
@@ -292,7 +299,12 @@ final class PanelStore: ObservableObject {
 
     var hasChannel: Bool { activeChannel != nil }
     /// 代理页也有自己的保存按钮；未保存的代理输入不能把模型页的「保存」和右上角重启拖住。
-    var proxyDirty: Bool { proxyHost != savedProxyHost || proxyPort != savedProxyPort }
+    var proxyDirty: Bool {
+        proxyHost != savedProxyHost || proxyPort != savedProxyPort
+            || proxyOutbound != savedProxyOutbound
+            || proxyOutboundUser != savedProxyOutboundUser
+            || proxyOutboundPassword != savedProxyOutboundPassword
+    }
     var agentsDirty: Bool { agentsContent != savedAgentsContent || agentsEnabled != savedAgentsEnabled }
     var isDirty: Bool { channels != savedChannels }
 
@@ -449,6 +461,17 @@ final class PanelStore: ObservableObject {
         submit(action: "save", currentID: currentChannelID ?? "")
     }
 
+    /// 代理页的草稿：保存和测试连接都发这一份，避免两边各拼一套字段。
+    private var proxyPayload: [String: Any] {
+        [
+            "host": proxyHost,
+            "port": Int(proxyPort) ?? -1,
+            "outboundProxy": proxyOutbound,
+            "outboundUsername": proxyOutboundUser,
+            "outboundPassword": proxyOutboundPassword,
+        ]
+    }
+
     /// 代理保存只落盘；实际监听和 Codex 地址在用户点右上角「重启 ChatGPT」时一起切换。
     func saveProxy() {
         guard loaded, !busy, proxyDirty else { return }
@@ -460,8 +483,37 @@ final class PanelStore: ObservableObject {
             "action": "save",
             "restart": false,
             "scope": "proxy",
-            "proxy": ["host": proxyHost, "port": Int(proxyPort) ?? -1],
+            "proxy": proxyPayload,
         ])
+    }
+
+    /// 测试连接只拿当前草稿试一次，不写配置：结果直接进底栏。
+    func testProxy() {
+        guard loaded, !busy, !proxyOutbound.isEmpty else { return }
+        busy = true
+        testingProxy = true
+        feedback = "正在测试代理连接…"
+        feedbackIsError = false
+        send(["action": "test-proxy", "proxy": proxyPayload])
+    }
+
+    /// 清除只清草稿，保存后才落盘。
+    func clearProxyOutbound() {
+        proxyOutbound = ""
+        proxyOutboundUser = ""
+        proxyOutboundPassword = ""
+        feedback = ""
+        feedbackIsError = false
+    }
+
+    /// 出站代理三个字段一起读：老配置里没有它们时按直连处理。
+    private func applyOutboundProxy(_ value: [String: Any]) {
+        proxyOutbound = value["outboundProxy"] as? String ?? ""
+        proxyOutboundUser = value["outboundUsername"] as? String ?? ""
+        proxyOutboundPassword = value["outboundPassword"] as? String ?? ""
+        savedProxyOutbound = proxyOutbound
+        savedProxyOutboundUser = proxyOutboundUser
+        savedProxyOutboundPassword = proxyOutboundPassword
     }
 
     /// 保存可编辑草稿；启用时由本地注入器在写入前备份并合并用户 AGENTS.md。
@@ -623,6 +675,7 @@ final class PanelStore: ObservableObject {
             proxyPort = String(port)
             savedProxyHost = host
             savedProxyPort = String(port)
+            applyOutboundProxy(value)
         }
         if let value = response["agents"] as? [String: Any],
            let content = value["content"] as? String {
@@ -648,6 +701,19 @@ final class PanelStore: ObservableObject {
         }
         if fetchingModels {
             finishModelFetch(response)
+            return
+        }
+        if testingProxy {
+            testingProxy = false
+            busy = false
+            if response["ok"] as? Bool == true {
+                let latency = response["latencyMs"] as? Int ?? 0
+                feedback = "代理连接正常 · \(latency)ms"
+                feedbackIsError = false
+            } else {
+                feedback = response["error"] as? String ?? "测试连接失败"
+                feedbackIsError = true
+            }
             return
         }
         if savingAppearance {
@@ -684,7 +750,8 @@ final class PanelStore: ObservableObject {
                 proxyPort = String(port)
                 savedProxyHost = host
                 savedProxyPort = String(port)
-                feedback = "代理配置已保存，重启 ChatGPT 后生效"
+                applyOutboundProxy(value)
+                feedback = "代理配置已保存，出站代理立即生效"
                 feedbackIsError = false
             } else {
                 feedback = response["error"] as? String ?? "保存代理配置失败"
@@ -1587,7 +1654,7 @@ private struct ProxySettingsView: View {
             PanelHeader(
                 store: store,
                 title: "代理",
-                detail: "控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。",
+                detail: "控制本地转发服务，以及访问渠道和检查更新时走的全局出站代理。",
                 showsRestart: true)
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 18) {
@@ -1613,10 +1680,56 @@ private struct ProxySettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    HStack(spacing: 12) {
-                        Text("保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。")
+                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9)))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(0.07)))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("全局出站代理").font(.system(size: 13, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("代理地址").font(.system(size: 13, weight: .medium))
+                        TextField("http://127.0.0.1:7897", text: $store.proxyOutbound)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13, design: .monospaced))
+                            .fieldBox()
+                        Text("渠道请求、获取模型列表和检查更新都会经过这里；留空表示直连，只支持 http:// 代理。")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                    }
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("用户名（可选）").font(.system(size: 13, weight: .medium))
+                            TextField("", text: $store.proxyOutboundUser)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, design: .monospaced))
+                                .fieldBox()
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("密码（可选）").font(.system(size: 13, weight: .medium))
+                            SecureField("", text: $store.proxyOutboundPassword)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, design: .monospaced))
+                                .fieldBox()
+                        }
+                    }
+                    Text("出站代理保存后立即生效；监听地址或端口变化需要重启 ChatGPT。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("清除") { store.clearProxyOutbound() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
+                            .disabled(store.proxyOutbound.isEmpty && store.proxyOutboundUser.isEmpty
+                                && store.proxyOutboundPassword.isEmpty)
+                            .pointingHand()
+                        Button("测试连接") { store.testProxy() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
+                            .disabled(store.busy || store.proxyOutbound.isEmpty)
+                            .pointingHand()
                         Spacer(minLength: 12)
                         Button("保存") { store.saveProxy() }
                             .buttonStyle(.borderedProminent)
@@ -2561,6 +2674,9 @@ final class StatusMenuController: NSObject, NSApplicationDelegate, NSWindowDeleg
         store.channels = store.savedChannels
         store.proxyHost = store.savedProxyHost
         store.proxyPort = store.savedProxyPort
+        store.proxyOutbound = store.savedProxyOutbound
+        store.proxyOutboundUser = store.savedProxyOutboundUser
+        store.proxyOutboundPassword = store.savedProxyOutboundPassword
         store.discardAgentsDraft()
         store.editingIndex = nil
         return true

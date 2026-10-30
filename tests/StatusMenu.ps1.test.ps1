@@ -179,9 +179,23 @@ $script:proxyHost = "127.0.0.1"
 $script:proxyPort = "47123"
 $script:savedProxyHost = "127.0.0.1"
 $script:savedProxyPort = "47123"
+$script:proxyOutbound = ""
+$script:proxyOutboundUser = ""
+$script:proxyOutboundPassword = ""
+$script:savedProxyOutbound = ""
+$script:savedProxyOutboundUser = ""
+$script:savedProxyOutboundPassword = ""
 if (Test-ProxyDirty) { throw "代理配置原样时被判成有改动" }
 $script:proxyPort = "47124"
 if (-not (Test-ProxyDirty)) { throw "代理端口改变后没有识别出未保存" }
+$script:proxyPort = "47123"
+$script:proxyOutbound = "http://127.0.0.1:7897"
+if (-not (Test-ProxyDirty)) { throw "出站代理地址改变后没有识别出未保存" }
+$script:proxyOutbound = ""
+$script:proxyOutboundPassword = "p"
+if (-not (Test-ProxyDirty)) { throw "出站代理密码改变后没有识别出未保存" }
+$script:proxyOutboundPassword = ""
+if (Test-ProxyDirty) { throw "代理配置改回原值后仍被判成有改动" }
 
 $script:agentsContent = "原内容"
 $script:savedAgentsContent = "原内容"
@@ -417,6 +431,7 @@ $script:busy = $false
 function New-TestControl {
   $control = [pscustomobject]@{
     Text = ""
+    Password = ""
     IsChecked = $false
     IsEnabled = $true
     Visibility = "Collapsed"
@@ -448,6 +463,11 @@ $agentsBackupLabel = New-TestControl
 $agentsErrorLabel = New-TestControl
 $proxyHostField = New-TestControl
 $proxyPortField = New-TestControl
+$proxyOutboundField = New-TestControl
+$proxyOutboundUserField = New-TestControl
+$proxyOutboundPasswordField = New-TestControl
+$testProxyButton = New-TestControl
+$clearProxyOutboundButton = New-TestControl
 $modelsTab = New-TestControl
 $proxyTab = New-TestControl
 $generalTab = New-TestControl
@@ -468,7 +488,9 @@ foreach ($name in @(
   "listPage", "detailPage", "simplePage", "aboutPage", "agentsPage", "appearancePage",
   "modelsPage", "modelsCard", "proxyPage", "simplePageTitle",
   "agentsContentField", "agentsEnabledToggle", "saveAgentsButton", "agentsBackupLabel", "agentsErrorLabel",
-  "proxyHostField", "proxyPortField", "modelsTab", "proxyTab", "generalTab",
+  "proxyHostField", "proxyPortField", "proxyOutboundField", "proxyOutboundUserField",
+  "proxyOutboundPasswordField", "testProxyButton", "clearProxyOutboundButton",
+  "modelsTab", "proxyTab", "generalTab",
   "appearanceTab", "agentsTab", "aboutTab", "helpTab", "window"
 )) {
   $value = Get-Variable -Name $name -ValueOnly

@@ -212,16 +212,44 @@ struct StatusMenuTests {
         assert(requests.last?["current"] as? String == "relay")
         store.busy = false
 
-        // 代理保存只落盘；端口变化后提示重启，不会在路上动当前服务。
+        // 代理保存只落盘；出站代理存完即生效，监听地址仍在重启时切换。
         store.proxyPort = "47124"
+        store.proxyOutbound = "http://127.0.0.1:7897"
+        store.proxyOutboundUser = "u"
+        store.proxyOutboundPassword = "p"
         assert(store.proxyDirty)
         store.saveProxy()
         assert(requests.last?["scope"] as? String == "proxy")
-        assert((requests.last?["proxy"] as? [String: Any])?["port"] as? Int == 47124)
+        let proxyPayload = requests.last?["proxy"] as? [String: Any]
+        assert(proxyPayload?["port"] as? Int == 47124)
+        assert(proxyPayload?["outboundProxy"] as? String == "http://127.0.0.1:7897")
+        assert(proxyPayload?["outboundUsername"] as? String == "u")
+        assert(proxyPayload?["outboundPassword"] as? String == "p")
         store.busy = false
-        store.apply(["ok": true, "saved": true, "proxy": ["host": "127.0.0.1", "port": 47124]])
+        store.apply(["ok": true, "saved": true, "proxy": [
+            "host": "127.0.0.1", "port": 47124,
+            "outboundProxy": "http://127.0.0.1:7897", "outboundUsername": "u", "outboundPassword": "p",
+        ]])
         assert(!store.proxyDirty)
-        assert(store.feedback == "代理配置已保存，重启 ChatGPT 后生效")
+        assert(store.proxyOutbound == "http://127.0.0.1:7897")
+        assert(store.feedback == "代理配置已保存，出站代理立即生效")
+        // 老配置没有出站字段时按直连回显，不能留下一个永远存不完的脏状态。
+        store.apply(["ok": true, "proxy": ["host": "127.0.0.1", "port": 47124]])
+        assert(store.proxyOutbound == "" && store.proxyOutboundUser == "" && !store.proxyDirty)
+        // 清除只清草稿；测试连接拿同一份草稿试一次，不写配置。
+        store.proxyOutbound = "http://127.0.0.1:7897"
+        store.proxyOutboundUser = "u"
+        assert(store.proxyDirty)
+        store.clearProxyOutbound()
+        assert(store.proxyOutbound.isEmpty && store.proxyOutboundUser.isEmpty && !store.proxyDirty)
+        store.proxyOutbound = "http://127.0.0.1:7897"
+        store.testProxy()
+        assert(requests.last?["action"] as? String == "test-proxy")
+        assert((requests.last?["proxy"] as? [String: Any])?["outboundProxy"] as? String == "http://127.0.0.1:7897")
+        assert(store.testingProxy && store.busy)
+        store.apply(["ok": true, "latencyMs": 42])
+        assert(!store.testingProxy && !store.busy)
+        assert(store.feedback == "代理连接正常 · 42ms")
 
         // 每条渠道一个启用开关：禁用只翻这一条并落盘，别的渠道不动，也不重启客户端。
         store.showList()

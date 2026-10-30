@@ -10,7 +10,7 @@ import {
   startProxy, proxyBaseUrl, switchProxyAndRestart, pickerModelsFromState, pickerGroupNameFromState,
   pickerChannelNamesFromState,
 } from "../Sources/proxy.mjs";
-import { writeProxySettings } from "../Sources/channel-config.mjs";
+import { readProxySettings, writeProxySettings } from "../Sources/channel-config.mjs";
 
 const channel = (over = {}) => ({
   id: "relay", name: "Relay", baseUrl: "https://relay.example/v1", apiKey: "sk-relay",
@@ -103,10 +103,11 @@ const withUpstream = async (handler, run) => {
   }
 };
 
-const withProxy = async (state, run) => {
+const withProxy = async (state, run, loadProxy = () => null) => {
   const events = [];
   const proxy = await startProxy({
     loadState: () => state,
+    loadProxy,
     log: (message, detail) => events.push({ message, detail }),
   });
   try {
@@ -146,6 +147,65 @@ test("proxy rewrites the model, swaps the key and streams the answer back", asyn
       assert.equal(routed.detail.upstream, "glm-5.3");
       assert.equal(routed.detail.target, origin);
     });
+  });
+});
+
+test("forwarded requests use the outbound proxy, loopback channels stay direct", async (context) => {
+  const hits = [];
+  // 假代理：直接把结果写回去。它收到绝对 URL 就说明请求确实走了代理这一跳。
+  const outbound = http.createServer((req, res) => {
+    hits.push({ url: req.url, authorization: req.headers.authorization, hops: req.headers["x-gpt-switch-hop"] });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ via: "proxy" }));
+  });
+  await new Promise((resolve) => outbound.listen(0, "127.0.0.1", resolve));
+  context.after(() => outbound.close());
+  const loadProxy = () => ({
+    outboundProxy: `http://127.0.0.1:${outbound.address().port}`,
+  });
+
+  const state = { channels: [channel({ baseUrl: "http://relay.test/v1" })], current: "relay" };
+  await withProxy(state, async ({ baseUrl, events }) => {
+    const response = await fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "glm-5.3" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { via: "proxy" });
+    assert.deepEqual(hits.map((hit) => hit.url), ["http://relay.test/v1/responses"]);
+    assert.equal(hits[0].authorization, "Bearer sk-relay", "渠道密钥照常带上");
+    assert.equal(hits[0].hops, "1", "经过出站代理时带上一跳计数");
+    const routed = events.find((item) => item.message === "proxy_routed");
+    assert.equal(routed.detail.proxy, `127.0.0.1:${outbound.address().port}`, "日志里只有代理地址，没有凭据");
+  }, loadProxy);
+
+  // 渠道本身就在本机时不走代理：本地推理服务通常代连不到，指回自己还会成环。
+  await withUpstream((req, res) => res.end("direct"), async ({ origin }) => {
+    const local = { channels: [channel({ baseUrl: `${origin}/v1` })], current: "relay" };
+    await withProxy(local, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3" }),
+      });
+      assert.equal(await response.text(), "direct");
+    }, loadProxy);
+  });
+  assert.equal(hits.length, 1, "本机渠道不该被送进代理");
+});
+
+test("a request that used up its hops is rejected instead of looping", async () => {
+  const state = { channels: [channel({ baseUrl: "http://relay.test/v1" })], current: "relay" };
+  await withProxy(state, async ({ baseUrl, events }) => {
+    const response = await fetch(`${baseUrl}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-gpt-switch-hop": "8" },
+      body: JSON.stringify({ model: "glm-5.3" }),
+    });
+    assert.equal(response.status, 508);
+    assert.match((await response.json()).error.message, /转发环路/);
+    assert.equal(events.some((item) => item.message === "proxy_loop_detected"), true);
   });
 });
 
@@ -400,4 +460,80 @@ test("failed ChatGPT restart keeps old proxy and restores proxy and Codex files"
   assert.equal(oldClosed, false, "重启失败必须保留旧代理");
   assert.equal(fs.readFileSync(files.proxyConfigPath, "utf8"), beforeProxy);
   assert.equal(fs.readFileSync(files.userConfigPath, "utf8"), originalCodex);
+});
+
+test("a drifted port rewrites the config without dropping the outbound proxy", async (context) => {
+  const files = proxySwitchSandbox(context);
+  const blocker = http.createServer();
+  await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+  context.after(() => blocker.close());
+  const taken = blocker.address().port;
+  writeProxySettings(files.proxyConfigPath, {
+    host: "127.0.0.1", port: taken, outboundProxy: "http://127.0.0.1:7897",
+    outboundUsername: "u", outboundPassword: "p",
+  });
+
+  const switched = await switchProxyAndRestart({
+    settings: readProxySettings(files.proxyConfigPath),
+    currentServer: null,
+    currentHost: "127.0.0.1",
+    currentPort: 1,
+    restartClient: async () => {},
+    updateCodex: async () => false,
+    log: () => {},
+    proxyConfigPath: files.proxyConfigPath,
+    userConfigPath: files.userConfigPath,
+    recordPath: files.recordPath,
+  });
+  context.after(() => switched.server.close());
+  assert.notEqual(switched.port, taken, "被占用的端口应当顺延");
+  const saved = readProxySettings(files.proxyConfigPath);
+  assert.equal(saved.port, switched.port);
+  assert.deepEqual(
+    { proxy: saved.outboundProxy, user: saved.outboundUsername, password: saved.outboundPassword },
+    { proxy: "http://127.0.0.1:7897", user: "u", password: "p" },
+  );
+});
+
+test("a restarted proxy still sends traffic through the outbound proxy", async (context) => {
+  const hits = [];
+  const outbound = http.createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise((resolve) => outbound.listen(0, "127.0.0.1", resolve));
+  context.after(() => outbound.close());
+  const files = proxySwitchSandbox(context);
+  const probe = http.createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const listenPort = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const settings = writeProxySettings(files.proxyConfigPath, {
+    host: "127.0.0.1", port: listenPort, outboundProxy: `http://127.0.0.1:${outbound.address().port}`,
+  });
+
+  const switched = await switchProxyAndRestart({
+    settings,
+    currentServer: null,
+    currentHost: "127.0.0.1",
+    currentPort: 1,
+    restartClient: async () => {},
+    updateCodex: async () => false,
+    loadState: () => ({ channels: [channel({ baseUrl: "http://relay.test/v1" })], current: "relay" }),
+    // 换端口起的新服务必须带着出站代理，否则重启一次就静默直连。
+    loadProxy: () => readProxySettings(files.proxyConfigPath),
+    log: () => {},
+    proxyConfigPath: files.proxyConfigPath,
+    userConfigPath: files.userConfigPath,
+    recordPath: files.recordPath,
+  });
+  context.after(() => switched.server.close());
+  const response = await fetch(`http://127.0.0.1:${switched.port}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "glm-5.3" }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(hits, ["http://relay.test/v1/responses"], "重启后的请求仍要经过出站代理");
 });

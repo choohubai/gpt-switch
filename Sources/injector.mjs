@@ -21,6 +21,7 @@ import {
   startProxy, proxyBaseUrl, switchProxyAndRestart, pickerModelsFromState, pickerGroupNameFromState,
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
+import { isLoopbackHost, outboundProxyFrom, requestText } from "./outbound.mjs";
 import {
   appearanceNativeMode, appearancePanelState, appearanceRuntimeTheme,
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
@@ -526,13 +527,15 @@ const buildInjectionSource = (models, groupName = "", groupNames = [], appearanc
     .replace(appearanceMarker, () => `const BOOT_APPEARANCE = ${JSON.stringify(appearance)};`);
 };
 
+/// 插件自己发出的请求：检查更新走全局出站代理，CDP 这类本机地址直连。
 const fetchJson = async (url, timeoutMs = 1500, headers = null) => {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(timeoutMs),
-    ...(headers ? { headers } : {}),
-  });
+  const target = new URL(url);
+  const proxy = isLoopbackHost(target.hostname)
+    ? null
+    : outboundProxyFrom(readProxySettings(PROXY_CONFIG));
+  const response = await requestText(url, { headers: headers ?? {}, timeoutMs, proxy });
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return response.json();
+  return JSON.parse(response.text);
 };
 
 const parseVersion = (value) => String(value || "")
@@ -1076,6 +1079,7 @@ const main = async () => {
       const loadState = () => loadChannelState(CHANNELS_CONFIG, channelImportOptions());
       const started = await startProxy({
         loadState,
+        loadProxy: () => readProxySettings(PROXY_CONFIG),
         log,
         host: settings.host,
         port: settings.port,
@@ -1086,7 +1090,7 @@ const main = async () => {
       let configChanged = false;
       if (started.port !== settings.port) {
         // 占用的端口自动顺延后写回配置，面板刷新时会看到真正在用的端口。
-        writeProxySettings(PROXY_CONFIG, { host: started.host, port: started.port });
+        writeProxySettings(PROXY_CONFIG, { ...settings, host: started.host, port: started.port });
         configChanged = true;
       }
       const recorded = recordedProxyAddress({ userConfigPath: USER_CONFIG, recordPath: CODEX_RECORD });
@@ -1695,6 +1699,8 @@ const main = async () => {
             return true;
           },
           loadState: () => loadChannelState(CHANNELS_CONFIG, channelImportOptions()),
+          // 换端口后新起的服务还要接着用同一个出站代理，否则重启一次就静默直连。
+          loadProxy: () => readProxySettings(PROXY_CONFIG),
           log,
           proxyConfigPath: PROXY_CONFIG,
           userConfigPath: USER_CONFIG,

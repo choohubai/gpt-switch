@@ -56,6 +56,7 @@ cp "$SOURCE_DIR/appearance-config.mjs" "$CONTENTS/Resources/appearance-config.mj
 cp "$SOURCE_DIR/AGENTS.template.md" "$CONTENTS/Resources/AGENTS.template.md"
 cp "$SOURCE_DIR/channel-config.mjs" "$CONTENTS/Resources/channel-config.mjs"
 cp "$SOURCE_DIR/proxy.mjs" "$CONTENTS/Resources/proxy.mjs"
+cp "$SOURCE_DIR/outbound.mjs" "$CONTENTS/Resources/outbound.mjs"
 cp "$SOURCE_DIR/injection.js" "$CONTENTS/Resources/injection.js"
 cp -R "$RESOURCE_DIR/Appearance" "$CONTENTS/Resources/Appearance"
 cp "$RESOURCE_DIR/MenuBarIcon.png" "$CONTENTS/Resources/MenuBarIcon.png"

@@ -1,14 +1,16 @@
 import fs from "node:fs";
 import http from "node:http";
-import https from "node:https";
 import { atomicWrite } from "./model-config.mjs";
 import {
   writeProxySettings, recordedProxyAddress, repointProxyUrl,
 } from "./channel-config.mjs";
+import { describeProxy, openRequest, outboundProxyFrom } from "./outbound.mjs";
 
 /// 模型 id 里带上渠道身份：客户端只会把 id 原样发回来，转发层据此把请求送回原来那家。
 /// 渠道 id 只允许字母数字和 -_，不需要转义。
 export const MODEL_PREFIX = "gpts-";
+/// 转发跳数上限：两个实例互相把对方填成出站代理时，配置层看不到对方的设置，只有靠这一跳数收口。
+const MAX_FORWARD_HOPS = 8;
 
 export const proxyModelId = (channelId, upstreamModel) => `${MODEL_PREFIX}${channelId}/${upstreamModel}`;
 
@@ -121,7 +123,7 @@ export const buildUpstreamHeaders = (incoming, channel) => {
     const key = name.toLowerCase();
     // transfer-encoding 必须跟着 content-length 一起丢：两个头同时出现是非法请求，上游会直接回 400。
     if (key === "host" || key === "authorization" || key === "content-length" || key === "connection"
-      || key === "transfer-encoding") continue;
+      || key === "transfer-encoding" || key === "x-gpt-switch-hop") continue;
     if (customName && key === customName) continue;
     headers[name] = value;
   }
@@ -146,7 +148,8 @@ const readBody = (req) => new Promise((resolve, reject) => {
 });
 
 /// 本地转发服务：客户端所有模型流量都进这里，按模型 id 选渠道再原样透传（含流式响应）。
-export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" }) => {
+/// 出站代理和渠道列表一样按请求实时读，保存代理页后不必重启客户端就生效。
+export const createProxyServer = ({ loadState, loadProxy = () => null, log = () => {}, name = "proxy" }) => {
   const server = http.createServer(async (req, res) => {
     let raw;
     try {
@@ -164,6 +167,12 @@ export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" })
       }
     }
     const model = typeof body?.model === "string" ? body.model.trim() : "";
+    const hops = Number(req.headers["x-gpt-switch-hop"]) || 0;
+    if (hops >= MAX_FORWARD_HOPS) {
+      log("proxy_loop_detected", { path: req.url, hops });
+      sendError(res, 508, "检测到转发环路：这个转发服务被另一个实例指回了自己，请检查两边的出站代理设置");
+      return;
+    }
     let state;
     try {
       state = loadState();
@@ -179,6 +188,14 @@ export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" })
       sendError(res, 400, route.error);
       return;
     }
+    let outbound;
+    try {
+      outbound = outboundProxyFrom(loadProxy());
+    } catch (error) {
+      log("proxy_outbound_failed", { error: String(error?.message || error) });
+      sendError(res, 503, `读不到出站代理配置：${String(error?.message || error)}。请到面板的代理页检查`);
+      return;
+    }
     const target = upstreamUrl(route.channel.baseUrl, req.url);
     if (!target) {
       log("proxy_rejected", { path: req.url, model, error: "渠道地址不合法" });
@@ -192,8 +209,20 @@ export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" })
     }
     const headers = buildUpstreamHeaders(req.headers, route.channel);
     headers["content-length"] = String(payload.length);
-    const transport = target.protocol === "https:" ? https : http;
-    const upstream = transport.request(target, { method: req.method, headers }, (upstreamRes) => {
+    // 只在本机确实要经过出站代理时才带跳数，直连渠道时不把内部头漏给上游。
+    if (outbound) headers["x-gpt-switch-hop"] = String(hops + 1);
+    let upstream;
+    try {
+      upstream = await openRequest(target, { method: req.method, headers }, outbound);
+    } catch (error) {
+      log("proxy_upstream_failed", {
+        path: req.url, model, channel: route.channel.id, target: target.origin, proxy: describeProxy(outbound),
+        error: String(error?.message || error),
+      });
+      sendError(res, 502, `连不上渠道「${route.channel.name || route.channel.id}」：${String(error?.message || error)}`);
+      return;
+    }
+    upstream.on("response", (upstreamRes) => {
       const outHeaders = {};
       for (const [key, value] of Object.entries(upstreamRes.headers)) {
         if (value === undefined || RESPONSE_HEADERS_TO_DROP.has(key.toLowerCase())) continue;
@@ -204,13 +233,22 @@ export const createProxyServer = ({ loadState, log = () => {}, name = "proxy" })
     });
     upstream.on("error", (error) => {
       log("proxy_upstream_failed", {
-        path: req.url, model, channel: route.channel.id, target: target.origin, error: String(error?.message || error),
+        path: req.url, model, channel: route.channel.id, target: target.origin, proxy: describeProxy(outbound),
+        error: String(error?.message || error),
       });
       if (!res.headersSent) sendError(res, 502, `连不上渠道「${route.channel.name || route.channel.id}」：${String(error?.message || error)}`);
       else res.destroy();
     });
+    // 建隧道是异步的：客户端可能在 CONNECT 期间就断开，此时监听器还没挂上。
+    if (res.destroyed) {
+      upstream.destroy();
+      return;
+    }
     res.on("close", () => upstream.destroy());
-    log("proxy_routed", { path: req.url, model, channel: route.channel.id, upstream: route.upstreamModel, target: target.origin });
+    log("proxy_routed", {
+      path: req.url, model, channel: route.channel.id, upstream: route.upstreamModel,
+      target: target.origin, proxy: describeProxy(outbound),
+    });
     upstream.end(payload);
   });
   server.on("error", (error) => log("proxy_failed", String(error?.message || error)));
@@ -229,6 +267,7 @@ export const switchProxyAndRestart = async ({
   settings, currentServer, currentHost, currentPort, restartClient,
   updateCodex = async () => false,
   loadState = () => ({ channels: [], current: null }),
+  loadProxy,
   log = () => {}, proxyConfigPath, userConfigPath, recordPath,
 }) => {
   if (settings.host === currentHost && settings.port === currentPort) {
@@ -242,10 +281,13 @@ export const switchProxyAndRestart = async ({
   const configText = configExisted ? fs.readFileSync(proxyConfigPath, "utf8") : null;
   const codexExisted = fs.existsSync(userConfigPath);
   const codexText = codexExisted ? fs.readFileSync(userConfigPath, "utf8") : null;
-  const started = await startProxy({ loadState, log, host: settings.host, port: settings.port });
+  const started = await startProxy({
+    loadState, loadProxy, log, host: settings.host, port: settings.port,
+  });
   try {
     const actual = { host: started.host, port: started.port };
-    if (started.port !== settings.port) writeProxySettings(proxyConfigPath, actual);
+    // 只改顺延后的端口：出站代理是同一份文件里的另一组设置，不能跟着这次写回丢掉。
+    if (started.port !== settings.port) writeProxySettings(proxyConfigPath, { ...settings, ...actual });
     const repointed = recordedProxyAddress({ userConfigPath, recordPath })
       ? repointProxyUrl({ userConfigPath, recordPath, baseUrl: started.baseUrl })
       : false;
@@ -285,10 +327,10 @@ const closeProxyServer = (server) => new Promise((resolve) => {
 
 /// 指定端口被占用时向后找可用端口；调用方要把实际端口写回配置，Codex 才能继续对上。
 export const startProxy = ({
-  loadState, log, host = DEFAULT_PROXY_HOST, port = DEFAULT_PROXY_PORT, attempts = 10,
+  loadState, loadProxy, log, host = DEFAULT_PROXY_HOST, port = DEFAULT_PROXY_PORT, attempts = 10,
 }) => new Promise((resolve, reject) => {
   const tryListen = (candidate, remaining) => {
-    const server = createProxyServer({ loadState, log });
+    const server = createProxyServer({ loadState, loadProxy, log });
     server.once("error", (error) => {
       if (error?.code === "EADDRINUSE" && candidate < MAX_PROXY_PORT && remaining > 0) {
         tryListen(candidate + 1, remaining - 1);

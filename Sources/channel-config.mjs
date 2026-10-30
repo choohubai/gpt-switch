@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import {
   atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
@@ -6,6 +7,7 @@ import {
   inspectInstructionsInCodex, loadInstructionsTemplate, readInstructionsState, saveInstructionsToCodex,
   writeInstructionsState,
 } from "./agents-config.mjs";
+import { isLoopbackHost, outboundProxyFrom, requestText } from "./outbound.mjs";
 
 /// 渠道配置：面板里存一份，切换渠道时写进 Codex 的 config.toml 和 auth.json。
 /// 官方字段说明见 https://developers.openai.com/codex/config-reference
@@ -23,10 +25,15 @@ const AUTH_KEY = "OPENAI_API_KEY";
 
 const MODEL_LIST_TIMEOUT_MS = 5_000;
 const MAX_LISTING_BYTES = 8 * 1024 * 1024;
+/// 测试出站代理拿这个地址探一次：检查更新走的就是它，代理通了一定有应答。
+const PROXY_TEST_URL = "https://api.github.com";
+const PROXY_TEST_TIMEOUT_MS = 8_000;
 // shortcut: 只保留前 500 个模型，端点公布得更多时剩下的会被丢掉；真有人用到再分页或全量。
 const MAX_DISCOVERED_MODELS = 500;
-const PROXY_CONFIG_KEYS = new Set(["host", "port"]);
+const PROXY_CONFIG_KEYS = new Set(["host", "port", "outboundProxy", "outboundUsername", "outboundPassword"]);
 const IPV4_PATTERN = /^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$/;
+const MAX_PROXY_USERNAME = 128;
+const MAX_PROXY_PASSWORD = 256;
 
 const hasControlChars = (value) => /[\u0000-\u001f\u007f]/.test(value);
 
@@ -91,9 +98,41 @@ export const validateChannels = (value) => {
   });
 };
 
+/// 出站代理地址：留空表示直连。只收 http://，用户名密码分开填，免得在两份面板里各做一次 URL 转义。
+const validateOutboundProxy = (value, listen) => {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error("出站代理地址不是合法的 URL");
+  }
+  if (url.protocol !== "http:") throw new Error("出站代理只支持 http:// 地址");
+  if (url.username || url.password) throw new Error("出站代理的用户名和密码请分开填");
+  if (url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("出站代理地址只能填到端口，不要带路径");
+  }
+  const port = Number(url.port) || 80;
+  // 指向本机同一端口会形成「请求进本地服务 → 又转给自己」的死循环：
+  // 监听在 0.0.0.0 或 LAN 地址时，回环地址之外的网卡地址也会转回自己。
+  if (port === listen.port && isLocalHost(url.hostname)) {
+    throw new Error(`出站代理不能指向本地转发服务自己（${listen.host}:${listen.port}）`);
+  }
+  return `http://${url.host}${url.port ? "" : `:${port}`}`;
+};
+
+/// 是不是这台机器上的地址：回环、0.0.0.0/::、以及本机各网卡的 IPv4/IPv6。
+const isLocalHost = (hostname) => {
+  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (isLoopbackHost(host) || host === "0.0.0.0" || host === "::") return true;
+  return Object.values(os.networkInterfaces())
+    .some((items) => (items ?? []).some((item) => String(item.address).toLowerCase() === host));
+};
+
 /// 读取代理页设置。配置单独存放，升级和还原 Codex 配置都不会覆盖它。
 export const readProxySettings = (configPath) => {
-  if (!fs.existsSync(configPath)) return { host: "127.0.0.1", port: 47123 };
+  if (!fs.existsSync(configPath)) return validateProxySettings({ host: "127.0.0.1", port: 47123 });
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("代理配置必须是对象");
@@ -101,15 +140,7 @@ export const readProxySettings = (configPath) => {
   for (const key of Object.keys(parsed)) {
     if (!PROXY_CONFIG_KEYS.has(key)) throw new Error(`代理配置包含未知字段：${key}`);
   }
-  const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
-  const port = Number(parsed.port);
-  if (!IPV4_PATTERN.test(host)) {
-    throw new Error("代理 IP 必须是合法的 IPv4 地址");
-  }
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-    throw new Error("代理端口必须是 1024 到 65535 之间的整数");
-  }
-  return { host, port };
+  return validateProxySettings(parsed);
 };
 
 /// 校验代理页配置。端口占用不在这里拦截：启动或重启时占用会顺延，并把实际端口写回配置。
@@ -122,7 +153,20 @@ export const validateProxySettings = (value) => {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
     throw new Error("代理端口必须是 1024 到 65535 之间的整数");
   }
-  return { host, port };
+  const outboundProxy = validateOutboundProxy(value?.outboundProxy, { host, port });
+  const outboundUsername = outboundProxy && typeof value?.outboundUsername === "string"
+    ? value.outboundUsername.trim()
+    : "";
+  const outboundPassword = outboundProxy && typeof value?.outboundPassword === "string"
+    ? value.outboundPassword
+    : "";
+  if (outboundUsername.length > MAX_PROXY_USERNAME) throw new Error("出站代理的用户名太长了");
+  if (outboundPassword.length > MAX_PROXY_PASSWORD) throw new Error("出站代理的密码太长了");
+  if (hasControlChars(outboundUsername) || hasControlChars(outboundPassword)) {
+    throw new Error("出站代理的用户名和密码不能包含控制字符");
+  }
+  if (outboundPassword && !outboundUsername) throw new Error("出站代理填了密码就要填用户名");
+  return { host, port, outboundProxy, outboundUsername, outboundPassword };
 };
 
 export const writeProxySettings = (configPath, value) => {
@@ -643,30 +687,8 @@ const readModelListing = (body) => {
   return models;
 };
 
-/// 端点是自己填的地址：先看声明的长度，再按实际读到的字节数掐上限，别由着它把内存吃满。
-const readBoundedText = async (response, url) => {
-  const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_LISTING_BYTES) throw new Error(`${url} 返回的内容超过 8MB`);
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_LISTING_BYTES) {
-      await reader.cancel().catch(() => {});
-      throw new Error(`${url} 返回的内容超过 8MB`);
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-  return text + decoder.decode();
-};
-
 /// 问渠道端点要它公布的模型：OpenAI 兼容的 `GET {地址}/models`，密钥走 Bearer。
-export const discoverChannelModels = async (request = {}) => {
+export const discoverChannelModels = async (request = {}, proxy = null) => {
   const baseUrl = String(request.baseUrl ?? "").trim();
   if (!baseUrl) throw new Error("请先填渠道地址，再获取可用模型");
   if (!/^https?:\/\//i.test(baseUrl)) throw new Error("渠道地址必须以 http:// 或 https:// 开头");
@@ -682,15 +704,19 @@ export const discoverChannelModels = async (request = {}) => {
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
   let response;
   try {
-    response = await fetch(requestUrl, { headers, signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) });
-  } catch {
+    // 端点是自己填的地址，读完就走：先看声明的长度，再在实际读取时掐上限，别由着它把内存吃满。
+    response = await requestText(requestUrl, {
+      headers, timeoutMs: MODEL_LIST_TIMEOUT_MS, maxBytes: MAX_LISTING_BYTES, proxy,
+    });
+  } catch (error) {
+    if (/返回的内容超过/.test(error.message)) throw error;
     throw new Error(`连不上 ${requestUrl}`);
   }
   if (!response.ok) {
     const hint = response.status === 401 || response.status === 403 ? "，检查 API 密钥" : "";
     throw new Error(`${requestUrl} 返回 ${response.status}${hint}`);
   }
-  const text = await readBoundedText(response, requestUrl);
+  const text = response.text;
   let body;
   try {
     body = JSON.parse(text);
@@ -708,6 +734,7 @@ export const discoverChannelModels = async (request = {}) => {
 export const handlePanelRequest = async (request, {
   configPath, proxyConfigPath, codexHome, agentsStatePath, importOptions,
   applyCodex, restoreCodex, applyCatalog, clearCatalog, restart, codexClientVersion,
+  proxyTestUrl = PROXY_TEST_URL,
 }) => {
   let savedState = null;
   let cleared = false;
@@ -776,7 +803,23 @@ export const handlePanelRequest = async (request, {
     }
     if (request?.action === "list-models") {
       const version = typeof codexClientVersion === "function" ? codexClientVersion() : "";
-      return { ok: true, models: await discoverChannelModels({ ...request, clientVersion: version }) };
+      const outbound = proxyConfigPath ? outboundProxyFrom(readProxySettings(proxyConfigPath)) : null;
+      return { ok: true, models: await discoverChannelModels({ ...request, clientVersion: version }, outbound) };
+    }
+    if (request?.action === "test-proxy") {
+      // 只拿面板里这一份草稿试一次，不落盘：用户可以先确认连得上，再决定保存。
+      const proxy = validateProxySettings(request.proxy);
+      if (!proxy.outboundProxy) throw new Error("请先填代理地址再测试");
+      const started = Date.now();
+      try {
+        const response = await requestText(proxyTestUrl, {
+          timeoutMs: PROXY_TEST_TIMEOUT_MS,
+          proxy: outboundProxyFrom(proxy),
+        });
+        return { ok: true, latencyMs: Date.now() - started, status: response.status };
+      } catch (error) {
+        throw new Error(`测试连接失败：${String(error?.message || error)}`);
+      }
     }
     if (request?.action === "clear") {
       if (restoreCodex) {

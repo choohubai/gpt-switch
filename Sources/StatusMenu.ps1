@@ -65,7 +65,14 @@ $script:proxyHost = "127.0.0.1"
 $script:proxyPort = "47123"
 $script:savedProxyHost = "127.0.0.1"
 $script:savedProxyPort = "47123"
+$script:proxyOutbound = ""
+$script:proxyOutboundUser = ""
+$script:proxyOutboundPassword = ""
+$script:savedProxyOutbound = ""
+$script:savedProxyOutboundUser = ""
+$script:savedProxyOutboundPassword = ""
 $script:savingProxy = $false
+$script:testingProxy = $false
 $script:agentsContent = ""
 $script:savedAgentsContent = ""
 $script:agentsBackupPath = ""
@@ -497,13 +504,14 @@ function Convert-Context([int]$k) {
           </Grid.ColumnDefinitions>
           <StackPanel>
             <TextBlock Text="代理" FontSize="20" FontWeight="Normal" Foreground="#212327"/>
-            <TextBlock Text="控制本地转发服务监听的 IP 和端口；保存后点「重启 ChatGPT」生效。"
+            <TextBlock Text="控制本地转发服务，以及访问渠道和检查更新时走的全局出站代理。"
                        FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
           </StackPanel>
           <Button x:Name="ProxyRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
                   Content="重启 ChatGPT" VerticalAlignment="Top"/>
         </Grid>
-        <Border Grid.Row="1" Style="{StaticResource Card}" VerticalAlignment="Top" Margin="0,16,0,0" Padding="18">
+        <StackPanel Grid.Row="1" VerticalAlignment="Top">
+        <Border Style="{StaticResource Card}" Margin="0,16,0,0" Padding="18">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
@@ -526,14 +534,47 @@ function Convert-Context([int]$k) {
               <TextBlock Text="1024–65535；被占用时自动顺延并更新此端口。"
                          FontSize="11" Foreground="#88898A" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel>
-            <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,24,0,0">
-              <TextBlock Text="保存只会写入配置。地址或端口变化后，需要重启 ChatGPT 才能切换服务。"
-                         FontSize="11" Foreground="#88898A"/>
-              <Button x:Name="SaveProxyButton" Style="{StaticResource Pill}" Content="保存"
-                      HorizontalAlignment="Right" Width="76" Margin="0,14,0,0"/>
-            </StackPanel>
           </Grid>
         </Border>
+        <Border Style="{StaticResource Card}" Margin="0,12,0,0" Padding="18">
+          <StackPanel>
+            <TextBlock Text="全局出站代理" FontSize="13" FontWeight="SemiBold" Foreground="#212327"/>
+            <TextBlock Text="代理地址" FontSize="13" FontWeight="Medium" Foreground="#656667" Margin="0,10,0,0"/>
+            <TextBox x:Name="ProxyOutboundField" Style="{StaticResource Field}" Margin="0,4,0,0"/>
+            <TextBlock Text="渠道请求、获取模型列表和检查更新都会经过这里；留空表示直连，只支持 http:// 代理。"
+                       FontSize="11" Foreground="#88898A" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            <Grid Margin="0,10,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0">
+                <TextBlock Text="用户名（可选）" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+                <TextBox x:Name="ProxyOutboundUserField" Style="{StaticResource Field}" Margin="0,4,0,0"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <TextBlock Text="密码（可选）" FontSize="13" FontWeight="Medium" Foreground="#656667"/>
+                <PasswordBox x:Name="ProxyOutboundPasswordField" Style="{StaticResource SecretField}" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Grid>
+            <TextBlock Text="出站代理保存后立即生效；监听地址或端口变化需要重启 ChatGPT。"
+                       FontSize="11" Foreground="#88898A" Margin="0,14,0,0"/>
+            <Grid Margin="0,14,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <Button x:Name="ClearProxyOutboundButton" Grid.Column="0" Style="{StaticResource Pill}" Content="清除" Width="64"/>
+              <Button x:Name="TestProxyButton" Grid.Column="2" Style="{StaticResource Pill}" Content="测试连接" Width="86"/>
+              <Button x:Name="SaveProxyButton" Grid.Column="4" Style="{StaticResource Pill}" Content="保存" Width="76"/>
+            </Grid>
+          </StackPanel>
+        </Border>
+        </StackPanel>
       </Grid>
       <Border x:Name="ModelsHeaderDivider" Grid.Row="0" Height="1" Background="#E5E9E3"
               VerticalAlignment="Bottom"/>
@@ -959,7 +1000,12 @@ $saveAgentsButton = $window.FindName("SaveAgentsButton")
 $aboutPage = $window.FindName("AboutPage")
 $proxyHostField = $window.FindName("ProxyHostField")
 $proxyPortField = $window.FindName("ProxyPortField")
+$proxyOutboundField = $window.FindName("ProxyOutboundField")
+$proxyOutboundUserField = $window.FindName("ProxyOutboundUserField")
+$proxyOutboundPasswordField = $window.FindName("ProxyOutboundPasswordField")
 $saveProxyButton = $window.FindName("SaveProxyButton")
+$testProxyButton = $window.FindName("TestProxyButton")
+$clearProxyOutboundButton = $window.FindName("ClearProxyOutboundButton")
 $proxyRestartButton = $proxyPage.FindName("ProxyRestartButton")
 $clearButton = $window.FindName("ClearButton")
 $restartButton = $window.FindName("RestartButton")
@@ -1235,6 +1281,9 @@ function Show-Proxy-Page {
   $script:rendering = $true
   $proxyHostField.Text = [string]$script:proxyHost
   $proxyPortField.Text = [string]$script:proxyPort
+  $proxyOutboundField.Text = [string]$script:proxyOutbound
+  $proxyOutboundUserField.Text = [string]$script:proxyOutboundUser
+  $proxyOutboundPasswordField.Password = [string]$script:proxyOutboundPassword
   $script:rendering = $false
   Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
   Update-Controls
@@ -1242,7 +1291,45 @@ function Show-Proxy-Page {
 
 function Test-ProxyDirty {
   return [string]$script:proxyHost -ne [string]$script:savedProxyHost -or `
-    [string]$script:proxyPort -ne [string]$script:savedProxyPort
+    [string]$script:proxyPort -ne [string]$script:savedProxyPort -or `
+    [string]$script:proxyOutbound -ne [string]$script:savedProxyOutbound -or `
+    [string]$script:proxyOutboundUser -ne [string]$script:savedProxyOutboundUser -or `
+    [string]$script:proxyOutboundPassword -ne [string]$script:savedProxyOutboundPassword
+}
+
+# 代理页每个输入框都只做一件事：写回草稿，未保存状态跟着变。
+function Update-ProxyField([string]$Field, [string]$Value) {
+  Set-Variable -Name $Field -Value ([string]$Value) -Scope Script
+  if ($script:rendering -or $script:savingProxy) { return }
+  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
+  Update-Controls
+}
+
+# 代理回包来自加载、保存或切换：老配置没有出站字段时按直连回显。
+function Set-ProxyFromResponse($Proxy) {
+  $script:proxyHost = [string]$Proxy.host
+  $script:proxyPort = [string]$Proxy.port
+  $script:proxyOutbound = [string]$Proxy.outboundProxy
+  $script:proxyOutboundUser = [string]$Proxy.outboundUsername
+  $script:proxyOutboundPassword = [string]$Proxy.outboundPassword
+  $script:savedProxyHost = $script:proxyHost
+  $script:savedProxyPort = $script:proxyPort
+  $script:savedProxyOutbound = $script:proxyOutbound
+  $script:savedProxyOutboundUser = $script:proxyOutboundUser
+  $script:savedProxyOutboundPassword = $script:proxyOutboundPassword
+}
+
+# 保存和测试连接发同一份草稿，两边不会各拼一套字段。
+function Get-ProxyPayload {
+  $port = 0
+  if (-not [int]::TryParse([string]$script:proxyPort, [ref]$port)) { $port = -1 }
+  return @{
+    host = [string]$script:proxyHost
+    port = $port
+    outboundProxy = [string]$script:proxyOutbound
+    outboundUsername = [string]$script:proxyOutboundUser
+    outboundPassword = [string]$script:proxyOutboundPassword
+  }
 }
 
 function Show-Detail-Page {
@@ -1601,7 +1688,15 @@ function Update-Controls {
   $emptyState.Visibility = if ($script:loaded -and $models.Count -eq 0) { "Visible" } else { "Collapsed" }
   $proxyHostField.IsEnabled = $script:loaded -and -not $script:busy
   $proxyPortField.IsEnabled = $script:loaded -and -not $script:busy
+  $proxyOutboundField.IsEnabled = $script:loaded -and -not $script:busy
+  $proxyOutboundUserField.IsEnabled = $script:loaded -and -not $script:busy
+  $proxyOutboundPasswordField.IsEnabled = $script:loaded -and -not $script:busy
   $saveProxyButton.IsEnabled = $script:loaded -and -not $script:busy -and (Test-ProxyDirty)
+  $testProxyButton.IsEnabled = $script:loaded -and -not $script:busy -and -not [string]::IsNullOrWhiteSpace([string]$script:proxyOutbound)
+  $clearProxyOutboundButton.IsEnabled = $script:loaded -and -not $script:busy -and (
+    -not [string]::IsNullOrWhiteSpace([string]$script:proxyOutbound) -or `
+    -not [string]::IsNullOrWhiteSpace([string]$script:proxyOutboundUser) -or `
+    -not [string]::IsNullOrWhiteSpace([string]$script:proxyOutboundPassword))
 }
 
 function Compare-Channels($Left, $Right) {
@@ -2181,15 +2276,23 @@ function Receive-Response($Response) {
     $script:savingProxy = $false
     $script:busy = $false
     if ($Response.ok -eq $true -and $null -ne $Response.proxy) {
-      $script:proxyHost = [string]$Response.proxy.host
-      $script:proxyPort = [string]$Response.proxy.port
-      $script:savedProxyHost = $script:proxyHost
-      $script:savedProxyPort = $script:proxyPort
-      Set-Feedback "代理配置已保存，重启 ChatGPT 后生效"
+      Set-ProxyFromResponse $Response.proxy
+      Set-Feedback "代理配置已保存，出站代理立即生效"
     } else {
       Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "保存代理配置失败" }) $true
     }
     Show-Proxy-Page
+    return
+  }
+  if ($script:testingProxy) {
+    $script:testingProxy = $false
+    $script:busy = $false
+    if ($Response.ok -eq $true) {
+      Set-Feedback ("代理连接正常 · {0}ms" -f [int]$Response.latencyMs)
+    } else {
+      Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "测试连接失败" }) $true
+    }
+    Update-Controls
     return
   }
   if ($script:savingAgents) {
@@ -2220,10 +2323,7 @@ function Receive-Response($Response) {
   $cleared = $Response.cleared -eq $true
   if ($ok -or $Response.saved -eq $true -or $cleared) {
     if ($null -ne $Response.proxy) {
-      $script:proxyHost = [string]$Response.proxy.host
-      $script:proxyPort = [string]$Response.proxy.port
-      $script:savedProxyHost = $script:proxyHost
-      $script:savedProxyPort = $script:proxyPort
+      Set-ProxyFromResponse $Response.proxy
     }
     if ($null -ne $Response.agents) {
       $script:agentsContent = [string]$Response.agents.content
@@ -2439,19 +2539,12 @@ $channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBas
 $channelApiKeyField.Add_PasswordChanged({ Update-ChannelField "apiKey" $channelApiKeyField.Password })
 $channelHeaderNameField.Add_TextChanged({ Update-ChannelField "headerName" $channelHeaderNameField.Text })
 $channelHeaderValueField.Add_TextChanged({ Update-ChannelField "headerValue" $channelHeaderValueField.Text })
-$proxyHostField.Add_TextChanged({
-  if ($script:rendering) { return }
-  $script:proxyHost = [string]$proxyHostField.Text
-  if ($script:savingProxy) { return }
-  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
-  Update-Controls
-})
-$proxyPortField.Add_TextChanged({
-  if ($script:rendering) { return }
-  $script:proxyPort = [string]$proxyPortField.Text
-  if ($script:savingProxy) { return }
-  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
-  Update-Controls
+$proxyHostField.Add_TextChanged({ Update-ProxyField "proxyHost" $proxyHostField.Text })
+$proxyPortField.Add_TextChanged({ Update-ProxyField "proxyPort" $proxyPortField.Text })
+$proxyOutboundField.Add_TextChanged({ Update-ProxyField "proxyOutbound" $proxyOutboundField.Text })
+$proxyOutboundUserField.Add_TextChanged({ Update-ProxyField "proxyOutboundUser" $proxyOutboundUserField.Text })
+$proxyOutboundPasswordField.Add_PasswordChanged({
+  Update-ProxyField "proxyOutboundPassword" $proxyOutboundPasswordField.Password
 })
 $modelsTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Models-Page } })
 $proxyTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Proxy-Page } })
@@ -2491,8 +2584,6 @@ $aboutTab.Add_Click({ if (Confirm-AgentsLeave) { Show-About-Page } })
 $helpTab.Add_Click({ if (Confirm-AgentsLeave) { Show-Empty-Page "获取帮助" "help" } })
 $saveProxyButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
-  $port = 0
-  if (-not [int]::TryParse([string]$script:proxyPort, [ref]$port)) { $port = -1 }
   $script:busy = $true
   $script:savingProxy = $true
   Set-Feedback "正在保存代理配置…"
@@ -2501,8 +2592,23 @@ $saveProxyButton.Add_Click({
     action = "save"
     restart = $false
     scope = "proxy"
-    proxy = @{ host = [string]$script:proxyHost; port = $port }
+    proxy = Get-ProxyPayload
   }
+})
+$testProxyButton.Add_Click({
+  if (-not $script:loaded -or $script:busy) { return }
+  $script:busy = $true
+  $script:testingProxy = $true
+  Set-Feedback "正在测试代理连接…"
+  Update-Controls
+  Send-Request @{ action = "test-proxy"; proxy = Get-ProxyPayload }
+})
+$clearProxyOutboundButton.Add_Click({
+  if (-not $script:loaded -or $script:busy) { return }
+  $script:proxyOutbound = ""
+  $script:proxyOutboundUser = ""
+  $script:proxyOutboundPassword = ""
+  Show-Proxy-Page
 })
 
 # 模型、代理、Agents 和外观页的右上角入口共用同一重启流程，先确认再动手。
