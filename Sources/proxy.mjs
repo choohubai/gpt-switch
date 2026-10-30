@@ -11,6 +11,8 @@ import { describeProxy, openRequest, outboundProxyFrom } from "./outbound.mjs";
 export const MODEL_PREFIX = "gpts-";
 /// 转发跳数上限：两个实例互相把对方填成出站代理时，配置层看不到对方的设置，只有靠这一跳数收口。
 const MAX_FORWARD_HOPS = 8;
+const UPSTREAM_RESPONSE_TIMEOUT_MS = 30_000;
+const MAX_PROXY_BODY_BYTES = 16 * 1024 * 1024;
 
 export const proxyModelId = (channelId, upstreamModel) => `${MODEL_PREFIX}${channelId}/${upstreamModel}`;
 
@@ -110,7 +112,10 @@ export const upstreamUrl = (baseUrl, requestUrl) => {
   }
   const tail = incoming.pathname.replace(/^\/v1(?=\/|$)/, "");
   const basePath = base.pathname.replace(/\/+$/, "");
-  return new URL(`${basePath}${tail.startsWith("/") ? tail : `/${tail}`}${incoming.search}`, base);
+  base.pathname = `${basePath}${tail.startsWith("/") ? tail : `/${tail}`}`;
+  base.search = incoming.search;
+  base.hash = "";
+  return base;
 };
 
 /// 转发用的请求头：客户端带来的 authorization 一律丢掉，换成这个渠道自己的密钥；
@@ -140,22 +145,44 @@ const sendError = (res, status, message) => {
   res.end(body);
 };
 
-const readBody = (req) => new Promise((resolve, reject) => {
+const readBody = (req, maxBytes = MAX_PROXY_BODY_BYTES) => new Promise((resolve, reject) => {
   const chunks = [];
-  req.on("data", (chunk) => chunks.push(chunk));
-  req.on("end", () => resolve(Buffer.concat(chunks)));
-  req.on("error", reject);
+  let total = 0;
+  let settled = false;
+  const finish = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    callback(value);
+  };
+  req.on("data", (chunk) => {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const error = new Error(`请求体超过 ${Math.round(maxBytes / 1048576)}MB`);
+      error.code = "ERR_REQUEST_BODY_TOO_LARGE";
+      req.resume();
+      finish(reject, error);
+      return;
+    }
+    if (!settled) chunks.push(chunk);
+  });
+  req.on("aborted", () => finish(reject, new Error("客户端中止了请求")));
+  req.on("end", () => finish(resolve, Buffer.concat(chunks)));
+  req.on("error", (error) => finish(reject, error));
 });
 
 /// 本地转发服务：客户端所有模型流量都进这里，按模型 id 选渠道再原样透传（含流式响应）。
 /// 出站代理和渠道列表一样按请求实时读，保存代理页后不必重启客户端就生效。
-export const createProxyServer = ({ loadState, loadProxy = () => null, log = () => {}, name = "proxy" }) => {
+export const createProxyServer = ({
+  loadState, loadProxy = () => null, log = () => {}, name = "proxy",
+  responseTimeoutMs = UPSTREAM_RESPONSE_TIMEOUT_MS,
+}) => {
   const server = http.createServer(async (req, res) => {
     let raw;
     try {
       raw = await readBody(req);
     } catch (error) {
-      sendError(res, 400, `读取请求失败：${String(error?.message || error)}`);
+      const status = error?.code === "ERR_REQUEST_BODY_TOO_LARGE" ? 413 : 400;
+      sendError(res, status, `读取请求失败：${String(error?.message || error)}`);
       return;
     }
     let body = null;
@@ -212,9 +239,19 @@ export const createProxyServer = ({ loadState, loadProxy = () => null, log = () 
     // 只在本机确实要经过出站代理时才带跳数，直连渠道时不把内部头漏给上游。
     if (outbound) headers["x-gpt-switch-hop"] = String(hops + 1);
     let upstream;
+    let clientClosed = false;
+    let timedOut = false;
+    const controller = new AbortController();
+    const timeoutError = new Error(`渠道「${route.channel.name || route.channel.id}」响应超时`);
+    const responseTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(timeoutError);
+    }, responseTimeoutMs);
     try {
-      upstream = await openRequest(target, { method: req.method, headers }, outbound);
+      upstream = await openRequest(target, { method: req.method, headers }, outbound, controller.signal);
     } catch (error) {
+      clearTimeout(responseTimer);
+      if (timedOut) error = timeoutError;
       log("proxy_upstream_failed", {
         path: req.url, model, channel: route.channel.id, target: target.origin, proxy: describeProxy(outbound),
         error: String(error?.message || error),
@@ -223,15 +260,35 @@ export const createProxyServer = ({ loadState, loadProxy = () => null, log = () 
       return;
     }
     upstream.on("response", (upstreamRes) => {
+      clearTimeout(responseTimer);
       const outHeaders = {};
       for (const [key, value] of Object.entries(upstreamRes.headers)) {
         if (value === undefined || RESPONSE_HEADERS_TO_DROP.has(key.toLowerCase())) continue;
         outHeaders[key] = value;
       }
       res.writeHead(upstreamRes.statusCode || 502, outHeaders);
+      let responseFailureHandled = false;
+      const responseFailed = (error) => {
+        if (responseFailureHandled || clientClosed || res.destroyed || res.writableEnded) return;
+        responseFailureHandled = true;
+        log("proxy_upstream_failed", {
+          path: req.url, model, channel: route.channel.id, target: target.origin, proxy: describeProxy(outbound),
+          error: String(error?.message || error),
+        });
+        upstreamRes.destroy();
+        res.destroy();
+      };
+      upstreamRes.on("error", responseFailed);
+      upstreamRes.on("aborted", () => responseFailed(new Error("渠道响应被中止")));
+      upstreamRes.on("close", () => {
+        if (!upstreamRes.complete) responseFailed(new Error("渠道响应未完成就关闭了连接"));
+      });
       upstreamRes.pipe(res);
     });
     upstream.on("error", (error) => {
+      clearTimeout(responseTimer);
+      if (clientClosed) return;
+      if (timedOut) error = timeoutError;
       log("proxy_upstream_failed", {
         path: req.url, model, channel: route.channel.id, target: target.origin, proxy: describeProxy(outbound),
         error: String(error?.message || error),
@@ -241,10 +298,20 @@ export const createProxyServer = ({ loadState, loadProxy = () => null, log = () 
     });
     // 建隧道是异步的：客户端可能在 CONNECT 期间就断开，此时监听器还没挂上。
     if (res.destroyed) {
+      clearTimeout(responseTimer);
+      clientClosed = true;
+      controller.abort(new Error("客户端关闭了连接"));
       upstream.destroy();
       return;
     }
-    res.on("close", () => upstream.destroy());
+    res.on("close", () => {
+      clearTimeout(responseTimer);
+      if (!res.writableEnded) {
+        clientClosed = true;
+        controller.abort(new Error("客户端关闭了连接"));
+      }
+      upstream.destroy();
+    });
     log("proxy_routed", {
       path: req.url, model, channel: route.channel.id, upstream: route.upstreamModel,
       target: target.origin, proxy: describeProxy(outbound),
@@ -319,6 +386,7 @@ const closeProxyServer = (server) => new Promise((resolve) => {
     resolve();
     return;
   }
+  server.closeAllConnections?.();
   server.close(() => resolve());
 });
 
@@ -328,9 +396,10 @@ const closeProxyServer = (server) => new Promise((resolve) => {
 /// 指定端口被占用时向后找可用端口；调用方要把实际端口写回配置，Codex 才能继续对上。
 export const startProxy = ({
   loadState, loadProxy, log, host = DEFAULT_PROXY_HOST, port = DEFAULT_PROXY_PORT, attempts = 10,
+  responseTimeoutMs = UPSTREAM_RESPONSE_TIMEOUT_MS,
 }) => new Promise((resolve, reject) => {
   const tryListen = (candidate, remaining) => {
-    const server = createProxyServer({ loadState, loadProxy, log });
+    const server = createProxyServer({ loadState, loadProxy, log, responseTimeoutMs });
     server.once("error", (error) => {
       if (error?.code === "EADDRINUSE" && candidate < MAX_PROXY_PORT && remaining > 0) {
         tryListen(candidate + 1, remaining - 1);

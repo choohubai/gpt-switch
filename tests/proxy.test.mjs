@@ -70,6 +70,8 @@ test("upstream url keeps the channel path and drops the /v1 the client used", ()
     "https://relay.example/responses");
   assert.equal(upstreamUrl("https://relay.example/v1", "/responses").href,
     "https://relay.example/v1/responses");
+  assert.equal(upstreamUrl("https://configured.example", "/v1//attacker/capture").href,
+    "https://configured.example//attacker/capture", "双斜线路径不能改写渠道主机");
   assert.equal(upstreamUrl("不是地址", "/v1/responses"), null);
 });
 
@@ -103,12 +105,13 @@ const withUpstream = async (handler, run) => {
   }
 };
 
-const withProxy = async (state, run, loadProxy = () => null) => {
+const withProxy = async (state, run, loadProxy = () => null, options = {}) => {
   const events = [];
   const proxy = await startProxy({
     loadState: () => state,
     loadProxy,
     log: (message, detail) => events.push({ message, detail }),
+    ...options,
   });
   try {
     return await run({ baseUrl: proxy.baseUrl, port: proxy.port, events });
@@ -293,6 +296,58 @@ test("proxy reports an unreachable channel instead of hanging", async () => {
   });
 });
 
+test("proxy returns an error when the upstream never sends response headers", async () => {
+  await withUpstream((req) => req.resume(), async ({ origin }) => {
+    const state = { channels: [channel({ baseUrl: `${origin}/v1` })], current: "relay" };
+    await withProxy(state, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3" }),
+      });
+      assert.equal(response.status, 502);
+      assert.match((await response.json()).error.message, /响应超时/);
+    }, () => null, { responseTimeoutMs: 40 });
+  });
+});
+
+test("proxy closes a downstream response when the upstream stream is interrupted", async () => {
+  await withUpstream((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: partial\n\n");
+    setTimeout(() => res.socket?.destroy(), 20);
+  }, async ({ origin }) => {
+    const state = { channels: [channel({ baseUrl: `${origin}/v1` })], current: "relay" };
+    await withProxy(state, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3", stream: true }),
+      });
+      await assert.rejects(response.text());
+    });
+  });
+});
+
+test("proxy rejects an oversized request body before routing it", async () => {
+  await withUpstream((req, res) => {
+    req.resume();
+    res.end("should not be reached");
+  }, async ({ origin }) => {
+    const state = { channels: [channel({ baseUrl: `${origin}/v1` })], current: "relay" };
+    await withProxy(state, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3", input: "x".repeat(16 * 1024 * 1024) }),
+      });
+      assert.equal(response.status, 413);
+      assert.match((await response.json()).error.message, /超过 16MB/);
+    });
+  });
+});
+
 /// 裸 socket 发一个 chunked 请求体：客户端不带 content-length 时就是这个形状。
 const rawChunkedPost = (port, body) => new Promise((resolve) => {
   const socket = net.connect(port, "127.0.0.1", () => {
@@ -397,7 +452,13 @@ test("proxy address changes are applied to Codex after ChatGPT restart", async (
   const files = proxySwitchSandbox(context);
   fs.mkdirSync(path.dirname(files.recordPath), { recursive: true });
   const oldProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
-  context.after(() => oldProxy.server.close());
+  const activeConnection = net.connect(oldProxy.port, "127.0.0.1");
+  await new Promise((resolve, reject) => {
+    activeConnection.once("connect", resolve);
+    activeConnection.once("error", reject);
+  });
+  context.after(() => activeConnection.destroy());
+  context.after(() => oldProxy.server.closeAllConnections());
   const nextProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
   const nextPort = nextProxy.port;
   await new Promise((resolve) => nextProxy.server.close(resolve));
@@ -407,21 +468,24 @@ test("proxy address changes are applied to Codex after ChatGPT restart", async (
   let oldClosed = false;
   oldProxy.server.once("close", () => { oldClosed = true; });
 
-  const switched = await switchProxyAndRestart({
-    settings: { host: "127.0.0.1", port: nextPort },
-    currentServer: oldProxy.server,
-    currentHost: "127.0.0.1",
-    currentPort: oldProxy.port,
-    restartClient: async () => { assert.equal(oldClosed, false, "客户端重启期间旧代理不能提前关掉"); },
-    updateCodex: async (baseUrl) => {
-      fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "${baseUrl}"\n`);
-      return true;
-    },
-    log: () => {},
-    proxyConfigPath: files.proxyConfigPath,
-    userConfigPath: files.userConfigPath,
-    recordPath: files.recordPath,
-  });
+  const switched = await Promise.race([
+    switchProxyAndRestart({
+      settings: { host: "127.0.0.1", port: nextPort },
+      currentServer: oldProxy.server,
+      currentHost: "127.0.0.1",
+      currentPort: oldProxy.port,
+      restartClient: async () => { assert.equal(oldClosed, false, "客户端重启期间旧代理不能提前关掉"); },
+      updateCodex: async (baseUrl) => {
+        fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "${baseUrl}"\n`);
+        return true;
+      },
+      log: () => {},
+      proxyConfigPath: files.proxyConfigPath,
+      userConfigPath: files.userConfigPath,
+      recordPath: files.recordPath,
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("旧代理连接阻塞切换")), 500)),
+  ]);
   context.after(() => switched.server.close());
   assert.equal(switched.host, "127.0.0.1");
   assert.match(fs.readFileSync(files.userConfigPath, "utf8"), new RegExp(`base_url = "http://127\\.0\\.0\\.1:${nextPort}/v1"`));

@@ -174,6 +174,18 @@ test("a proxy that refuses the tunnel reports why without leaking the password",
   });
 });
 
+test("a proxy that closes CONNECT cleanly rejects the request", async (context) => {
+  const proxy = http.createServer();
+  proxy.on("connect", (req, socket) => socket.end());
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  context.after(() => proxy.close());
+
+  await assert.rejects(requestText("https://relay.test/v1", {
+    timeoutMs: 300,
+    proxy: outboundProxyFrom({ outboundProxy: `http://127.0.0.1:${proxy.address().port}` }),
+  }), /CONNECT 响应完成前关闭了连接/);
+});
+
 test("a cross-site redirect drops the channel key", async (context) => {
   let received = "";
   const target = http.createServer((req, res) => {

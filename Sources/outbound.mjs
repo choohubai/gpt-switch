@@ -39,7 +39,10 @@ const openTunnel = (proxy, target, signal) => new Promise((resolve, reject) => {
   const port = Number(target.port) || 443;
   const authority = `${target.hostname.includes(":") ? `[${bareHost(target.hostname)}]` : target.hostname}:${port}`;
   const socket = net.connect(proxy.port, proxy.host);
+  let settled = false;
   function failed(error) {
+    if (settled) return;
+    settled = true;
     signal?.removeEventListener("abort", onAbort);
     socket.destroy();
     reject(error);
@@ -51,6 +54,10 @@ const openTunnel = (proxy, target, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener("abort", onAbort, { once: true });
   socket.setTimeout(CONNECT_TIMEOUT_MS, () => failed(new Error(`连接代理 ${describeProxy(proxy)} 超时`)));
   socket.once("error", failed);
+  const onSocketEnd = () => failed(new Error(`代理 ${describeProxy(proxy)} 在 CONNECT 响应完成前关闭了连接`));
+  const onSocketClose = () => failed(new Error(`代理 ${describeProxy(proxy)} 在 CONNECT 响应完成前关闭了连接`));
+  socket.once("end", onSocketEnd);
+  socket.once("close", onSocketClose);
   socket.once("connect", () => {
     socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${
       proxy.authorization ? `Proxy-Authorization: ${proxy.authorization}\r\n` : ""}\r\n`);
@@ -70,15 +77,21 @@ const openTunnel = (proxy, target, signal) => new Promise((resolve, reject) => {
         failed(new Error(`代理 ${describeProxy(proxy)} 拒绝了 ${authority}（HTTP ${status || "?"}${hint}）`));
         return;
       }
+      socket.off("end", onSocketEnd);
+      socket.off("close", onSocketClose);
       const secure = tls.connect({
         socket,
         host: bareHost(target.hostname),
         servername: net.isIP(bareHost(target.hostname)) ? undefined : bareHost(target.hostname),
       });
       secure.once("error", failed);
+      secure.once("close", () => {
+        if (!settled) failed(new Error(`代理 ${describeProxy(proxy)} 在 TLS 握手完成前关闭了 ${authority} 的隧道`));
+      });
       // CONNECT 通过后隧道已交给 TLS：握手也不该无限等下去。
       secure.setTimeout(CONNECT_TIMEOUT_MS, () => failed(new Error(`与 ${authority} 握手超时`)));
       secure.once("secureConnect", () => {
+        settled = true;
         secure.setTimeout(0);
         socket.off("error", failed);
         signal?.removeEventListener("abort", onAbort);
@@ -93,7 +106,7 @@ const openTunnel = (proxy, target, signal) => new Promise((resolve, reject) => {
 /// https 目标先走 CONNECT 隧道再交给 https.request；http 目标按代理协议带完整 URL 发出。
 export const openRequest = async (target, options, proxy, signal) => {
   const transport = target.protocol === "https:" ? https : http;
-  if (!proxy || isLoopbackHost(target.hostname)) return transport.request(target, options);
+  if (!proxy || isLoopbackHost(target.hostname)) return transport.request(target, { ...options, signal });
   if (target.protocol === "http:") {
     return http.request({
       host: proxy.host,
@@ -101,6 +114,7 @@ export const openRequest = async (target, options, proxy, signal) => {
       method: options.method,
       path: target.href,
       agent: false,
+      signal,
       headers: {
         ...options.headers,
         host: target.host,
@@ -113,7 +127,7 @@ export const openRequest = async (target, options, proxy, signal) => {
   const secure = await openTunnel(proxy, target, signal);
   const agent = new https.Agent({ keepAlive: false });
   agent.createConnection = () => secure;
-  return https.request(target, { ...options, agent });
+  return https.request(target, { ...options, agent, signal });
 };
 
 const tooLarge = (url, maxBytes) => new Error(`${url} 返回的内容超过 ${Math.round(maxBytes / 1048576)}MB`);
@@ -150,7 +164,7 @@ export const requestText = async (url, {
       clearTimeout(timer);
       done(value);
     };
-    request.on("error", (error) => settle(reject, error));
+    request.on("error", (error) => settle(reject, controller.signal.aborted ? timeoutError : error));
     request.on("response", (response) => {
       const status = response.statusCode || 0;
       if (redirects > 0 && [301, 302, 303, 307, 308].includes(status) && response.headers.location) {
