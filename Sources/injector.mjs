@@ -27,7 +27,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.59";
+const VERSION = "0.1.60";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
