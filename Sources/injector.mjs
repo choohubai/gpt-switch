@@ -1114,7 +1114,10 @@ const main = async () => {
 
   // 客户端定位可能要跑 PowerShell（约 1~2 秒）：面板先出来，常驻监听随后查找。
   let appPath;
-  const clientPath = () => (appPath ??= findApp());
+  const clientPath = (refresh = false) => {
+    if (refresh || !appPath || !fs.existsSync(appPath)) appPath = findApp();
+    return appPath;
+  };
   const requests = [];
   // 面板请求一到就立刻结束这一轮等待，别让「保存」白等一整个轮询周期。
   let wakePolling = null;
@@ -1469,7 +1472,8 @@ const main = async () => {
   const restart = async (existingPort = 0) => {
     let target = appPath;
     if (!existingPort) {
-      target = clientPath();
+      // Windows 商店更新会更换安装路径；先重新定位，才能退出真正运行的客户端。
+      target = clientPath(IS_WINDOWS);
       if (!target) throw appMissing();
       if (appIsRunning(target, true) && !await quitApp(target)) {
         throw new Error("ChatGPT 未能正常退出；请稍后重试");

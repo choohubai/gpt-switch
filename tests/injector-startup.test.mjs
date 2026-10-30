@@ -11,7 +11,7 @@ import { appearanceNativeMode } from "../Sources/appearance-config.mjs";
 const injectorSource = fs.readFileSync(
   new URL("../Sources/injector.mjs", import.meta.url),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 const injectionSource = fs.readFileSync(
   new URL("../Sources/injection.js", import.meta.url),
   "utf8",
@@ -964,6 +964,69 @@ test("Windows 客户端探测优先通过原生启动器", () => {
   assert.match(injectorSource, /runWindowsLauncher\(\s+\["--activate-app"/);
   assert.doesNotMatch(injectorSource, /windowsProcessPaths/);
   assert.doesNotMatch(injectorSource, /spawnSync\(\s*"powershell\.exe"/);
+});
+
+const loadClientPath = (findApp, existsSync) => {
+  const start = injectorSource.indexOf("  let appPath;");
+  const end = injectorSource.indexOf("\n  const requests = [];", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return new Function("findApp", "fs", `
+    ${injectorSource.slice(start, end)}
+    return clientPath;
+  `)(findApp, { existsSync });
+};
+
+test("客户端升级移除旧目录后重新定位，不继续使用缓存路径", () => {
+  let current = "WindowsApps/old/app/ChatGPT.exe";
+  const existing = new Set([current]);
+  let probes = 0;
+  const clientPath = loadClientPath(() => { probes += 1; return current; },
+    (candidate) => existing.has(candidate));
+
+  assert.equal(clientPath(), current);
+  assert.equal(clientPath(), current);
+  assert.equal(probes, 1, "有效缓存不应重复扫描安装目录");
+
+  existing.delete(current);
+  current = "WindowsApps/new/app/ChatGPT.exe";
+  existing.add(current);
+  assert.equal(clientPath(), current);
+  assert.equal(probes, 2);
+});
+
+test("Windows 重启前重新定位实际客户端，即使旧安装目录仍存在", async () => {
+  const oldPath = "WindowsApps/old/app/ChatGPT.exe";
+  const newPath = "WindowsApps/new/app/ChatGPT.exe";
+  const start = injectorSource.indexOf("  const restart = async");
+  const end = injectorSource.indexOf("\n  const applyCodexForChannel", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  for (const isWindows of [true, false]) {
+    let current = oldPath;
+    const resolvePath = loadClientPath(() => current, () => true);
+    assert.equal(resolvePath(), oldPath);
+    current = newPath;
+    const expected = isWindows ? newPath : oldPath;
+    const stopped = [];
+    const stopBeforeLaunch = new Error("stop before launching the real client");
+    const restart = new Function("IS_WINDOWS", "clientPath", "appIsRunning", "quitApp", `
+      let appPath = ${JSON.stringify(oldPath)};
+      ${injectorSource.slice(start, end)}
+      return restart;
+    `)(
+      isWindows,
+      resolvePath,
+      (candidate, force) => {
+        assert.equal(candidate, expected);
+        assert.equal(force, true);
+        return true;
+      },
+      async (candidate) => { stopped.push(candidate); throw stopBeforeLaunch; },
+    );
+    await assert.rejects(restart(), stopBeforeLaunch);
+    assert.deepEqual(stopped, [expected]);
+  }
 });
 
 test("Windows helper 启动失败或非零退出时保留真实错误", () => {
