@@ -221,10 +221,18 @@ test("catalog cleanup only touches the plugin-managed catalog", () => {
     { path: "/tmp/user-catalog.json", removePointer: false, deleteFile: false, rewriteBundled: true });
   assert.deepEqual(
     catalogClearPlan(null, defaultPath, defaultPath),
-    { path: defaultPath, removePointer: true, deleteFile: true, rewriteBundled: false });
+    { path: defaultPath, removePointer: false, deleteFile: false, rewriteBundled: false });
   assert.deepEqual(
     catalogClearPlan(null, "/tmp/user-catalog.json", defaultPath),
-    { path: "/tmp/user-catalog.json", removePointer: false, deleteFile: false, rewriteBundled: true });
+    { path: "/tmp/user-catalog.json", removePointer: false, deleteFile: false, rewriteBundled: false });
+  assert.deepEqual(
+    catalogClearPlan({
+      path: defaultPath, pointerAdded: true, fileCreated: false, originalContent: "user catalog",
+    }, defaultPath, defaultPath),
+    {
+      path: defaultPath, removePointer: true, deleteFile: false, rewriteBundled: false,
+      restoreContent: "user catalog",
+    });
 });
 
 test("catalog ownership record keeps the first flags for the same path", (context) => {
@@ -241,7 +249,26 @@ test("catalog ownership record keeps the first flags for the same path", (contex
     { path: "/tmp/other.json", pointerAdded: false, fileCreated: false });
 });
 
-test("clearCatalogFiles removes plugin-created files and keeps user-owned catalogs", (context) => {
+test("catalog ownership keeps the original user file and does not capture plugin output", (context) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const recordPath = path.join(directory, "catalog.json");
+  const catalogPath = path.join(directory, "model_catalog.json");
+  const original = '{"models":[{"slug":"user-model"}]}\n';
+  fs.writeFileSync(catalogPath, original);
+  writeCatalogRecord(recordPath, {
+    path: catalogPath, pointerAdded: true, fileCreated: false, originalContent: original,
+  });
+  writeCatalogRecord(recordPath, {
+    path: catalogPath, pointerAdded: true, fileCreated: false,
+    originalContent: '{"models":[{"slug":"plugin-model"}]}\n',
+  });
+  assert.deepEqual(readCatalogRecord(recordPath), {
+    path: catalogPath, pointerAdded: true, fileCreated: false, originalContent: original,
+  });
+});
+
+test("clearCatalogFiles removes plugin-created files, restores user catalogs, and ignores unknown files", (context) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "custom-models-test-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const codexHome = path.join(directory, ".codex");
@@ -278,4 +305,16 @@ test("clearCatalogFiles removes plugin-created files and keeps user-owned catalo
   assert.equal(fs.existsSync(userCatalogPath), true);
   assert.deepEqual(JSON.parse(fs.readFileSync(userCatalogPath, "utf8")).models, bundled.models);
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), `model_catalog_json = "${userCatalogPath}"\n`);
+
+  const unknownPath = path.join(directory, "unknown-catalog.json");
+  const unknownContent = '{"models":[{"slug":"untouched"}]}\n';
+  fs.writeFileSync(unknownPath, unknownContent);
+  fs.writeFileSync(userConfigPath, `model_catalog_json = "${unknownPath}"\n`);
+  const untouched = clearCatalogFiles({
+    recordPath, userConfigPath, home: directory, codexHome,
+    catalogPath: unknownPath, defaultCatalogPath, readBundledCatalog,
+  });
+  assert.deepEqual(untouched,
+    { path: unknownPath, removePointer: false, deleteFile: false, rewriteBundled: false });
+  assert.equal(fs.readFileSync(unknownPath, "utf8"), unknownContent);
 });

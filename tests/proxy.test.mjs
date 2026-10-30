@@ -75,6 +75,16 @@ test("upstream url keeps the channel path and drops the /v1 the client used", ()
   assert.equal(upstreamUrl("不是地址", "/v1/responses"), null);
 });
 
+test("upstream url preserves channel query parameters and lets the client override them", () => {
+  assert.equal(
+    upstreamUrl(
+      "https://relay.example/v1?api-version=2024-06-01&tenant=primary&keep=1",
+      "/v1/responses?api-version=2025-01-01&tag=a&tag=b",
+    ).href,
+    "https://relay.example/v1/responses?tenant=primary&keep=1&api-version=2025-01-01&tag=a&tag=b",
+  );
+});
+
 test("forwarded headers drop the client's key and custom header, then set the channel's", () => {
   const headers = buildUpstreamHeaders({
     host: "127.0.0.1:47123",
@@ -196,6 +206,25 @@ test("forwarded requests use the outbound proxy, loopback channels stay direct",
     }, loadProxy);
   });
   assert.equal(hits.length, 1, "本机渠道不该被送进代理");
+});
+
+test("direct upstream requests carry the hop count", async () => {
+  const seen = [];
+  await withUpstream((req, res) => {
+    seen.push(req.headers["x-gpt-switch-hop"]);
+    res.end("direct");
+  }, async ({ origin }) => {
+    const state = { channels: [channel({ baseUrl: `${origin}/v1` })], current: "relay" };
+    await withProxy(state, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "glm-5.3" }),
+      });
+      assert.equal(await response.text(), "direct");
+    });
+  });
+  assert.deepEqual(seen, ["1"]);
 });
 
 test("a request that used up its hops is rejected instead of looping", async () => {
@@ -503,15 +532,28 @@ test("failed ChatGPT restart keeps old proxy and restores proxy and Codex files"
   const beforeProxy = fs.readFileSync(files.proxyConfigPath, "utf8");
   const oldProxy = await startProxy({ loadState: () => ({ channels: [], current: null }), log: () => {} });
   context.after(() => oldProxy.server.close());
+  const candidatePortProbe = net.createServer();
+  await new Promise((resolve) => candidatePortProbe.listen(0, "127.0.0.1", resolve));
+  const candidatePort = candidatePortProbe.address().port;
+  await new Promise((resolve) => candidatePortProbe.close(resolve));
   let oldClosed = false;
   oldProxy.server.once("close", () => { oldClosed = true; });
+  let candidateConnection;
+  context.after(() => candidateConnection?.destroy());
 
   await assert.rejects(switchProxyAndRestart({
-    settings: { host: "127.0.0.1", port: 47125 },
+    settings: { host: "127.0.0.1", port: candidatePort },
     currentServer: oldProxy.server,
     currentHost: "127.0.0.1",
     currentPort: oldProxy.port,
-    restartClient: async () => { throw new Error("客户端启动失败"); },
+    restartClient: async () => {
+      candidateConnection = net.connect(candidatePort, "127.0.0.1");
+      await new Promise((resolve, reject) => {
+        candidateConnection.once("connect", resolve);
+        candidateConnection.once("error", reject);
+      });
+      throw new Error("客户端启动失败");
+    },
     updateCodex: async (baseUrl) => {
       fs.writeFileSync(files.userConfigPath, `[model_providers.relay]\nbase_url = "${baseUrl}"\n`);
       return true;
@@ -524,6 +566,12 @@ test("failed ChatGPT restart keeps old proxy and restores proxy and Codex files"
   assert.equal(oldClosed, false, "重启失败必须保留旧代理");
   assert.equal(fs.readFileSync(files.proxyConfigPath, "utf8"), beforeProxy);
   assert.equal(fs.readFileSync(files.userConfigPath, "utf8"), originalCodex);
+  const rebound = net.createServer();
+  await new Promise((resolve, reject) => {
+    rebound.once("error", reject);
+    rebound.listen(candidatePort, "127.0.0.1", resolve);
+  });
+  await new Promise((resolve) => rebound.close(resolve));
 });
 
 test("a drifted port rewrites the config without dropping the outbound proxy", async (context) => {

@@ -158,16 +158,28 @@ export const removeCatalogPointerLine = (text, catalogPath, home, codexHome) => 
 };
 
 export const catalogClearPlan = (record, catalogPath, defaultCatalogPath) => {
+  if (!record) {
+    return {
+      path: catalogPath,
+      removePointer: false,
+      deleteFile: false,
+      rewriteBundled: false,
+    };
+  }
   const target = typeof record?.path === "string" ? record.path : catalogPath;
-  const ownedByDefaultPath = target === defaultCatalogPath;
-  const pointerAdded = record ? record.pointerAdded === true : ownedByDefaultPath;
-  const fileCreated = record ? record.fileCreated === true : ownedByDefaultPath;
-  return {
+  const pointerAdded = record.pointerAdded === true;
+  const fileCreated = record.fileCreated === true;
+  const originalContent = typeof record?.originalContent === "string"
+    ? record.originalContent
+    : null;
+  const plan = {
     path: target,
     removePointer: pointerAdded,
-    deleteFile: pointerAdded && fileCreated,
-    rewriteBundled: !(pointerAdded && fileCreated),
+    deleteFile: fileCreated && originalContent === null,
+    rewriteBundled: fileCreated === false && originalContent === null,
   };
+  if (originalContent !== null) plan.restoreContent = originalContent;
+  return plan;
 };
 
 export const readCatalogRecord = (recordPath) => {
@@ -179,15 +191,23 @@ export const readCatalogRecord = (recordPath) => {
   }
 };
 
-export const writeCatalogRecord = (recordPath, { path: catalogPath, pointerAdded, fileCreated }) => {
+export const writeCatalogRecord = (recordPath, {
+  path: catalogPath, pointerAdded, fileCreated, originalContent = null,
+}) => {
   const previous = readCatalogRecord(recordPath);
   const record = previous?.path === catalogPath
     ? {
         path: catalogPath,
         pointerAdded: previous.pointerAdded === true || pointerAdded,
         fileCreated: previous.fileCreated === true || fileCreated,
+        ...(previous.originalContent !== undefined
+          ? { originalContent: previous.originalContent }
+          : {}),
       }
-    : { path: catalogPath, pointerAdded, fileCreated };
+    : {
+        path: catalogPath, pointerAdded, fileCreated,
+        ...(originalContent !== null ? { originalContent } : {}),
+      };
   atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`);
   return record;
 };
@@ -201,9 +221,11 @@ export const clearCatalogFiles = ({
     const next = removeCatalogPointerLine(text, plan.path, home, codexHome);
     if (next !== text) atomicWrite(userConfigPath, next);
   }
-  if (plan.deleteFile) {
+  if (plan.restoreContent !== undefined) {
+    atomicWrite(plan.path, plan.restoreContent);
+  } else if (plan.deleteFile) {
     fs.rmSync(plan.path, { force: true });
-  } else if (fs.existsSync(plan.path)) {
+  } else if (plan.rewriteBundled && fs.existsSync(plan.path)) {
     writeCatalog(plan.path, buildCatalog(readBundledCatalog(), []));
   }
   fs.rmSync(recordPath, { force: true });

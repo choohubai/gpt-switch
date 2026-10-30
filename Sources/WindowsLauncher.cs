@@ -385,9 +385,13 @@ namespace GPTSwitch
             string script = "$package = Get-AppxPackage OpenAI.Codex;"
                 + " if ($package) {"
                 + " $application = (Get-AppxPackageManifest $package).Package.Applications.Application"
-                + " | Select-Object -First 1;"
+                + " | Where-Object { $_.Id -eq 'App' } | Select-Object -First 1;"
+                + " $alias = $application.Extensions.Extension"
+                + " | Where-Object { $_.Category -eq 'windows.appExecutionAlias' -and -not $_.Executable }"
+                + " | ForEach-Object { [regex]::Match($_.InnerXml, 'Alias=\"([^\"]+)\"').Groups[1].Value }"
+                + " | Where-Object { $_ } | Select-Object -First 1;"
                 + " \"$($package.InstallLocation)|$($package.PackageFamilyName)!$($application.Id)"
-                + "|$($application.Executable)\" }";
+                + "|$($application.Executable)|$alias\" }";
             InitialSessionState state = InitialSessionState.CreateDefault();
             state.ExecutionPolicy = Microsoft.PowerShell.ExecutionPolicy.Bypass;
             using (Runspace runspace = RunspaceFactory.CreateRunspace(state))

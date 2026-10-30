@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { atomicWrite } from "./model-config.mjs";
 import {
   writeProxySettings, recordedProxyAddress, repointProxyUrl,
@@ -113,7 +115,9 @@ export const upstreamUrl = (baseUrl, requestUrl) => {
   const tail = incoming.pathname.replace(/^\/v1(?=\/|$)/, "");
   const basePath = base.pathname.replace(/\/+$/, "");
   base.pathname = `${basePath}${tail.startsWith("/") ? tail : `/${tail}`}`;
-  base.search = incoming.search;
+  const incomingKeys = new Set(incoming.searchParams.keys());
+  for (const key of incomingKeys) base.searchParams.delete(key);
+  for (const [key, value] of incoming.searchParams) base.searchParams.append(key, value);
   base.hash = "";
   return base;
 };
@@ -236,8 +240,8 @@ export const createProxyServer = ({
     }
     const headers = buildUpstreamHeaders(req.headers, route.channel);
     headers["content-length"] = String(payload.length);
-    // 只在本机确实要经过出站代理时才带跳数，直连渠道时不把内部头漏给上游。
-    if (outbound) headers["x-gpt-switch-hop"] = String(hops + 1);
+    // 每次经过 GPT Switch 都递增，直连下一实例时也必须能收口环路。
+    headers["x-gpt-switch-hop"] = String(hops + 1);
     let upstream;
     let clientClosed = false;
     let timedOut = false;
@@ -367,7 +371,7 @@ export const switchProxyAndRestart = async ({
       previousHost: currentHost, previousPort: currentPort,
     };
   } catch (error) {
-    try { started.server.close(); } catch {}
+    try { await closeProxyServer(started.server); } catch {}
     try {
       if (configExisted) atomicWrite(proxyConfigPath, configText);
       else fs.rmSync(proxyConfigPath, { force: true });
@@ -433,7 +437,7 @@ if (isMain) {
     const index = process.argv.indexOf(flag);
     return index >= 0 ? process.argv[index + 1] : fallback;
   };
-  const statePath = option("--state", `${process.env.HOME}/.gptswitch/channels.json`);
+  const statePath = option("--state", path.join(os.homedir(), ".gptswitch", "channels.json"));
   const host = option("--host", DEFAULT_PROXY_HOST);
   const port = Number(option("--port", DEFAULT_PROXY_PORT));
   const started = await startProxy({

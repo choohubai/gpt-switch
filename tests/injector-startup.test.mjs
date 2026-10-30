@@ -961,9 +961,20 @@ test("Windows 客户端探测优先通过原生启动器", () => {
   assert.match(injectorSource, /windowsLauncherLines\(\["--running-client-paths"\]\)/);
   assert.match(injectorSource, /windowsLauncherLines\(\["--client-pids", appPath\]\)/);
   assert.match(injectorSource, /windowsLauncherLines\(\["--packaged-app"\]\)/);
-  assert.match(injectorSource, /runWindowsLauncher\(\s+\["--activate-app"/);
+  assert.match(injectorSource, /const \[installLocation, activationId, executable, alias\] = line\.split\("\\|"\)/);
+  assert.match(injectorSource, /path\.join\(LOCAL_APP_DATA, "Microsoft", "WindowsApps", alias\)/);
+  assert.match(injectorSource, /windowsSpawnApp\(packaged\.launcher, port\)/);
+  assert.match(injectorSource, /没有可用的执行别名/);
+  assert.doesNotMatch(injectorSource, /--activate-app/);
   assert.doesNotMatch(injectorSource, /windowsProcessPaths/);
   assert.doesNotMatch(injectorSource, /spawnSync\(\s*"powershell\.exe"/);
+});
+
+test("macOS 退出使用应用自己的 bundle identifier", () => {
+  assert.match(injectorSource, /const bundleIdentifier = \(appPath\) =>/);
+  assert.match(injectorSource, /plutil[\s\S]*CFBundleIdentifier/);
+  assert.match(injectorSource, /const identifier = bundleIdentifier\(appPath\)/);
+  assert.doesNotMatch(injectorSource, /const BUNDLE_ID =/);
 });
 
 const loadClientPath = (findApp, existsSync) => {

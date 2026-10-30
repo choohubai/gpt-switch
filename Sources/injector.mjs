@@ -54,7 +54,6 @@ const WINDOWS_LAUNCHER_PATH = path.join(SCRIPT_DIR, "GPT Switch.exe");
 const APPEARANCE_RESOURCE_DIR = fs.existsSync(path.join(SCRIPT_DIR, "Appearance"))
   ? path.join(SCRIPT_DIR, "Appearance")
   : path.join(SCRIPT_DIR, "..", "Resources", "Appearance");
-const BUNDLE_ID = "com.openai.codex";
 const NATIVE_APPEARANCE_BINDING = "__gptSwitchNativeAppearanceChanged";
 let statusMenuProcess = null;
 let proxyServer = null;
@@ -260,8 +259,31 @@ const macAppIsRunning = (appPath) => {
   return spawnSync("/usr/bin/pgrep", ["-f", pattern]).status === 0;
 };
 
+const bundleIdentifier = (appPath) => {
+  const infoPath = path.join(appPath, "Contents", "Info.plist");
+  let identifier = "";
+  try {
+    const result = spawnSync(
+      "/usr/bin/plutil",
+      ["-extract", "CFBundleIdentifier", "raw", "-o", "-", infoPath],
+      { encoding: "utf8" },
+    );
+    identifier = result.status === 0 ? result.stdout.trim() : "";
+  } catch {
+    // Fall through to the explicit error below.
+  }
+  if (!identifier || !/^[A-Za-z0-9.-]+$/.test(identifier)) {
+    throw new Error(`应用缺少合法的 CFBundleIdentifier：${infoPath}`);
+  }
+  return identifier;
+};
+
 const macQuitApp = async (appPath) => {
-  runAppleScript(`tell application id "${BUNDLE_ID}" to quit`);
+  const identifier = bundleIdentifier(appPath);
+  const result = runAppleScript(`tell application id "${identifier}" to quit`);
+  if (result.status !== 0) {
+    throw new Error(firstLine(result.stderr) || `无法退出应用：${identifier}`);
+  }
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
     if (!macAppIsRunning(appPath)) return true;
@@ -300,7 +322,6 @@ const WINDOWS_CLIENT_NAMES = ["ChatGPT.exe", "Codex.exe"];
 const WINDOWS_PROGRAMS_DIR = path.join(LOCAL_APP_DATA, "Programs");
 const WINDOWS_CODEX_BIN_DIR = path.join(LOCAL_APP_DATA, "OpenAI", "Codex", "bin");
 const WINDOWS_PACKAGED_CLIENT = /[\\/]WindowsApps[\\/]/i;
-let windowsActivationId = null;
 
 const firstLine = (value) => String(value || "")
   .split(/\r?\n/)
@@ -356,17 +377,19 @@ const windowsStandaloneApp = () => {
   return newest;
 };
 
-/// 商店版（MSIX）：目录不能直接执行，只能用应用激活 API 带参数拉起。
+/// 商店版（MSIX）：目录不能直接执行，通过系统执行别名带参数拉起。
 const windowsPackagedApp = () => {
   const line = firstLine(windowsLauncherLines(["--packaged-app"]).join("\n"));
-  const [installLocation, activationId, executable] = line.split("|");
+  const [installLocation, activationId, executable, alias] = line.split("|");
   if (!installLocation || !activationId || !executable) return null;
-  windowsActivationId = activationId;
   const candidate = path.join(installLocation, ...executable.split("/"));
   if (!fs.existsSync(candidate)) return null;
   let modified = 0;
   try { modified = fs.statSync(installLocation).mtimeMs; } catch { /* 读不到时间就当最旧 */ }
-  return { path: candidate, modified };
+  const launcher = alias
+    ? path.join(LOCAL_APP_DATA, "Microsoft", "WindowsApps", alias)
+    : null;
+  return { path: candidate, modified, launcher };
 };
 
 /// 正在运行的客户端优先（它就是用户实际在用的版本）；都没在跑就比安装时间，
@@ -439,24 +462,11 @@ const windowsQuitApp = async (appPath) => {
 
 const quitApp = IS_WINDOWS ? windowsQuitApp : macQuitApp;
 
-const windowsDebugArguments = (port) => `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`;
-
-const windowsActivateApp = (appPath, port) => {
-  // 发现阶段可能走的是“正在运行的客户端”这条路，激活 ID 需要在这里补齐。
-  if (!windowsActivationId) windowsPackagedApp();
-  if (!windowsActivationId) throw new Error("未找到商店版客户端的激活信息，请改用官方独立安装版");
-  runWindowsLauncher(
-    ["--activate-app", windowsActivationId, windowsDebugArguments(port)],
-    90_000,
-  );
-  log("app_activated", { activationId: windowsActivationId, port });
-};
-
 const windowsSpawnApp = (appPath, port) => new Promise((resolve, reject) => {
   const child = spawn(
     appPath,
     [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"],
-    { detached: true, stdio: "ignore", windowsHide: false },
+    { detached: true, stdio: "ignore", windowsHide: true },
   );
   child.once("error", (error) => {
     log("app_launch_failed", { executable: appPath, error: String(error?.message || error) });
@@ -489,7 +499,14 @@ const launchApp = async (appPath, port) => {
     return;
   }
   if (WINDOWS_PACKAGED_CLIENT.test(appPath)) {
-    windowsActivateApp(appPath, port);
+    const packaged = windowsPackagedApp();
+    if (!packaged || packaged.path !== appPath) {
+      throw new Error("商店版客户端安装信息已变化，请重试");
+    }
+    if (!packaged.launcher || !fs.existsSync(packaged.launcher)) {
+      throw new Error("商店版客户端没有可用的执行别名，请在 Windows 设置中启用 chatgpt-desktop.exe");
+    }
+    await windowsSpawnApp(packaged.launcher, port);
     return;
   }
   await windowsSpawnApp(appPath, port);
@@ -1532,14 +1549,16 @@ const main = async () => {
     const target = clientPath();
     if (!target) throw appMissing();
     const dest = resolveCatalogPath();
-    const fileCreated = !fs.existsSync(dest);
+    const catalogExisted = fs.existsSync(dest);
+    const originalContent = catalogExisted ? fs.readFileSync(dest, "utf8") : null;
     const catalogModels = pickerModels();
     writeCatalog(dest, buildCatalog(readBundledCatalog(target), catalogModels));
     const pointerAdded = ensureCatalogPointer(dest) || dest === DEFAULT_CATALOG_PATH;
     writeCatalogRecord(CATALOG_RECORD, {
       path: dest,
       pointerAdded,
-      fileCreated: fileCreated || dest === DEFAULT_CATALOG_PATH,
+      fileCreated: !catalogExisted,
+      originalContent,
     });
     log("catalog_written", { path: dest, models: catalogModels.map((model) => model.id) });
   };

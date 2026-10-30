@@ -62,6 +62,13 @@ try {
   Assert-True ($runningPaths.ExitCode -eq 0) "Native client path probe failed: $($runningPaths.Stderr)"
   $packagedApp = Invoke-HostCapture @("--packaged-app")
   Assert-True ($packagedApp.ExitCode -eq 0) "Native packaged app probe failed: $($packagedApp.Stderr)"
+  if (-not [string]::IsNullOrWhiteSpace($packagedApp.Stdout)) {
+    $packagedFields = ($packagedApp.Stdout.Trim() -split "\|")
+    Assert-True ($packagedFields.Count -eq 4) `
+      "Packaged app probe must return install location, activation ID, executable and execution alias."
+    Assert-True ($packagedFields[3].EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) `
+      "Packaged app probe returned an invalid execution alias: $($packagedFields[3])"
+  }
   $activationFailure = Invoke-HostCapture @("--activate-app", "invalid-package", "")
   Assert-True ($activationFailure.ExitCode -ne 0) "Invalid package activation unexpectedly succeeded."
   Assert-True (-not [string]::IsNullOrWhiteSpace($activationFailure.Stderr)) `
