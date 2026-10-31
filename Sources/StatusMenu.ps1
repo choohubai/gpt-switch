@@ -1,4 +1,4 @@
-param(
+﻿param(
   [int]$ParentPid = 0,
   [string]$IconPath = ""
 )
