@@ -27,7 +27,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.61";
+const VERSION = "0.1.62";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -863,6 +863,9 @@ class CDPSession {
   }
 
   /// 通过主窗口的 Electron bridge 热更新 ChatGPT 原生明暗模式，并等待设置落盘响应。
+  /// 旧版客户端在主进程 handlers 里注册了 set-setting；桌面端 156（Chromium
+  /// 156.0.8078 起）把它移除了，只剩 set-remote-wsl-connections-enabled。接口被移除是
+  /// 能力消失，不是临时故障，重启客户端也不会回来，所以要探测并区分这两种情况。
   async setNativeAppearanceTheme(themeId) {
     const mode = appearanceNativeMode(themeId);
     const requestId = `gpt-switch-native-theme-${crypto.randomUUID()}`;
@@ -870,7 +873,7 @@ class CDPSession {
       const requestId = ${JSON.stringify(requestId)};
       const bridge = window.electronBridge;
       if (typeof bridge?.sendMessageFromView !== "function") {
-        throw new Error("ChatGPT 原生外观设置接口不可用");
+        return { unsupported: true, reason: "ChatGPT 原生外观设置接口不可用" };
       }
       let cleanup = () => {};
       const responsePromise = new Promise((resolve, reject) => {
@@ -908,7 +911,15 @@ class CDPSession {
         cleanup();
         throw error;
       }
-      const response = await responsePromise;
+      let response;
+      try {
+        response = await responsePromise;
+      } catch (error) {
+        // 主进程没注册这个 handler 时返回的就是 not implemented，属于接口缺失。
+        const message = String(error?.message || "");
+        if (/not implemented/i.test(message)) return { unsupported: true, reason: message };
+        throw error;
+      }
       const result = response.bodyJsonString ? JSON.parse(response.bodyJsonString) : null;
       if (result?.success !== true) throw new Error("ChatGPT 原生外观设置未生效");
       return { success: true, mode: ${JSON.stringify(mode)} };
@@ -923,12 +934,17 @@ class CDPSession {
       const description = evaluated.exceptionDetails.exception?.description
         || evaluated.exceptionDetails.text
         || "ChatGPT 原生外观设置失败";
+      if (/not implemented/i.test(description)) {
+        return { unsupported: true, reason: description };
+      }
       throw new Error(description);
     }
-    if (evaluated.result?.value?.success !== true) {
+    const value = evaluated.result?.value;
+    if (value?.unsupported === true) return { unsupported: true, reason: value.reason };
+    if (value?.success !== true) {
       throw new Error("ChatGPT 原生外观设置未生效");
     }
-    return mode;
+    return { unsupported: false, mode };
   }
 
   /// 读取桥接层当前真实模式；排队较久的广播必须用它剔除其他窗口迟到的旧回声。
@@ -1246,6 +1262,26 @@ const main = async () => {
     if (wakePolling) wakePolling();
   };
   const sessions = new Map();
+  /// 客户端移除 set-setting 后面板需要如实显示「原生明暗不可热切换」，不能静默失效。
+  /// 记下判定结果，避免每轮重复探测同一个已确认缺失的接口。
+  let nativeAppearanceUnsupported = null;
+  const markNativeAppearanceUnsupported = (reason) => {
+    if (nativeAppearanceUnsupported) return;
+    nativeAppearanceUnsupported = { reason: String(reason || ""), at: Date.now() };
+    log("appearance_native_unsupported", nativeAppearanceUnsupported);
+    // 只有面板开着才需要推送；函数定义在下方，这里按需取用。
+    if (!statusMenuProcess || statusMenuProcess.stdin.destroyed) return;
+    try {
+      statusMenuProcess.stdin.write(`${JSON.stringify({
+        event: "appearance-updated",
+        version: VERSION,
+        nativeAppearance: "unsupported",
+        appearance: appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR),
+      })}\n`);
+    } catch (error) {
+      log("appearance_panel_sync_failed", String(error?.message || error));
+    }
+  };
   let programmaticNativeAppearance = null;
   let programmaticNativeAppearanceTimer = null;
   const clearProgrammaticNativeAppearance = () => {
@@ -1304,13 +1340,24 @@ const main = async () => {
   /**
    * 原生明暗模式需要先于主题样式生效；多个 target 中只有主窗口提供 Electron bridge，
    * 因此按顺序重试，任一主窗口成功即可。
+   *
+   * 返回值区分三种结果：
+   * - 成功设置：返回 mode
+   * - 客户端已移除该接口（unsupported）：返回 null，并把原生覆盖标记为不可用；
+   *   这是能力边界，重启不会恢复，插件配色仍然照常生效
+   * - 其它异常：继续抛出，那是真的出了问题
    */
   const syncNativeAppearanceMode = async (activeSessions, theme) => {
     let lastError = null;
     for (const session of activeSessions) {
       if (!isDesktopRendererTarget(session.target)) continue;
       try {
-        return await session.setNativeAppearanceTheme(theme);
+        const result = await session.setNativeAppearanceTheme(theme);
+        if (result?.unsupported) {
+          markNativeAppearanceUnsupported(result.reason);
+          return null;
+        }
+        return result.mode;
       } catch (error) {
         lastError = error;
         log("appearance_native_sync_failed", {
@@ -1389,6 +1436,7 @@ const main = async () => {
     const payload = {
       event: "appearance-updated",
       version: VERSION,
+      nativeAppearance: nativeAppearanceUnsupported ? "unsupported" : "supported",
       appearance: appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR),
     };
     try {
@@ -1516,8 +1564,9 @@ const main = async () => {
           // 注入脚本可能马上上报原生模式不匹配；先登记会话，避免首条 binding 丢失。
           sessions.set(target.id, session);
           if (!nativeAppearanceSynced) {
+            let unsupported = false;
             try {
-              await syncNativeAppearanceMode([session], nativeAppearanceTheme);
+              unsupported = await syncNativeAppearanceMode([session], nativeAppearanceTheme) === null;
               nativeAppearanceSynced = true;
             } catch (error) {
               if (sessions.get(target.id) === session) sessions.delete(target.id);
@@ -1528,6 +1577,8 @@ const main = async () => {
               });
               continue;
             }
+            // 原生明暗接口已被客户端移除时插件配色仍要生效，不能因此放弃注入。
+            if (unsupported) nativeAppearanceSynced = true;
           }
           const result = await session.inject(injectionSource);
           if (stale()) {
@@ -1738,8 +1789,11 @@ const main = async () => {
           applied = await queueHotRefresh(async () => {
             const activeSessions = [...sessions.values()].filter((session) => !session.closed);
             if (activeSessions.length === 0) return false;
-            expectProgrammaticNativeAppearance(theme, activeSessions.length);
-            await syncNativeAppearanceMode(activeSessions, theme);
+            // 只在客户端仍支持时才挂「程序性广播」的吞事件窗口；接口已被移除时不会有广播。
+            if (!nativeAppearanceUnsupported) {
+              expectProgrammaticNativeAppearance(theme, activeSessions.length);
+              await syncNativeAppearanceMode(activeSessions, theme);
+            }
             return await applyAppearanceTheme(activeSessions, readAppearanceState(APPEARANCE_CONFIG));
           });
         } catch (error) {
@@ -1752,6 +1806,8 @@ const main = async () => {
           version: VERSION,
           applied,
           restartRequired: !applied,
+          // 原生明暗已被客户端移除时插件配色依然生效，面板据此如实标注能力降级。
+          nativeAppearance: nativeAppearanceUnsupported ? "unsupported" : "supported",
           appearance: appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR),
           theme,
         };
@@ -1815,6 +1871,7 @@ const main = async () => {
       clearCatalog: () => clearCatalog(clientPath()),
     });
     if (request?.action === "load" && answer?.ok) {
+      answer.nativeAppearance = nativeAppearanceUnsupported ? "unsupported" : "supported";
       answer.appearance = appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR);
     }
     // 等客户端把自己的那份配置写完（实测启动后约 8 秒）再看一眼，只记录不修改。

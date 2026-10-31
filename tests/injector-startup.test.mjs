@@ -42,14 +42,43 @@ test("原生明暗模式通过 ChatGPT 设置桥在主题注入前生效", async
     return { result: { value: { success: true, mode: params.expression.includes('"dark"') ? "dark" : "light" } } };
   };
 
-  assert.equal(await session.setNativeAppearanceTheme("dark"), "dark");
-  assert.equal(await session.setNativeAppearanceTheme("wind"), "light");
+  assert.deepEqual(await session.setNativeAppearanceTheme("dark"), { unsupported: false, mode: "dark" });
+  assert.deepEqual(await session.setNativeAppearanceTheme("wind"), { unsupported: false, mode: "light" });
   assert.ok(requests.every(({ method }) => method === "Runtime.evaluate"));
   assert.ok(requests.every(({ params }) => params.awaitPromise === true));
   assert.match(requests[0].params.expression, /vscode:\/\/codex\/set-setting/);
   assert.match(requests[0].params.expression, /key: "appearanceTheme"/);
   assert.match(requests[0].params.expression, /value: "dark"/);
   assert.match(requests[1].params.expression, /value: "light"/);
+});
+
+test("客户端移除 set-setting 时判定为能力缺失，不当成临时故障", async () => {
+  const CDPSession = loadCDPSession();
+  const page = { type: "page", url: "app://-/index.html", title: "ChatGPT" };
+
+  // 页面内直接返回 unsupported（bridge 缺失或主进程回 not implemented）
+  const inPage = new CDPSession(page);
+  inPage.command = async () => ({
+    result: { value: { unsupported: true, reason: "set-setting not implemented in the current Electron process." } },
+  });
+  const inPageResult = await inPage.setNativeAppearanceTheme("dark");
+  assert.equal(inPageResult.unsupported, true, "接口缺失必须显式上报，不能伪装成成功");
+  assert.match(inPageResult.reason, /not implemented/);
+
+  // 异常从 Runtime.evaluate 抛回时（主进程错误透传到 exceptionDetails）同样按缺失处理
+  const thrown = new CDPSession(page);
+  thrown.command = async () => ({
+    exceptionDetails: {
+      exception: { description: "Error: set-setting not implemented in the current Electron process." },
+    },
+  });
+  const thrownResult = await thrown.setNativeAppearanceTheme("dark");
+  assert.equal(thrownResult.unsupported, true, "not implemented 透传为异常时也要判为能力缺失");
+
+  // 其它异常仍是真实故障，必须继续抛出
+  const broken = new CDPSession(page);
+  broken.command = async () => ({ exceptionDetails: { exception: { description: "Error: 别的问题" } } });
+  await assert.rejects(() => broken.setNativeAppearanceTheme("dark"), /别的问题/);
 });
 
 test("处理原生模式广播前会从 bridge 重新读取当前值", async () => {
@@ -62,6 +91,36 @@ test("处理原生模式广播前会从 bridge 重新读取当前值", async () 
   };
 
   assert.equal(await session.getNativeAppearanceMode(), "light");
+});
+
+test("原生明暗接口缺失时仍要完成注入，不能连带丢掉模型列表", () => {
+  const injectTargetsStart = injectorSource.indexOf("const injectTargets =");
+  const injectTargetsEnd = injectorSource.indexOf("\n  const ", injectTargetsStart + 10);
+  assert.notEqual(injectTargetsStart, -1);
+  assert.notEqual(injectTargetsEnd, -1);
+  const injectTargets = injectorSource.slice(injectTargetsStart, injectTargetsEnd);
+
+  const syncIndex = injectTargets.indexOf("syncNativeAppearanceMode([session], nativeAppearanceTheme)");
+  const injectIndex = injectTargets.indexOf("session.inject(injectionSource)");
+  assert.notEqual(syncIndex, -1);
+  assert.notEqual(injectIndex, -1);
+  assert.ok(syncIndex < injectIndex, "原生明暗必须先于注入设置");
+
+  // 能力缺失分支必须把 nativeAppearanceSynced 置真，缺了这个赋值就会每轮重复探测。
+  assert.match(injectTargets, /if \(unsupported\) nativeAppearanceSynced = true/,
+    "接口缺失判定后要结束本轮外观同步，避免逐轮重复探测");
+
+  // 只有真实异常才允许 close + continue；unsupported 不能走这条路径。
+  const catchBlock = injectTargets.slice(
+    injectTargets.indexOf("} catch (error) {", syncIndex),
+    injectTargets.indexOf("if (unsupported)", syncIndex),
+  );
+  assert.match(catchBlock, /session\.close\(\)/);
+  assert.match(catchBlock, /continue;/);
+  assert.ok(
+    injectTargets.indexOf("if (unsupported)") > injectTargets.indexOf("session.close()", syncIndex),
+    "能力缺失分支不能落在关闭会话的 catch 里",
+  );
 });
 
 test("Codex 原生模式广播会暂停 GPT Switch 覆盖并同步面板", () => {

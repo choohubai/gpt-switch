@@ -1,4 +1,4 @@
-﻿param(
+param(
   [int]$ParentPid = 0,
   [string]$IconPath = ""
 )
@@ -85,6 +85,7 @@ $script:appearanceTheme = "light"
 $script:appearanceFollowNative = $false
 $script:appearanceNativeMode = "light"
 $script:appearanceThemes = @()
+$script:appearanceNativeSupported = $true
 $script:savingAppearance = $false
 $script:appearanceThemeBeforeSave = "light"
 $script:appearanceFollowNativeBeforeSave = $false
@@ -743,6 +744,12 @@ function Convert-Context([int]$k) {
           <TextBlock Text="外观" FontSize="20" FontWeight="Normal" Foreground="#202522"/>
           <TextBlock Text="选择后立即改变 ChatGPT 的背景、侧栏、输入框和弹窗。"
                      FontSize="12" Foreground="#69716A" Margin="0,4,0,0"/>
+          <Border x:Name="AppearanceNativeNotice" Visibility="Collapsed"
+                  Background="#FFF6E5" BorderBrush="#F0D9A8" BorderThickness="1"
+                  CornerRadius="6" Padding="10,7" Margin="0,10,0,0">
+            <TextBlock x:Name="AppearanceNativeNoticeText" FontSize="12"
+                       Foreground="#8A6212" TextWrapping="Wrap"/>
+          </Border>
         </StackPanel>
         <Button x:Name="AppearanceRestartButton" Grid.Column="1" Style="{StaticResource PillPrimary}"
                 Content="重启 ChatGPT" VerticalAlignment="Top"/>
@@ -991,6 +998,8 @@ $appearancePreviewEmptyText = $window.FindName("AppearancePreviewEmptyText")
 $appearanceBusyOverlay = $window.FindName("AppearanceBusyOverlay")
 $appearanceThemePanel = $window.FindName("AppearanceThemePanel")
 $appearanceRestartButton = $window.FindName("AppearanceRestartButton")
+$appearanceNativeNotice = $window.FindName("AppearanceNativeNotice")
+$appearanceNativeNoticeText = $window.FindName("AppearanceNativeNoticeText")
 $agentsEnabledToggle = $window.FindName("AgentsEnabledToggle")
 $agentsRestartButton = $agentsPage.FindName("AgentsRestartButton")
 $agentsContentField = $window.FindName("AgentsContentField")
@@ -1470,6 +1479,17 @@ function Apply-Appearance-State($Value) {
   if ($null -ne $Value.themes) { $script:appearanceThemes = @($Value.themes) }
 }
 
+# 新版客户端移除了 set-setting，原生明暗无法热切换；插件配色不受影响，需要如实告知。
+function Update-Appearance-Native-Notice {
+  if ($null -eq $appearanceNativeNotice) { return }
+  if ($script:appearanceNativeSupported) {
+    $appearanceNativeNotice.Visibility = "Collapsed"
+    return
+  }
+  $appearanceNativeNoticeText.Text = "当前 ChatGPT 客户端已不再提供原生明暗切换接口，主题配色仍会立即生效，但不会自动切换客户端的浅色/深色。"
+  $appearanceNativeNotice.Visibility = "Visible"
+}
+
 function New-Appearance-Theme-Card($Theme) {
   $cell = New-Object System.Windows.Controls.StackPanel
   $cell.Width = 118
@@ -1559,6 +1579,7 @@ function New-Appearance-Theme-Card($Theme) {
 
 function Refresh-Appearance-View {
   Update-AppearancePreviewAspect
+  Update-Appearance-Native-Notice
   $themes = @($script:appearanceThemes)
   $selected = $themes | Where-Object { [string]$_.id -eq [string]$script:appearanceTheme } | Select-Object -First 1
   $appearancePreviewEmpty.Visibility = "Collapsed"
@@ -2227,6 +2248,9 @@ function Receive-Response($Response) {
   }
   if ($null -ne $Response.appearance) {
     Apply-Appearance-State $Response.appearance
+    if ($null -ne $Response.nativeAppearance) {
+      $script:appearanceNativeSupported = [string]$Response.nativeAppearance -ne "unsupported"
+    }
     if ($Response.event -eq "appearance-updated") {
       Set-Feedback ""
       Refresh-Appearance-View
