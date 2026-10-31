@@ -962,12 +962,149 @@ test("Windows 客户端探测优先通过原生启动器", () => {
   assert.match(injectorSource, /windowsLauncherLines\(\["--client-pids", appPath\]\)/);
   assert.match(injectorSource, /windowsLauncherLines\(\["--packaged-app"\]\)/);
   assert.match(injectorSource, /const \[installLocation, activationId, executable, alias\] = line\.split\("\\|"\)/);
-  assert.match(injectorSource, /path\.join\(LOCAL_APP_DATA, "Microsoft", "WindowsApps", alias\)/);
+  assert.match(injectorSource, /const WINDOWS_ALIAS_DIR = path\.join\(LOCAL_APP_DATA, "Microsoft", "WindowsApps"\)/);
   assert.match(injectorSource, /windowsSpawnApp\(packaged\.launcher, port\)/);
   assert.match(injectorSource, /没有可用的执行别名/);
+  assert.match(injectorSource, /assertLaunchable\(target\)/);
   assert.doesNotMatch(injectorSource, /--activate-app/);
   assert.doesNotMatch(injectorSource, /windowsProcessPaths/);
   assert.doesNotMatch(injectorSource, /spawnSync\(\s*"powershell\.exe"/);
+});
+
+test("商店版执行别名兼容 full-trust 扩展并按实际存在的文件选择", () => {
+  const launcher = fs.readFileSync(
+    new URL("../Sources/WindowsLauncher.cs", import.meta.url),
+    "utf8",
+  );
+  // full-trust 桌面应用的 appExecutionAlias 扩展自带 Executable 属性，不能按它筛掉。
+  assert.doesNotMatch(launcher, /-and -not \$_\.Executable/);
+  assert.match(launcher, /windows\.appExecutionAlias/);
+  assert.match(launcher, /Test-Path \(Join-Path \$windowsApps \$_\)/);
+  assert.match(launcher, /\$aliases\.Count -gt 0/);
+});
+
+test("商店版执行别名按目录项本身判断，不跟随转发目标", () => {
+  const start = injectorSource.indexOf("const windowsEntryExists =");
+  const end = injectorSource.indexOf("\n/// 商店版（MSIX）", start);
+  assert.notEqual(start, -1, "注入器里找不到执行别名解析");
+  assert.notEqual(end, -1);
+
+  // 别名的转发目标在 C:\Program Files\WindowsApps 里，普通权限 stat 会拿到 EACCES；
+  // 用 existsSync / statSync 判断就会把已启用的别名误判成不可用，所以这里模拟那种失败。
+  const denied = () => {
+    const error = new Error("EACCES: permission denied");
+    error.code = "EACCES";
+    throw error;
+  };
+  const load = (entries, links, lstat) => new Function(
+    "fs", "path", "WINDOWS_ALIAS_DIR",
+    `${injectorSource.slice(start, end)}
+    return windowsExecutionAlias;`,
+  )(
+    {
+      readdirSync: () => entries,
+      readlinkSync: (candidate) => {
+        if (!(candidate in links)) denied();
+        return links[candidate];
+      },
+      existsSync: denied,
+      statSync: denied,
+      lstatSync: (candidate) => (lstat ? lstat(candidate) : denied()),
+    },
+    path,
+    "/aliases",
+  );
+
+  const dir = "/aliases";
+  const exe = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0\\app\\ChatGPT.exe";
+  const present = new Set([path.join(dir, "chatgpt-desktop.exe"), path.join(dir, "codex.exe")]);
+  const ls = (candidate) => {
+    if (!present.has(candidate)) throw new Error("ENOENT");
+    return { size: 0, isSymbolicLink: () => true };
+  };
+
+  assert.equal(
+    load([], {}, ls)("chatgpt-desktop.exe"),
+    path.join(dir, "chatgpt-desktop.exe"),
+    "别名目录项存在就算已启用，哪怕读不到转发目标",
+  );
+  assert.equal(load([], {}, ls)("ChatGPT.exe"), null, "清单给了名字但目录项不存在时不能换成别的别名");
+  assert.equal(load([], {}, () => { throw new Error("ENOENT"); })("chatgpt-desktop.exe"), null,
+    "目录项真的不存在时才判为未启用");
+
+  // 清单没给名字时按转发目标精确认别名：一个包有多个别名，不能挑到同包的其它别名。
+  const links = {
+    [path.join(dir, "codex.exe")]: exe,
+    [path.join(dir, "chatgpt-desktop.exe")]: exe,
+    [path.join(dir, "codex-chrome-native-host.exe")]: "C:\\pkg\\app\\CodexNativeHost.exe",
+  };
+  assert.equal(
+    load(["codex.exe", "chatgpt-desktop.exe", "codex-chrome-native-host.exe"], links, ls)("", exe),
+    path.join(dir, "codex.exe"),
+    "按转发目标等于这个可执行文件来认，而不是按前缀猜",
+  );
+  assert.equal(load(["codex-chrome-native-host.exe"], links, ls)("", exe), null,
+    "同包的其它别名指向别的可执行文件，不能顶替客户端别名");
+  assert.equal(load(["codex.exe"], links, ls)("", ""), null, "没有可执行文件时不做猜测");
+});
+
+test("商店版启动入口在别名不可用时给出可操作错误", () => {
+  const start = injectorSource.indexOf("const windowsPackagedApp =");
+  const end = injectorSource.indexOf("\n/// 重启前先确认", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const installLocation = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64__8wekyb3d8bbwe";
+  const line = `${installLocation}|OpenAI.Codex_8wekyb3d8bbwe!App|app/ChatGPT.exe|`;
+  const exe = path.join(installLocation, "app", "ChatGPT.exe");
+  const { windowsPackagedApp, windowsPackagedLauncher } = new Function(
+    "fs", "path", "firstLine", "windowsLauncherLines", "windowsExecutionAlias",
+    `${injectorSource.slice(start, end)}
+    return { windowsPackagedApp, windowsPackagedLauncher };`,
+  )(
+    { existsSync: (candidate) => candidate === exe, statSync: () => ({ mtimeMs: 1 }) },
+    path,
+    (value) => String(value || "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "",
+    () => [line],
+    () => null,
+  );
+
+  const packaged = windowsPackagedApp();
+  assert.equal(packaged.path, exe);
+  assert.equal(packaged.launcher, null);
+  assert.throws(() => windowsPackagedLauncher(exe), /应用执行别名/);
+});
+
+test("商店版别名不可用时优先选择能直接执行的独立版客户端", () => {
+  const start = injectorSource.indexOf("const findWindowsApp =");
+  const end = injectorSource.indexOf("\nconst findApp =", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const load = (standalone, packaged) => new Function(
+    "requestedAppPath", "fs", "windowsRunningApp", "windowsStandaloneApp",
+    "windowsPackagedApp", "WINDOWS_PACKAGED_CLIENT",
+    `${injectorSource.slice(start, end)}
+    return findWindowsApp;`,
+  )(
+    null,
+    { existsSync: () => true },
+    () => null,
+    () => standalone,
+    () => packaged,
+    /[\\/]WindowsApps[\\/]/i,
+  );
+
+  const storePath = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0\\app\\ChatGPT.exe";
+  const standaloneApp = {
+    path: "C:\\Users\\me\\AppData\\Local\\Programs\\ChatGPT\\ChatGPT.exe",
+    modified: 1,
+  };
+  const brokenStore = { path: storePath, modified: 2, launcher: null };
+  assert.equal(load(standaloneApp, brokenStore)(), standaloneApp.path,
+    "商店版起不来时不能选它");
+
+  const workingStore = { path: storePath, modified: 2, launcher: "C:\\Alias\\chatgpt-desktop.exe" };
+  assert.equal(load(standaloneApp, workingStore)(), storePath, "商店版可用时按安装时间选最新的");
+  assert.equal(load(null, brokenStore)(), storePath, "没有独立版时仍返回商店版路径，由预检给出错误");
 });
 
 test("macOS 退出使用应用自己的 bundle identifier", () => {
@@ -1020,8 +1157,9 @@ test("Windows 重启前重新定位实际客户端，即使旧安装目录仍存
     current = newPath;
     const expected = isWindows ? newPath : oldPath;
     const stopped = [];
+    const preflighted = [];
     const stopBeforeLaunch = new Error("stop before launching the real client");
-    const restart = new Function("IS_WINDOWS", "clientPath", "appIsRunning", "quitApp", `
+    const restart = new Function("IS_WINDOWS", "clientPath", "appIsRunning", "quitApp", "assertLaunchable", `
       let appPath = ${JSON.stringify(oldPath)};
       ${injectorSource.slice(start, end)}
       return restart;
@@ -1034,10 +1172,35 @@ test("Windows 重启前重新定位实际客户端，即使旧安装目录仍存
         return true;
       },
       async (candidate) => { stopped.push(candidate); throw stopBeforeLaunch; },
+      (candidate) => { preflighted.push(candidate); },
     );
     await assert.rejects(restart(), stopBeforeLaunch);
+    // 必须先确认能启动再退出客户端，否则商店版别名失效时会把 ChatGPT 关掉又起不来。
+    assert.deepEqual(preflighted, [expected]);
     assert.deepEqual(stopped, [expected]);
   }
+});
+
+test("商店版启动方式不可用时先报错，不退出正在运行的客户端", async () => {
+  const start = injectorSource.indexOf("  const restart = async");
+  const end = injectorSource.indexOf("\n  const applyCodexForChannel", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const unavailable = new Error("商店版客户端没有可用的执行别名");
+  const stopped = [];
+  const restart = new Function("IS_WINDOWS", "clientPath", "appIsRunning", "quitApp", "assertLaunchable", `
+    let appPath = "/tmp/chatgpt";
+    ${injectorSource.slice(start, end)}
+    return restart;
+  `)(
+    true,
+    () => "C:\\\\Program Files\\\\WindowsApps\\\\OpenAI.Codex_1.0\\\\app\\\\ChatGPT.exe",
+    () => true,
+    async (candidate) => { stopped.push(candidate); return true; },
+    () => { throw unavailable; },
+  );
+  await assert.rejects(restart(), unavailable);
+  assert.deepEqual(stopped, [], "启动方式不可用时不允许先退出客户端");
 });
 
 test("Windows helper 启动失败或非零退出时保留真实错误", () => {

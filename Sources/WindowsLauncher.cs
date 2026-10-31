@@ -382,14 +382,22 @@ namespace GPTSwitch
 
         private static int PrintPackagedApp()
         {
+            // 桌面版（full-trust）的执行别名扩展自身也带 Executable 属性，不能把它过滤掉，
+            // 否则永远找不到别名；有多个别名时优先挑真正存在于 WindowsApps 的那一个。
             string script = "$package = Get-AppxPackage OpenAI.Codex;"
                 + " if ($package) {"
-                + " $application = (Get-AppxPackageManifest $package).Package.Applications.Application"
-                + " | Where-Object { $_.Id -eq 'App' } | Select-Object -First 1;"
-                + " $alias = $application.Extensions.Extension"
-                + " | Where-Object { $_.Category -eq 'windows.appExecutionAlias' -and -not $_.Executable }"
+                + " $applications = @((Get-AppxPackageManifest $package).Package.Applications.Application);"
+                + " $application = $applications | Where-Object { $_.Id -eq 'App' } | Select-Object -First 1;"
+                + " if (-not $application) { $application = $applications"
+                + " | Where-Object { $_.Executable } | Select-Object -First 1 };"
+                + " $aliases = @($application.Extensions.Extension"
+                + " | Where-Object { $_.Category -eq 'windows.appExecutionAlias' }"
                 + " | ForEach-Object { [regex]::Match($_.InnerXml, 'Alias=\"([^\"]+)\"').Groups[1].Value }"
-                + " | Where-Object { $_ } | Select-Object -First 1;"
+                + " | Where-Object { $_ });"
+                + " $windowsApps = Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps';"
+                + " $alias = $aliases | Where-Object { Test-Path (Join-Path $windowsApps $_) }"
+                + " | Select-Object -First 1;"
+                + " if (-not $alias -and $aliases.Count -gt 0) { $alias = $aliases[0] };"
                 + " \"$($package.InstallLocation)|$($package.PackageFamilyName)!$($application.Id)"
                 + "|$($application.Executable)|$alias\" }";
             InitialSessionState state = InitialSessionState.CreateDefault();

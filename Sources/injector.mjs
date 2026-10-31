@@ -27,7 +27,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.60";
+const VERSION = "0.1.61";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -322,6 +322,8 @@ const WINDOWS_CLIENT_NAMES = ["ChatGPT.exe", "Codex.exe"];
 const WINDOWS_PROGRAMS_DIR = path.join(LOCAL_APP_DATA, "Programs");
 const WINDOWS_CODEX_BIN_DIR = path.join(LOCAL_APP_DATA, "OpenAI", "Codex", "bin");
 const WINDOWS_PACKAGED_CLIENT = /[\\/]WindowsApps[\\/]/i;
+/// 执行别名都是这个目录下的重解析点；名字由包清单决定。
+const WINDOWS_ALIAS_DIR = path.join(LOCAL_APP_DATA, "Microsoft", "WindowsApps");
 
 const firstLine = (value) => String(value || "")
   .split(/\r?\n/)
@@ -377,6 +379,53 @@ const windowsStandaloneApp = () => {
   return newest;
 };
 
+/// 执行别名是 WindowsApps 下的重解析点（appexeclink），真实目标在
+/// C:\Program Files\WindowsApps 里，那个目录对普通权限默认不可读取。跟随链接去 stat
+/// 会拿到 EACCES，被 existsSync 吞成 false，结果明明是已启用的别名也被判成「不可用」。
+/// 别名是否启用只取决于这个目录项在不在，所以只查目录项本身，不看链接目标能否访问。
+const windowsEntryExists = (target) => {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/// 一个包可以声明多个别名（客户端、chrome native host、命令执行器各一个），它们的转发
+/// 目标都是这个包目录。要拉起的是清单里那个可执行文件，所以按转发目标等于它来认，
+/// 才不会挑到同包的其它别名。
+const windowsAliasTargetsExecutable = (aliasPath, executablePath) => {
+  try {
+    const target = fs.readlinkSync(aliasPath);
+    return target.toLowerCase() === String(executablePath).toLowerCase();
+  } catch {
+    // 读不到转发目标时无法确认归属，不认这个别名。
+    return false;
+  }
+};
+
+/// 别名名字由包清单给出。清单没给名字（旧版本原生启动器读不出 full-trust 清单）时，
+/// 按转发目标反查指向这个可执行文件的别名，而不是按前缀猜。
+const windowsExecutionAlias = (name, executablePath) => {
+  const alias = String(name || "").trim();
+  if (alias) {
+    const target = path.join(WINDOWS_ALIAS_DIR, alias);
+    return windowsEntryExists(target) ? target : null;
+  }
+  if (!executablePath) return null;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(WINDOWS_ALIAS_DIR);
+  } catch {
+    // 没有 WindowsApps 目录说明不是商店版安装。
+  }
+  return entries
+    .filter((entry) => /\.exe$/i.test(entry))
+    .map((entry) => path.join(WINDOWS_ALIAS_DIR, entry))
+    .find((entry) => windowsAliasTargetsExecutable(entry, executablePath)) || null;
+};
+
 /// 商店版（MSIX）：目录不能直接执行，通过系统执行别名带参数拉起。
 const windowsPackagedApp = () => {
   const line = firstLine(windowsLauncherLines(["--packaged-app"]).join("\n"));
@@ -386,21 +435,46 @@ const windowsPackagedApp = () => {
   if (!fs.existsSync(candidate)) return null;
   let modified = 0;
   try { modified = fs.statSync(installLocation).mtimeMs; } catch { /* 读不到时间就当最旧 */ }
-  const launcher = alias
-    ? path.join(LOCAL_APP_DATA, "Microsoft", "WindowsApps", alias)
-    : null;
-  return { path: candidate, modified, launcher };
+  return {
+    path: candidate,
+    modified,
+    alias: String(alias || "").trim(),
+    launcher: windowsExecutionAlias(String(alias || "").trim(), candidate),
+  };
+};
+
+/// 商店版启动入口：执行别名必须真实存在，才能带着调试参数把客户端拉起来。
+const windowsPackagedLauncher = (appPath) => {
+  const packaged = windowsPackagedApp();
+  if (!packaged || packaged.path !== appPath) {
+    throw new Error("商店版客户端安装信息已变化，请重试");
+  }
+  if (!packaged.launcher) {
+    throw new Error(
+      `商店版客户端没有可用的执行别名：请到 Windows 设置 → 应用 → 高级应用设置 → 应用执行别名里启用 ${packaged.alias || "chatgpt-desktop.exe"}，或改用官方独立安装版`,
+    );
+  }
+  return packaged;
+};
+
+/// 重启前先确认客户端还能被拉起来：起不来时不能先把正在用的客户端关掉。
+const assertLaunchable = (appPath) => {
+  if (IS_WINDOWS && WINDOWS_PACKAGED_CLIENT.test(appPath)) windowsPackagedLauncher(appPath);
 };
 
 /// 正在运行的客户端优先（它就是用户实际在用的版本）；都没在跑就比安装时间，
-/// 避免挑到 %LOCALAPPDATA%\Programs 里遗留的旧版本副本。
+/// 避免挑到 %LOCALAPPDATA%\Programs 里遗留的旧版本副本。商店版别名不可用时它起不来，
+/// 这种情况下有能直接执行的独立版就先用独立版。
 const findWindowsApp = () => {
   if (requestedAppPath && fs.existsSync(requestedAppPath)) return requestedAppPath;
   const running = windowsRunningApp();
   if (running) return running;
   const candidates = [windowsStandaloneApp(), windowsPackagedApp()].filter(Boolean);
   candidates.sort((left, right) => right.modified - left.modified);
-  return candidates[0]?.path;
+  const launchable = candidates.find((candidate) => (
+    !WINDOWS_PACKAGED_CLIENT.test(candidate.path) || Boolean(candidate.launcher)
+  ));
+  return (launchable ?? candidates[0])?.path;
 };
 
 const findApp = IS_WINDOWS ? findWindowsApp : findMacApp;
@@ -499,14 +573,12 @@ const launchApp = async (appPath, port) => {
     return;
   }
   if (WINDOWS_PACKAGED_CLIENT.test(appPath)) {
-    const packaged = windowsPackagedApp();
-    if (!packaged || packaged.path !== appPath) {
-      throw new Error("商店版客户端安装信息已变化，请重试");
+    const packaged = windowsPackagedLauncher(appPath);
+    try {
+      await windowsSpawnApp(packaged.launcher, port);
+    } catch (error) {
+      throw new Error(`${String(error?.message || error)}（请确认「应用执行别名」里 ${path.basename(packaged.launcher)} 已启用）`);
     }
-    if (!packaged.launcher || !fs.existsSync(packaged.launcher)) {
-      throw new Error("商店版客户端没有可用的执行别名，请在 Windows 设置中启用 chatgpt-desktop.exe");
-    }
-    await windowsSpawnApp(packaged.launcher, port);
     return;
   }
   await windowsSpawnApp(appPath, port);
@@ -1492,6 +1564,8 @@ const main = async () => {
       // Windows 商店更新会更换安装路径；先重新定位，才能退出真正运行的客户端。
       target = clientPath(IS_WINDOWS);
       if (!target) throw appMissing();
+      // 先确认还能把客户端拉起来；商店版别名不可用时直接报错，别先退出客户端。
+      assertLaunchable(target);
       if (appIsRunning(target, true) && !await quitApp(target)) {
         throw new Error("ChatGPT 未能正常退出；请稍后重试");
       }
