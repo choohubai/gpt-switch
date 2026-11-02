@@ -30,6 +30,9 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Models")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Compare-Channels")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-ProxyDirty")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Set-Saved-Proxy-From-Response")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Update-Applied-Channels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Set-AgentsFromResponse")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Receive-Response")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Get-ChannelIdError")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Set-Nav")))
@@ -48,6 +51,7 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-Appearance-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Show-About-Page")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Update-RestartHint")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Add-SelectedModels")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
@@ -225,7 +229,9 @@ function Set-Feedback([string]$Text, [bool]$IsError = $false) {
 }
 $script:refreshAppearanceCalls = 0
 function Refresh-Appearance-View { $script:refreshAppearanceCalls += 1 }
-function Update-Controls { }
+$restartHint = [pscustomobject]@{ Text = "" }
+$script:restartHint = $restartHint
+function Update-Controls { Update-RestartHint }
 $script:showListCalls = 0
 function Show-List-Page { $script:showListCalls += 1 }
 $appearancePage = [pscustomobject]@{ Visibility = "Visible" }
@@ -598,6 +604,184 @@ if ($sourceText -notmatch '(?s)\$quitItem\.Add_Click\(\{\s*if \(-not \(Confirm-A
 $discardFunction = Get-SourceFunctionText "Confirm-AgentsDiscard"
 if ($discardFunction -notmatch 'Refresh-Agents-View') {
   throw "确认放弃 Agents 草稿后没有刷新可见编辑框"
+}
+
+# Toast 只承载一次性操作结果；现有底栏只保留渠道待重启提醒。
+. ([scriptblock]::Create((Get-SourceFunctionText "Set-Feedback")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Hide-FeedbackToast")))
+
+function New-FeedbackTestTimer {
+  $timer = [pscustomobject]@{ StartCount = 0; StopCount = 0 }
+  $timer | Add-Member -MemberType ScriptMethod -Name Start -Value {
+    $this.StartCount += 1
+  }
+  $timer | Add-Member -MemberType ScriptMethod -Name Stop -Value {
+    $this.StopCount += 1
+  }
+  return $timer
+}
+
+$script:feedbackTimer = New-FeedbackTestTimer
+$script:feedbackToast = New-TestControl
+$script:feedbackBadge = New-TestControl
+$script:feedbackGlyph = New-TestControl
+$script:feedbackClose = New-TestControl
+$feedback = New-TestControl
+$restartHint = New-TestControl
+$script:restartHint = $restartHint
+
+$baselineChannels = Copy-Channels (Convert-ResponseChannels $normal.channels)
+$script:channels = Copy-Channels $baselineChannels
+$script:savedChannels = Copy-Channels $baselineChannels
+$script:appliedChannels = Copy-Channels $baselineChannels
+$script:channels[0].name = "尚未保存"
+Update-RestartHint
+if ($restartHint.Text) { throw "尚未保存的渠道草稿不应冒充待重启" }
+$script:savedChannels = Copy-Channels $baselineChannels
+$script:savedChannels[0].name = "已保存但未应用"
+Update-RestartHint
+if ($restartHint.Text -notmatch "重启 ChatGPT") {
+  throw "渠道落盘后没有通过现有底栏提示重启"
+}
+
+$failedRestartChannels = Copy-Channels $script:savedChannels
+$failedRestartChannels[0].name = "落盘后重启失败"
+Receive-Response ([pscustomobject]@{
+  ok = $false
+  saved = $true
+  current = "ChooHub"
+  channels = @($failedRestartChannels | ForEach-Object {
+    [pscustomobject]@{
+      id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
+      headerName = $_.headerName; headerValue = $_.headerValue; enabled = $_.enabled; models = @()
+    }
+  })
+  error = "ChatGPT 重启失败"
+})
+if (-not (Compare-Channels $script:savedChannels $script:appliedChannels) -or
+    $restartHint.Text -notmatch "重启 ChatGPT") {
+  throw "渠道已经落盘但重启失败时丢失了待重启状态"
+}
+
+$script:loaded = $true
+$script:busy = $false
+$script:agentsContent = "旧内容"
+$script:savedAgentsContent = "旧内容"
+$script:agentsEnabled = $false
+$script:savedAgentsEnabled = $false
+$script:agentsSource = ""
+$script:agentsBackupPath = ""
+$script:agentsError = ""
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  current = "ChooHub"
+  channels = $normal.channels
+  agents = [pscustomobject]@{
+    content = "磁盘新内容"; enabled = $true; source = "user"; backupPath = ""; error = ""
+  }
+})
+if ($script:agentsContent -ne "磁盘新内容" -or $script:agentsEnabled -ne $true) {
+  throw "没有草稿时重新读取没有刷新磁盘上的公共指令"
+}
+
+Set-Feedback "代理配置已保存，出站代理立即生效"
+if ($script:feedbackTimer.StartCount -ne 1 -or $script:feedbackToast.Visibility -ne "Visible") {
+  throw "一次性保存结果没有显示为自动收起的 Toast"
+}
+$resultText = $feedback.Text
+$restartText = $restartHint.Text
+Hide-FeedbackToast
+if ($script:feedbackToast.Visibility -ne "Collapsed" -or $restartHint.Text -ne $restartText) {
+  throw "Toast 收起时意外清除了重启提醒"
+}
+
+Set-Feedback "正在保存代理配置…" -Kind Pending
+if ($script:feedbackTimer.StartCount -ne 1) {
+  throw "进行中的操作提示不应启动自动收起计时器"
+}
+Set-Feedback "保存失败" $true
+if ($script:feedbackTimer.StartCount -ne 1 -or $script:feedbackClose.Visibility -ne "Visible") {
+  throw "错误 Toast 被自动收起或缺少关闭按钮"
+}
+Set-Feedback ""
+if ($script:feedbackToast.Visibility -ne "Collapsed" -or $restartHint.Text -ne $restartText) {
+  throw "清除一次性 Toast 时意外清除了重启提醒"
+}
+
+# 普通保存只推进磁盘快照；即时开关/删除只推进对应字段，不能清掉仍待重启的渠道修改。
+$script:channels = Copy-Channels $baselineChannels
+$script:channels[0].name = "保存后的渠道"
+$responseChannels = @($normal.channels | ForEach-Object {
+  [pscustomobject]@{
+    id = [string]$_.id
+    name = if ($_.id -eq "ChooHub") { "保存后的渠道" } else { [string]$_.name }
+    baseUrl = [string]$_.baseUrl
+    apiKey = [string]$_.apiKey
+    headerName = [string]$_.headerName
+    headerValue = [string]$_.headerValue
+    enabled = $true
+    models = @()
+  }
+})
+$script:channels = Copy-Channels $baselineChannels
+$script:savedChannels = Copy-Channels $baselineChannels
+$script:appliedChannels = Copy-Channels $baselineChannels
+$script:pendingDeleteRestore = $null
+$script:pendingDeleteNote = ""
+$script:loaded = $true
+$script:busy = $false
+$script:modelEditorActive = $false
+$script:channelIndex = 0
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  saved = $true
+  current = "ChooHub"
+  channels = $responseChannels
+})
+if ((Compare-Channels $script:channels $script:appliedChannels) -ne $true) {
+  throw "普通保存不应冒充已经应用到 ChatGPT"
+}
+if ($restartHint.Text -notmatch "重启 ChatGPT") {
+  throw "普通渠道保存后没有留下待重启状态"
+}
+
+$script:pendingDeleteRestore = Copy-Channels $script:channels
+$immediateChannels = Copy-Channels $script:channels
+$immediateChannels[0].enabled = $false
+Receive-Response ([pscustomobject]@{
+  ok = $true
+  saved = $true
+  current = "ChooHub"
+  channels = @($immediateChannels | ForEach-Object {
+    [pscustomobject]@{
+      id = $_.id; name = $_.name; baseUrl = $_.baseUrl; apiKey = $_.apiKey
+      headerName = $_.headerName; headerValue = $_.headerValue; enabled = $_.enabled; models = @()
+    }
+  })
+})
+if (-not (Compare-Channels $script:channels $script:appliedChannels)) {
+  throw "即时开关没有推进对应运行字段"
+}
+if ($script:appliedChannels[0].enabled -ne $false -or
+    $script:appliedChannels[0].name -eq $script:channels[0].name) {
+  throw "即时开关错误推进了渠道名称，或没有推进开关"
+}
+if ($restartHint.Text -notmatch "重启 ChatGPT") {
+  throw "即时开关清除了上一笔仍未应用的渠道修改"
+}
+
+# 导航和自动收起只影响 Toast，不应覆盖刚完成操作的一次性结果或持续状态。
+$script:feedbackToast.Visibility = "Visible"
+Set-Feedback "渠道配置已保存"
+$resultText = $feedback.Text
+$restartText = $restartHint.Text
+Show-Proxy-Page
+if ($feedback.Text -ne $resultText -or $script:feedbackToast.Visibility -ne "Visible") {
+  throw "导航代理页意外覆盖刚写入的一次性保存结果"
+}
+Hide-FeedbackToast
+if ($restartHint.Text -ne $restartText) {
+  throw "导航或 Toast 生命周期意外清除了重启提醒"
 }
 
 Write-Output "Windows 面板渠道响应和侧栏导航检查通过"

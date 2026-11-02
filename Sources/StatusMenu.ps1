@@ -40,6 +40,7 @@ $stdout.AutoFlush = $true
 
 $script:channels = @()
 $script:savedChannels = @()
+$script:appliedChannels = @()
 $script:channelIndex = -1
 $script:currentChannelId = ""
 $script:loaded = $false
@@ -50,10 +51,9 @@ $script:latestVersion = $null
 $script:releaseUrl = $null
 $script:checkingUpdate = $false
 $script:quitting = $false
+$script:confirmAction = $null
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
-$script:deleteKind = ""
-$script:deleteIndex = -1
 $script:fetchingModels = $false
 $script:editingCurrent = $false
 $script:modelEditorActive = $false
@@ -853,13 +853,33 @@ function Convert-Context([int]$k) {
       <Border Grid.Row="0" Height="1" Background="#E5E9E3" VerticalAlignment="Bottom"/>
     </Grid>
 
+    <Border x:Name="FeedbackToast" Grid.Row="0" Grid.Column="2"
+            HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="24,0,24,26"
+            Padding="14,9" Background="#FFFFFF" BorderBrush="#E1E8DE" BorderThickness="1"
+            CornerRadius="11" Visibility="Collapsed">
+      <Border.Effect>
+        <DropShadowEffect BlurRadius="18" ShadowDepth="6" Direction="270" Opacity="0.16" Color="#000000"/>
+      </Border.Effect>
+      <StackPanel Orientation="Horizontal">
+        <Border x:Name="FeedbackBadge" Width="16" Height="16" CornerRadius="8" Background="#2F8F4E"
+                VerticalAlignment="Center">
+          <TextBlock x:Name="FeedbackGlyph" Text="✓" FontSize="10" FontWeight="Bold" Foreground="#FFFFFF"
+                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <TextBlock x:Name="Feedback" FontSize="12.5" Foreground="#1C2A20" TextWrapping="Wrap" MaxWidth="440"
+                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+        <Button x:Name="FeedbackClose" Style="{StaticResource Link}" Content="✕" FontSize="11"
+                VerticalAlignment="Center" Margin="8,0,0,0" Visibility="Collapsed" ToolTip="关闭提示"
+                AutomationProperties.Name="关闭提示"/>
+      </StackPanel>
+    </Border>
     <Border Grid.Row="1" Grid.Column="2" Height="36" Background="#F7FAF5"
             BorderBrush="#DCE4D9" BorderThickness="0,1,0,0">
-      <TextBlock x:Name="Feedback" FontSize="11" Foreground="#747D76"
+      <TextBlock x:Name="RestartHint" FontSize="11" Foreground="#747D76"
                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="28,0"/>
     </Border>
 
-    <!-- 删除统一先走这张卡片：确认后才真正删。 -->
+    <!-- 删除、重启和还原统一先走这张卡片：确认后动作才真正执行。 -->
     <Grid x:Name="ConfirmLayer" Grid.Row="0" Grid.RowSpan="2" Grid.ColumnSpan="3"
           Background="#1F000000" Visibility="Collapsed">
       <Border Width="460" HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -881,6 +901,8 @@ function Convert-Context([int]$k) {
           <TextBlock x:Name="ConfirmMessage" FontSize="14" Foreground="#656667" TextWrapping="Wrap" Margin="0,14,0,0"/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
             <Button x:Name="ConfirmCancel" Style="{StaticResource Pill}" Content="取消" Height="38" Padding="22,0"/>
+            <Button x:Name="ConfirmPrimary" Style="{StaticResource PillPrimary}" Content="重启" Height="38"
+                    Padding="22,0" Margin="10,0,0,0" Visibility="Collapsed"/>
             <Button x:Name="ConfirmDelete" Style="{StaticResource DangerOutline}" Content="删除" Margin="10,0,0,0"/>
           </StackPanel>
         </StackPanel>
@@ -946,6 +968,21 @@ $saveButton = $window.FindName("SaveButton")
 $updateButton = $window.FindName("UpdateButton")
 $versionLabel = $window.FindName("VersionLabel")
 $feedback = $window.FindName("Feedback")
+$script:restartHint = $window.FindName("RestartHint")
+$script:feedbackToast = $window.FindName("FeedbackToast")
+$script:feedbackBadge = $window.FindName("FeedbackBadge")
+$script:feedbackGlyph = $window.FindName("FeedbackGlyph")
+$script:feedbackClose = $window.FindName("FeedbackClose")
+$script:feedbackTimer = New-Object System.Windows.Threading.DispatcherTimer
+$script:feedbackTimer.Interval = [TimeSpan]::FromSeconds(3)
+$script:feedbackTimer.Add_Tick({
+  $script:feedbackTimer.Stop()
+  $script:feedbackToast.Visibility = "Collapsed"
+})
+$script:feedbackClose.Add_Click({
+  $script:feedbackTimer.Stop()
+  $script:feedbackToast.Visibility = "Collapsed"
+})
 $rowsPanel = $window.FindName("RowsPanel")
 $emptyState = $window.FindName("EmptyState")
 $listPage = $window.FindName("ListPage")
@@ -967,6 +1004,7 @@ $confirmTitle = $window.FindName("ConfirmTitle")
 $confirmMessage = $window.FindName("ConfirmMessage")
 $confirmClose = $window.FindName("ConfirmClose")
 $confirmCancel = $window.FindName("ConfirmCancel")
+$confirmPrimary = $window.FindName("ConfirmPrimary")
 $confirmDelete = $window.FindName("ConfirmDelete")
 $fetchModelsButton = $window.FindName("FetchModelsButton")
 $discoverLayer = $window.FindName("DiscoverLayer")
@@ -1061,9 +1099,66 @@ function Set-PanelIcon {
 
 Set-PanelIcon
 
-function Set-Feedback([string]$Text, [bool]$IsError = $false) {
+function Hide-FeedbackToast {
+  $script:feedbackTimer.Stop()
+  $script:feedbackToast.Visibility = "Collapsed"
+}
+
+function Set-Feedback([string]$Text, [bool]$IsError = $false, [string]$Kind = "") {
+  $script:feedbackTimer.Stop()
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    Hide-FeedbackToast
+    return
+  }
   $feedback.Text = $Text
-  $feedback.Foreground = if ($IsError) { "#D93025" } else { "#656667" }
+  $pending = $Kind -eq "Pending" -or $Text.StartsWith("正在")
+  if ($IsError) {
+    $script:feedbackBadge.Background = "#D93025"
+    $script:feedbackGlyph.Text = "!"
+    $feedback.Foreground = "#B3261E"
+    $script:feedbackToast.IsHitTestVisible = $true
+    $script:feedbackClose.Visibility = "Visible"
+  } elseif ($pending) {
+    $script:feedbackBadge.Background = "#87938A"
+    $script:feedbackGlyph.Text = "…"
+    $feedback.Foreground = "#3E4640"
+    $script:feedbackToast.IsHitTestVisible = $false
+    $script:feedbackClose.Visibility = "Collapsed"
+  } else {
+    $script:feedbackBadge.Background = "#2F8F4E"
+    $script:feedbackGlyph.Text = "✓"
+    $feedback.Foreground = "#1C2A20"
+    $script:feedbackToast.IsHitTestVisible = $false
+    $script:feedbackClose.Visibility = "Collapsed"
+  }
+  $script:feedbackToast.Visibility = "Visible"
+  # 只有成功结果自动收起；失败和进行中的状态留到下一次反馈，避免来不及看。
+  if (-not $IsError -and -not $pending) { $script:feedbackTimer.Start() }
+}
+
+function Update-RestartHint {
+  $script:restartHint.Text = if (Compare-Channels $script:savedChannels $script:appliedChannels) {
+    "配置有更新，点右上角「重启 ChatGPT」生效"
+  } else {
+    ""
+  }
+}
+
+# 即时启停或删除只推进对应的渠道运行事实，编辑字段仍等重启后才应用。
+function Update-Applied-Channels($Previous, $Current) {
+  foreach ($oldChannel in @($Previous)) {
+    $index = -1
+    for ($i = 0; $i -lt $script:appliedChannels.Count; $i++) {
+      if ([string]$script:appliedChannels[$i].id -eq [string]$oldChannel.id) { $index = $i; break }
+    }
+    if ($index -lt 0) { continue }
+    $updated = @($Current | Where-Object { [string]$_.id -eq [string]$oldChannel.id } | Select-Object -First 1)
+    if ($updated.Count -eq 0) {
+      $script:appliedChannels = @($script:appliedChannels | Where-Object { [string]$_.id -ne [string]$oldChannel.id })
+    } elseif ([bool]$oldChannel.enabled -ne [bool]$updated[0].enabled) {
+      $script:appliedChannels[$index].enabled = [bool]$updated[0].enabled
+    }
+  }
 }
 
 function Get-ActiveChannel {
@@ -1294,7 +1389,6 @@ function Show-Proxy-Page {
   $proxyOutboundUserField.Text = [string]$script:proxyOutboundUser
   $proxyOutboundPasswordField.Password = [string]$script:proxyOutboundPassword
   $script:rendering = $false
-  Set-Feedback $(if (Test-ProxyDirty) { "代理配置有未保存的更改" } else { "" })
   Update-Controls
 }
 
@@ -1314,6 +1408,15 @@ function Update-ProxyField([string]$Field, [string]$Value) {
   Update-Controls
 }
 
+# 只更新已落盘的代理快照，不覆盖用户尚未保存的输入。
+function Set-Saved-Proxy-From-Response($Proxy) {
+  $script:savedProxyHost = [string]$Proxy.host
+  $script:savedProxyPort = [string]$Proxy.port
+  $script:savedProxyOutbound = [string]$Proxy.outboundProxy
+  $script:savedProxyOutboundUser = [string]$Proxy.outboundUsername
+  $script:savedProxyOutboundPassword = [string]$Proxy.outboundPassword
+}
+
 # 代理回包来自加载、保存或切换：老配置没有出站字段时按直连回显。
 function Set-ProxyFromResponse($Proxy) {
   $script:proxyHost = [string]$Proxy.host
@@ -1321,11 +1424,21 @@ function Set-ProxyFromResponse($Proxy) {
   $script:proxyOutbound = [string]$Proxy.outboundProxy
   $script:proxyOutboundUser = [string]$Proxy.outboundUsername
   $script:proxyOutboundPassword = [string]$Proxy.outboundPassword
-  $script:savedProxyHost = $script:proxyHost
-  $script:savedProxyPort = $script:proxyPort
-  $script:savedProxyOutbound = $script:proxyOutbound
-  $script:savedProxyOutboundUser = $script:proxyOutboundUser
-  $script:savedProxyOutboundPassword = $script:proxyOutboundPassword
+  Set-Saved-Proxy-From-Response $Proxy
+}
+
+# 统一同步公共指令；只有初次读取或成功还原时才同时更新可见草稿。
+function Set-AgentsFromResponse($Agents, [bool]$UpdateDraft = $true) {
+  if ($null -eq $Agents -or $null -eq $Agents.content) { return }
+  if ($UpdateDraft) {
+    $script:agentsContent = [string]$Agents.content
+    $script:agentsEnabled = $Agents.enabled -eq $true
+  }
+  $script:savedAgentsContent = [string]$Agents.content
+  $script:savedAgentsEnabled = $Agents.enabled -eq $true
+  $script:agentsSource = [string]$Agents.source
+  $script:agentsBackupPath = [string]$Agents.backupPath
+  $script:agentsError = [string]$Agents.error
 }
 
 # 保存和测试连接发同一份草稿，两边不会各拼一套字段。
@@ -1685,6 +1798,7 @@ function Show-About-Page {
 }
 
 function Update-Controls {
+  Update-RestartHint
   $hasChannel = $null -ne (Get-ActiveChannel)
   $models = Get-ActiveModels
   $addChannelButton.IsEnabled = $script:loaded -and -not $script:busy -and $script:channels.Count -lt 50
@@ -2041,34 +2155,61 @@ function Get-ChannelLabel($Channel) {
   return "$name ($id)"
 }
 
+# 删除、重启和还原共用同一张确认卡片；按钮文案和危险样式由调用方决定。
+function Show-ConfirmCard(
+    [string]$Title,
+    [string]$Message,
+    [string]$ConfirmText,
+    [bool]$Danger,
+    [scriptblock]$Action) {
+  $confirmTitle.Text = $Title
+  $confirmMessage.Text = $Message
+  $confirmPrimary.Content = $ConfirmText
+  $confirmDelete.Content = $ConfirmText
+  $confirmPrimary.Visibility = if ($Danger) { "Collapsed" } else { "Visible" }
+  $confirmDelete.Visibility = if ($Danger) { "Visible" } else { "Collapsed" }
+  $script:confirmAction = $Action
+  $confirmLayer.Visibility = "Visible"
+}
+
+function Hide-ConfirmCard {
+  $script:confirmAction = $null
+  $confirmLayer.Visibility = "Collapsed"
+}
+
+# 先收起卡片再执行，避免动作里的回包又把卡片弹回来。
+function Invoke-ConfirmCard {
+  $action = $script:confirmAction
+  Hide-ConfirmCard
+  if ($action) { & $action }
+}
+
 # 列表页、编辑页和模型卡片的删除都先弹这张卡片，确认后才真正删。
 function Request-Delete([string]$Kind, [int]$Index) {
   if ($script:busy) { return }
+  $title = ""
+  $message = ""
+  $confirmText = "删除"
   if ($Kind -eq "channel") {
     if ($Index -lt 0 -or $Index -ge $script:channels.Count) { return }
     $label = Get-ChannelLabel $script:channels[$Index]
-    $confirmTitle.Text = "删除 $label?"
-    $confirmMessage.Text = "删除 $label 会移除其配置和存储的 API 密钥。"
-    $confirmDelete.Content = "删除 $label"
+    $title = "删除 $label?"
+    $message = "删除 $label 会移除其配置和存储的 API 密钥。"
+    $confirmText = "删除 $label"
   } else {
     $channel = Get-ActiveChannel
     if (-not $channel) { return }
     if ($Index -lt 0 -or $Index -ge $channel.models.Count) { return }
     $modelId = [string]$channel.models[$Index].id
     $label = if ([string]::IsNullOrWhiteSpace($modelId)) { "未命名模型" } else { $modelId }
-    $confirmTitle.Text = "删除模型「$label」？"
-    $confirmMessage.Text = "会从当前渠道的模型目录里移除它，保存后生效。"
-    $confirmDelete.Content = "删除"
+    $title = "删除模型「$label」？"
+    $message = "会从当前渠道的模型目录里移除它，保存后生效。"
   }
-  $script:deleteKind = $Kind
-  $script:deleteIndex = $Index
-  $confirmLayer.Visibility = "Visible"
-}
-
-function Hide-DeleteConfirm {
-  $script:deleteKind = ""
-  $script:deleteIndex = -1
-  $confirmLayer.Visibility = "Collapsed"
+  $action = {
+    if ($Kind -eq "channel") { Remove-Channel $Index }
+    elseif ($Kind -eq "model") { Remove-Model $Index }
+  }.GetNewClosure()
+  Show-ConfirmCard -Title $title -Message $message -ConfirmText $confirmText -Danger $true -Action $action
 }
 
 # 问渠道端点要它公布的模型；拿回来的清单先在卡片里勾选，不直接进目录。
@@ -2242,6 +2383,8 @@ function Update-ChannelField([string]$Field, [string]$Value) {
 }
 
 function Receive-Response($Response) {
+  $wasLoaded = $script:loaded
+  $proxyDirtyBeforeResponse = Test-ProxyDirty
   if ($Response.version -and $Response.version -ne $script:currentVersion) {
     $script:currentVersion = [string]$Response.version
     Refresh-VersionLabel
@@ -2253,6 +2396,7 @@ function Receive-Response($Response) {
     }
     if ($Response.event -eq "appearance-updated") {
       Set-Feedback ""
+      Update-RestartHint
       Refresh-Appearance-View
       return
     }
@@ -2293,6 +2437,7 @@ function Receive-Response($Response) {
       $script:appearanceNativeMode = [string]$script:appearanceNativeModeBeforeSave
       Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "应用外观主题失败" }) $true
     }
+    Update-Controls
     Refresh-Appearance-View
     return
   }
@@ -2323,13 +2468,8 @@ function Receive-Response($Response) {
     $script:savingAgents = $false
     $script:busy = $false
     if ($Response.ok -eq $true -and $null -ne $Response.agents) {
-      $script:agentsContent = [string]$Response.agents.content
-      $script:savedAgentsContent = $script:agentsContent
-      $script:agentsSource = [string]$Response.agents.source
-      $script:agentsBackupPath = [string]$Response.agents.backupPath
+      Set-AgentsFromResponse $Response.agents
       $script:agentsError = ""
-      $script:agentsEnabled = $Response.agents.enabled -eq $true
-      $script:savedAgentsEnabled = $script:agentsEnabled
       Set-Feedback $(if ($script:agentsBackupPath) {
         "公共指令已同步，原文件已备份"
       } else {
@@ -2345,18 +2485,18 @@ function Receive-Response($Response) {
   $script:busy = $false
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
+  $pendingImmediate = $script:pendingDeleteRestore
   if ($ok -or $Response.saved -eq $true -or $cleared) {
     if ($null -ne $Response.proxy) {
-      Set-ProxyFromResponse $Response.proxy
+      if (-not $wasLoaded -or -not $proxyDirtyBeforeResponse) {
+        Set-ProxyFromResponse $Response.proxy
+      } else {
+        Set-Saved-Proxy-From-Response $Response.proxy
+      }
     }
     if ($null -ne $Response.agents) {
-      $script:agentsContent = [string]$Response.agents.content
-      $script:savedAgentsContent = $script:agentsContent
-      $script:agentsSource = [string]$Response.agents.source
-      $script:agentsBackupPath = [string]$Response.agents.backupPath
-      $script:agentsError = [string]$Response.agents.error
-      $script:agentsEnabled = $Response.agents.enabled -eq $true
-      $script:savedAgentsEnabled = $script:agentsEnabled
+      $updateAgentsDraft = -not $wasLoaded -or $cleared -or -not (Test-AgentsDirty)
+      Set-AgentsFromResponse $Response.agents $updateAgentsDraft
     }
     if (Test-ResponseChannels $Response.channels) {
       $keepAppearancePage = -not $script:loaded -and $appearancePage.Visibility -eq "Visible"
@@ -2367,6 +2507,9 @@ function Receive-Response($Response) {
       $script:savedChannels = Copy-Channels $script:channels
       $script:currentChannelId = [string]$Response.current
       $script:loaded = $true
+      if (-not $wasLoaded) {
+        $script:appliedChannels = Copy-Channels $script:channels
+      }
       $wanted = 0
       if ($previousId) {
         for ($i = 0; $i -lt $script:channels.Count; $i++) {
@@ -2389,7 +2532,7 @@ function Receive-Response($Response) {
   }
   if (-not $ok) {
     # 删除没能存盘就把刚拿掉的那条放回去，别让面板和文件对不上。
-    if ($script:pendingDeleteRestore) {
+    if ($Response.saved -ne $true -and $null -ne $pendingImmediate) {
       $script:channels = $script:pendingDeleteRestore
       $script:channelIndex = if ($script:channels.Count -eq 0) { -1 } else { [Math]::Min($script:channelIndex, $script:channels.Count - 1) }
     }
@@ -2397,11 +2540,14 @@ function Receive-Response($Response) {
     Update-ChannelList
     Set-Feedback $(if ($Response.error) { [string]$Response.error } else { "操作失败" }) $true
   } elseif ($cleared) {
+    $script:appliedChannels = Copy-Channels $script:channels
     Set-Feedback "已清空并重启 ChatGPT"
   } elseif ($Response.restarted -eq $true) {
+    $script:appliedChannels = Copy-Channels $script:channels
     Set-Feedback "配置已写入，ChatGPT 已重启"
   } elseif ($Response.saved -eq $true) {
     if (Test-ResponseChannels $Response.channels) {
+      if ($null -ne $pendingImmediate) { Update-Applied-Channels $pendingImmediate $script:channels }
       $successNote = if ($script:pendingDeleteNote) { $script:pendingDeleteNote } else { "已保存，点右上角「重启 ChatGPT」才会生效" }
       if ($script:modelEditorActive) { Show-List-Page }
       Set-Feedback $successNote
@@ -2547,15 +2693,10 @@ $deleteChannelButton.Add_Click({
   Request-Delete "channel" $script:channelIndex
 })
 
-$confirmClose.Add_Click({ Hide-DeleteConfirm })
-$confirmCancel.Add_Click({ Hide-DeleteConfirm })
-$confirmDelete.Add_Click({
-  $kind = $script:deleteKind
-  $index = $script:deleteIndex
-  Hide-DeleteConfirm
-  if ($kind -eq "channel") { Remove-Channel $index }
-  elseif ($kind -eq "model") { Remove-Model $index }
-})
+$confirmClose.Add_Click({ Hide-ConfirmCard })
+$confirmCancel.Add_Click({ Hide-ConfirmCard })
+$confirmPrimary.Add_Click({ Invoke-ConfirmCard })
+$confirmDelete.Add_Click({ Invoke-ConfirmCard })
 
 $channelIdField.Add_TextChanged({ Update-ChannelField "id" $channelIdField.Text })
 $channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBaseUrlField.Text })
@@ -2638,13 +2779,9 @@ $clearProxyOutboundButton.Add_Click({
 # 模型、代理、Agents 和外观页的右上角入口共用同一重启流程，先确认再动手。
 $requestRestart = {
   if (-not $script:loaded -or $script:busy) { return }
-  $answer = [System.Windows.MessageBox]::Show(
-    $window,
-    "会重新写入 ChatGPT 配置和全部启用渠道的模型目录，然后重启客户端。",
-    "重启 ChatGPT？",
-    "OKCancel", "Warning")
-  if ($answer -ne "OK") { return }
-  Submit "switch"
+  Show-ConfirmCard -Title "重启 ChatGPT？" `
+    -Message "会重新写入 ChatGPT 配置和全部启用渠道的模型目录，然后重启客户端。" `
+    -ConfirmText "重启" -Danger $false -Action { Submit "switch" }
 }
 $restartButton.Add_Click($requestRestart)
 $proxyRestartButton.Add_Click($requestRestart)
@@ -2653,17 +2790,15 @@ $appearanceRestartButton.Add_Click($requestRestart)
 
 $clearButton.Add_Click({
   if (-not $script:loaded -or $script:busy) { return }
-  $answer = [System.Windows.MessageBox]::Show(
-    $window,
-    "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。",
-    "还原 ChatGPT 配置并重启客户端？",
-    "OKCancel", "Warning")
-  if ($answer -ne "OK") { return }
-  $script:busy = $true
-  Set-Feedback "正在清空并重启 ChatGPT…"
-  Rebuild-Rows
-  Update-Controls
-  Send-Request @{ action = "clear" }
+  Show-ConfirmCard -Title "还原 ChatGPT 配置并重启客户端？" `
+    -Message "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。" `
+    -ConfirmText "还原并重启" -Danger $true -Action {
+      $script:busy = $true
+      Set-Feedback "正在清空并重启 ChatGPT…"
+      Rebuild-Rows
+      Update-Controls
+      Send-Request @{ action = "clear" }
+    }
 })
 
 $updateButton.Add_Click({

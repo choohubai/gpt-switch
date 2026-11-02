@@ -27,7 +27,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.62";
+const VERSION = "0.1.63";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -1771,6 +1771,7 @@ const main = async () => {
   };
 
   const dispatchRequest = async (request) => {
+    let restartedProxy = null;
     if (request?.action === "quit") {
       // Windows 托盘菜单的“退出”走这里；macOS 面板是直接结束父进程。
       log("panel_quit");
@@ -1862,6 +1863,7 @@ const main = async () => {
         proxyServer = switched.server;
         proxyHost = switched.host;
         proxyPort = switched.port;
+        restartedProxy = { ...settings, host: switched.host, port: switched.port };
       },
       applyCodex: applyCodexForChannel,
       restoreCodex: () => restoreCodexConfig({
@@ -1874,6 +1876,7 @@ const main = async () => {
       answer.nativeAppearance = nativeAppearanceUnsupported ? "unsupported" : "supported";
       answer.appearance = appearancePanelState(APPEARANCE_CONFIG, APPEARANCE_RESOURCE_DIR);
     }
+    const proxy = restartedProxy ?? answer?.proxy;
     // 等客户端把自己的那份配置写完（实测启动后约 8 秒）再看一眼，只记录不修改。
     if (request?.action === "switch" && answer?.restarted) setTimeout(logProviderMismatch, 12_000).unref();
     // 面板刚改过渠道（含单独启用/禁用）：把新的模型列表推给已经打开的客户端，不用重启它。
@@ -1886,7 +1889,11 @@ const main = async () => {
       })
         .catch((error) => log("panel_refresh_failed", String(error?.message || error)));
     }
-    return { ...answer, version: VERSION };
+    return {
+      ...answer,
+      ...(proxy ? { proxy } : {}),
+      version: VERSION,
+    };
   };
 
   if (attachPort) {

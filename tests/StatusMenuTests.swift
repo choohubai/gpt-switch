@@ -4,6 +4,112 @@ import SwiftUI
 @main
 struct StatusMenuTests {
     static func main() throws {
+        // 独立面板状态覆盖渠道重启失败与重复读取，不依赖主窗口后续用例。
+        let persistentStore = PanelStore()
+        let initialChannels: [[String: Any]] = [
+            ["id": "active", "baseUrl": "https://active.example/v1", "models": []],
+        ]
+        persistentStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "proxy": ["host": "127.0.0.1", "port": 47123],
+        ])
+        let savedButNotAppliedChannels: [[String: Any]] = [
+            ["id": "active", "baseUrl": "https://updated.example/v1", "models": []],
+        ]
+        persistentStore.apply([
+            "ok": false,
+            "saved": true,
+            "channels": savedButNotAppliedChannels,
+            "current": "active",
+            "error": "ChatGPT 重启失败",
+        ])
+        assert(persistentStore.restartNeeded, "渠道已经落盘但重启失败时仍需保留待重启状态")
+        persistentStore.apply([
+            "ok": true,
+            "channels": savedButNotAppliedChannels,
+            "current": "active",
+            "proxy": ["host": "127.0.0.1", "port": 47123],
+        ])
+        assert(persistentStore.restartNeeded, "重新读取磁盘配置不能冒充运行中的渠道基线")
+
+        let reloadStore = PanelStore()
+        reloadStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "agents": ["content": "旧内容", "enabled": false],
+        ])
+        reloadStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "agents": ["content": "磁盘新内容", "enabled": true],
+        ])
+        assert(reloadStore.agentsContent == "磁盘新内容" && reloadStore.agentsEnabled,
+               "没有草稿时重新读取必须刷新磁盘上的公共指令")
+
+        let draftStore = PanelStore()
+        draftStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "proxy": [
+                "host": "127.0.0.1", "port": 47123,
+                "outboundProxy": "http://127.0.0.1:7898",
+            ],
+            "agents": ["content": "原内容", "enabled": false],
+        ])
+        draftStore.channels[0].name = "尚未保存"
+        assert(draftStore.isDirty && !draftStore.restartNeeded,
+               "渠道草稿只能标记未保存，不能冒充已经落盘、等待重启")
+        draftStore.proxyHost = "127.0.0.2"
+        draftStore.agentsContent = "尚未保存"
+        draftStore.apply([
+            "ok": true,
+            "saved": true,
+            "restarted": true,
+            "channels": initialChannels,
+            "current": "active",
+            "proxy": [
+                "host": "127.0.0.1", "port": 47123,
+                "outboundProxy": "http://127.0.0.1:7898",
+            ],
+            "agents": ["content": "不应覆盖草稿", "enabled": true],
+        ])
+        assert(draftStore.proxyHost == "127.0.0.2" && draftStore.proxyDirty,
+               "重启回包不能覆盖尚未保存的代理草稿")
+        assert(draftStore.agentsContent == "尚未保存" && draftStore.agentsDirty,
+               "重启回包不能覆盖尚未保存的公共指令草稿")
+
+        let failedSaveProxyStore = PanelStore()
+        failedSaveProxyStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "proxy": ["host": "127.0.0.1", "port": 47123],
+        ])
+        failedSaveProxyStore.proxyPort = "47124"
+        failedSaveProxyStore.saveProxy()
+        failedSaveProxyStore.apply(["ok": false, "error": "代理配置写入失败"])
+        assert(failedSaveProxyStore.proxyPort == "47124" && failedSaveProxyStore.proxyDirty,
+               "代理保存失败必须保留用户尚未落盘的端口")
+
+        let failedSaveAgentsStore = PanelStore()
+        failedSaveAgentsStore.apply([
+            "ok": true,
+            "channels": initialChannels,
+            "current": "active",
+            "proxy": ["host": "127.0.0.1", "port": 47123],
+            "agents": ["content": "原内容", "enabled": false],
+        ])
+        failedSaveAgentsStore.agentsContent = "尚未保存"
+        failedSaveAgentsStore.saveAgents()
+        failedSaveAgentsStore.apply(["ok": false, "error": "公共指令写入失败"])
+        assert(failedSaveAgentsStore.agentsContent == "尚未保存" && failedSaveAgentsStore.agentsDirty,
+               "公共指令保存失败必须保留用户输入")
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let controller = StatusMenuController(parentPID: getpid(), iconPath: CommandLine.arguments[1])
@@ -79,6 +185,13 @@ struct StatusMenuTests {
         assert(store.appearanceTheme == "dark", "主题已保存时保留新主题")
         assert(store.feedback == "主题已保存，重启 ChatGPT 后生效")
         assert(!store.feedbackIsError, "等待重启不是保存失败，不能显示红色提示")
+        store.feedback = ""
+        store.apply(["ok": true, "saved": true, "channels": store.channels.map(\.payload), "current": "OpenAI"])
+
+        // 主题保存失败时回滚选中项。
+        store.selectAppearanceTheme(store.appearanceThemes[2])
+        store.apply(["ok": false, "error": "主题写入失败"])
+        assert(store.appearanceTheme == "dark")
 
         // Codex 原生模式广播优先：暂停覆盖并把选中项同步到对应原生主题。
         store.apply(["event": "appearance-updated", "appearance": [
@@ -349,6 +462,8 @@ struct StatusMenuTests {
         store.addChannel()
         assert(store.channels.count == 3)
         assert(store.editingIndex == 2)
+        store.feedback = ""
+        assert(store.isDirty, "新增渠道的脏状态必须来自草稿与已存基线")
         assert(store.editingTitle == "添加渠道")
         store.channels[2].id = "gateway"
         assert(store.editingTitle == "编辑渠道")
@@ -689,6 +804,11 @@ struct StatusMenuTests {
         window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .proxy))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("proxy.png")
+        store.feedback = "代理连接正常 · 197ms"
+        store.feedbackIsError = false
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        try shoot("proxy-toast.png")
+        store.feedback = ""
         window.contentView = NSHostingView(rootView: PanelView(store: store, selectedSection: .agents))
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         try shoot("agents.png")

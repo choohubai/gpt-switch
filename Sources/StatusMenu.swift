@@ -256,7 +256,11 @@ final class PanelStore: ObservableObject {
     @Published var editingIndex: Int?
     @Published var loaded = false
     @Published var busy = false
-    @Published var feedback = ""
+    /// 每次写入都换一个代号，同一句话重复出现时浮层也要重新弹一次。
+    @Published var feedback = "" {
+        didSet { feedbackRevision &+= 1 }
+    }
+    @Published private(set) var feedbackRevision = 0
     @Published var feedbackIsError = false
     @Published var version = ""
     @Published var updateTitle = "检查更新"
@@ -266,8 +270,8 @@ final class PanelStore: ObservableObject {
     @Published var discoveredSelection: Set<String> = []
     @Published var discoveryFilter = ""
     @Published var confirmingClear = false
-    /// 改过的配置还没写进客户端（右上角「重启」才会写）：底栏只在这时候提示重启。
-    @Published var restartNeeded = false
+    /// 已落盘的配置还没写进客户端（右上角「重启」才会写）：底栏一直挂着这条提醒。
+    var restartNeeded: Bool { savedChannels != appliedChannels }
     /// 正在重启客户端：右上角那个按钮变成「重启中」并置灰。
     @Published var restarting = false
     /// 右上角「重启」会重启客户端，先弹一句说明。
@@ -487,7 +491,7 @@ final class PanelStore: ObservableObject {
         ])
     }
 
-    /// 测试连接只拿当前草稿试一次，不写配置：结果直接进底栏。
+    /// 测试连接只拿当前草稿试一次，不写配置：结果走浮层提示。
     func testProxy() {
         guard loaded, !busy, !proxyOutbound.isEmpty else { return }
         busy = true
@@ -511,9 +515,37 @@ final class PanelStore: ObservableObject {
         proxyOutbound = value["outboundProxy"] as? String ?? ""
         proxyOutboundUser = value["outboundUsername"] as? String ?? ""
         proxyOutboundPassword = value["outboundPassword"] as? String ?? ""
-        savedProxyOutbound = proxyOutbound
-        savedProxyOutboundUser = proxyOutboundUser
-        savedProxyOutboundPassword = proxyOutboundPassword
+        applySavedOutboundProxy(value)
+    }
+
+    /// 更新已落盘的出站代理快照；未保存的输入仍由调用方单独保留。
+    private func applySavedOutboundProxy(_ value: [String: Any]) {
+        savedProxyOutbound = value["outboundProxy"] as? String ?? ""
+        savedProxyOutboundUser = value["outboundUsername"] as? String ?? ""
+        savedProxyOutboundPassword = value["outboundPassword"] as? String ?? ""
+    }
+
+    /// 只更新代理保存快照，避免读取或重启回包覆盖用户正在编辑的代理草稿。
+    private func updateSavedProxy(_ value: [String: Any]) {
+        guard let host = value["host"] as? String,
+              let port = value["port"] as? Int else { return }
+        savedProxyHost = host
+        savedProxyPort = String(port)
+        applySavedOutboundProxy(value)
+    }
+
+    /// 把服务端返回的公共指令同步到草稿和保存快照；各字段共用同一入口，避免两套状态漂移。
+    private func applyAgents(_ value: [String: Any], updateDraft: Bool) {
+        guard let content = value["content"] as? String else { return }
+        if updateDraft {
+            agentsContent = content
+            agentsEnabled = value["enabled"] as? Bool ?? false
+        }
+        savedAgentsContent = content
+        savedAgentsEnabled = value["enabled"] as? Bool ?? false
+        agentsSource = value["source"] as? String ?? ""
+        agentsBackupPath = value["backupPath"] as? String ?? ""
+        agentsError = value["error"] as? String ?? ""
     }
 
     /// 保存可编辑草稿；启用时由本地注入器在写入前备份并合并用户 AGENTS.md。
@@ -598,7 +630,7 @@ final class PanelStore: ObservableObject {
         loaded && !busy && proxyDirty
     }
 
-    /// 面板不为「正在启用/正在重启」这类过程刷提示：底栏留给报错和「配置有更新」。
+    /// 面板不为「正在启用/正在重启」这类过程刷提示：浮层留给报错和操作结果。
     private func submit(action: String, currentID: String) {
         guard loaded, !busy else { return }
         busy = true
@@ -665,27 +697,24 @@ final class PanelStore: ObservableObject {
     // MARK: 响应
 
     func apply(_ response: [String: Any]) {
+        let wasLoaded = loaded
         if let value = response["version"] as? String, !value.isEmpty, value != version {
             version = value
         }
         if let value = response["proxy"] as? [String: Any],
            let host = value["host"] as? String,
            let port = value["port"] as? Int {
-            proxyHost = host
-            proxyPort = String(port)
-            savedProxyHost = host
-            savedProxyPort = String(port)
-            applyOutboundProxy(value)
+            if !wasLoaded || !proxyDirty {
+                proxyHost = host
+                proxyPort = String(port)
+                applyOutboundProxy(value)
+            } else {
+                updateSavedProxy(value)
+            }
         }
-        if let value = response["agents"] as? [String: Any],
-           let content = value["content"] as? String {
-            agentsContent = content
-            savedAgentsContent = content
-            agentsSource = value["source"] as? String ?? ""
-            agentsBackupPath = value["backupPath"] as? String ?? ""
-            agentsError = value["error"] as? String ?? ""
-            agentsEnabled = value["enabled"] as? Bool ?? false
-            savedAgentsEnabled = agentsEnabled
+        if let value = response["agents"] as? [String: Any] {
+            let cleared = response["cleared"] as? Bool == true
+            applyAgents(value, updateDraft: !wasLoaded || !agentsDirty || cleared)
         }
         if let value = response["appearance"] as? [String: Any] {
             applyAppearance(value)
@@ -764,14 +793,9 @@ final class PanelStore: ObservableObject {
             busy = false
             if response["ok"] as? Bool == true,
                let value = response["agents"] as? [String: Any],
-               let content = value["content"] as? String {
-                agentsContent = content
-                savedAgentsContent = content
-                agentsSource = value["source"] as? String ?? ""
-                agentsBackupPath = value["backupPath"] as? String ?? ""
+               value["content"] is String {
+                applyAgents(value, updateDraft: true)
                 agentsError = ""
-                agentsEnabled = value["enabled"] as? Bool ?? false
-                savedAgentsEnabled = agentsEnabled
                 let keptUserFile = value["keptUserFile"] as? Bool == true
                 feedback = keptUserFile && !agentsBackupPath.isEmpty
                     ? "公共指令已同步，原文件已备份"
@@ -808,28 +832,47 @@ final class PanelStore: ObservableObject {
             }
         }
         if !ok {
-            if let pending { channels = pending }
+            if response["saved"] as? Bool != true, let pending { channels = pending }
             feedback = response["error"] as? String ?? "操作失败"
             feedbackIsError = true
         } else if cleared || response["restarted"] as? Bool == true {
             // 清空和重启都把配置写进了客户端：底栏那句「等重启」到此为止。
             feedback = ""
             feedbackIsError = false
-            restartNeeded = false
             appliedChannels = channels
+            if cleared, let value = response["agents"] as? [String: Any] {
+                applyAgents(value, updateDraft: true)
+            }
         } else if response["saved"] as? Bool == true {
-            // 只存盘有两种：改配置要重启才写进客户端；翻开关、删渠道立刻生效，不留提示。
-            // 后一种客户端手里已经换成这份列表了（注入器会重推一次），基线跟着走，
-            // 免得改动再改回原值还挂着「配置有更新」让人白重启一次。
             feedback = ""
             feedbackIsError = false
-            if pending == nil { restartNeeded = channels != appliedChannels } else { appliedChannels = channels }
+            if let pending {
+                applyImmediateChannelChanges(from: pending, to: channels)
+            }
             if leaveEditor { showList() }
         } else {
             feedback = ""
             feedbackIsError = false
             // 读配置：面板刚打开时按「文件里的就是客户端里的」算。
-            appliedChannels = channels
+            if !wasLoaded {
+                appliedChannels = channels
+            }
+        }
+    }
+
+    /// 将即时删除和启停写进运行基线，同时保留此前尚未应用的其他渠道字段。
+    private func applyImmediateChannelChanges(from previous: [ChannelRow], to current: [ChannelRow]) {
+        for oldChannel in previous {
+            guard let appliedIndex = appliedChannels.firstIndex(where: { $0.id == oldChannel.id }) else {
+                continue
+            }
+            guard let updatedChannel = current.first(where: { $0.id == oldChannel.id }) else {
+                appliedChannels.remove(at: appliedIndex)
+                continue
+            }
+            if oldChannel.enabled != updatedChannel.enabled {
+                appliedChannels[appliedIndex].enabled = updatedChannel.enabled
+            }
         }
     }
 
@@ -1059,9 +1102,14 @@ struct PanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             PanelFeedbackBar(store: store, restartHint: restartHint)
         }
+        .overlay(alignment: .bottom) {
+            PanelToast(store: store)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 52)
+        }
     }
 
-    /// 重启入口只在模型列表页；编辑页和其它分区要说清楚先回到哪个页面。
+    /// 重启入口只在模型列表页；其它页面给出对应入口的位置。
     private var restartHint: String {
         if selectedSection != .models {
             return "配置有更新，回到「模型」后点右上角「重启 ChatGPT」生效"
@@ -2474,38 +2522,28 @@ struct DashedRowButton: View {
     }
 }
 
+/// 底栏保留已有的渠道待重启提醒；一次性操作结果由浮层显示。
 private struct PanelFeedbackBar: View {
     @ObservedObject var store: PanelStore
     let restartHint: String
     @Environment(\.colorScheme) private var colorScheme
 
-    /// 提醒重启那行字：跟原来那档灰一个明度，只把色相换成红，所以看着是淡红不是正红。
+    /// 提醒重启这行要能看清：用压暗的红，别再用和底色几乎一样的淡红。
     private var restartInk: Color {
-        colorScheme == .dark ? Color(red: 0.93, green: 0.72, blue: 0.71)
-                             : Color(red: 0.87, green: 0.55, blue: 0.54)
+        colorScheme == .dark ? Color(red: 0.95, green: 0.68, blue: 0.64)
+                             : Color(red: 0.68, green: 0.30, blue: 0.26)
     }
 
-    /// 这行只说两件事：操作失败的原文，和「配置改了还没写进客户端」。
-    private var hint: String {
-        if store.feedbackIsError { return store.feedback }
-        guard store.restartNeeded else { return store.feedback }
-        return restartHint
-    }
-
-    private var hintInk: AnyShapeStyle {
-        if store.feedbackIsError { return AnyShapeStyle(Color.red) }
-        if store.restartNeeded { return AnyShapeStyle(restartInk) }
-        return AnyShapeStyle(.tertiary)
-    }
+    private var hint: String { store.restartNeeded ? restartHint : "" }
 
     var body: some View {
         HStack(spacing: 12) {
             Text(hint)
                 .font(.system(size: 11))
-                .foregroundStyle(hintInk)
                 .lineLimit(1)
             Spacer(minLength: 12)
         }
+        .foregroundStyle(restartInk)
         .padding(.horizontal, 28)
         .frame(height: 36)
         .background(panelBackground)
@@ -2514,6 +2552,83 @@ private struct PanelFeedbackBar: View {
                 Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
             }
         }
+    }
+}
+
+/// 操作结果用居中浮层显示：成功几秒后收起，失败和进行中的提示留到下一次操作或手动关闭。
+private struct PanelToast: View {
+    @ObservedObject var store: PanelStore
+    @State private var dismissedRevision = -1
+
+    private var visible: Bool {
+        !store.feedback.isEmpty && store.feedbackRevision != dismissedRevision
+    }
+
+    var body: some View {
+        ZStack {
+            if visible {
+                HStack(spacing: 8) {
+                    badge
+                    Text(store.feedback)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if store.feedbackIsError {
+                        Button { dismissedRevision = store.feedbackRevision } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18, height: 18)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointingHand()
+                        .help("关闭提示")
+                        .accessibilityLabel("关闭提示")
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 11)
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                        .shadow(color: .black.opacity(0.16), radius: 18, y: 7)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11)
+                        .strokeBorder(Color.primary.opacity(0.08))
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: visible)
+        .task(id: store.feedbackRevision) { await dismissAfterDelay() }
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if store.busy {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.8)
+                .frame(width: 15, height: 15)
+        } else {
+            Image(systemName: store.feedbackIsError
+                  ? "exclamationmark.circle.fill"
+                  : "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(store.feedbackIsError ? Color.red : accentBottom)
+        }
+    }
+
+    /// 只有成功结果需要自己消失；失败要留到用户看见，进行中的文案等结果来替换。
+    private func dismissAfterDelay() async {
+        let revision = store.feedbackRevision
+        guard !store.feedback.isEmpty, !store.feedbackIsError, !store.busy else { return }
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        guard !Task.isCancelled, store.feedbackRevision == revision else { return }
+        dismissedRevision = revision
     }
 }
 
