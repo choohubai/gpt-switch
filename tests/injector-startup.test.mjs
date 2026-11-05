@@ -75,6 +75,19 @@ test("客户端移除 set-setting 时判定为能力缺失，不当成临时故�
   const thrownResult = await thrown.setNativeAppearanceTheme("dark");
   assert.equal(thrownResult.unsupported, true, "not implemented 透传为异常时也要判为能力缺失");
 
+  const fetchService = new CDPSession(page);
+  fetchService.command = async () => ({
+    exceptionDetails: {
+      exception: {
+        description: "Error: Error invoking remote method 'codex_desktop:message-from-view': "
+          + "Error: HTTP requests must use the HTTP fetch service.",
+      },
+    },
+  });
+  const fetchServiceResult = await fetchService.setNativeAppearanceTheme("dark");
+  assert.equal(fetchServiceResult.unsupported, true,
+    "旧桥接被新客户端改道到 HTTP fetch service 时也要判为能力缺失");
+
   // 其它异常仍是真实故障，必须继续抛出
   const broken = new CDPSession(page);
   broken.command = async () => ({ exceptionDetails: { exception: { description: "Error: 别的问题" } } });
@@ -110,17 +123,14 @@ test("原生明暗接口缺失时仍要完成注入，不能连带丢掉模型�
   assert.match(injectTargets, /if \(unsupported\) nativeAppearanceSynced = true/,
     "接口缺失判定后要结束本轮外观同步，避免逐轮重复探测");
 
-  // 只有真实异常才允许 close + continue；unsupported 不能走这条路径。
+  // 外观是附属能力；即使出现未能识别的异常，也必须继续执行后面的模型注入。
   const catchBlock = injectTargets.slice(
     injectTargets.indexOf("} catch (error) {", syncIndex),
     injectTargets.indexOf("if (unsupported)", syncIndex),
   );
-  assert.match(catchBlock, /session\.close\(\)/);
-  assert.match(catchBlock, /continue;/);
-  assert.ok(
-    injectTargets.indexOf("if (unsupported)") > injectTargets.indexOf("session.close()", syncIndex),
-    "能力缺失分支不能落在关闭会话的 catch 里",
-  );
+  assert.match(catchBlock, /target_native_sync_failed/);
+  assert.doesNotMatch(catchBlock, /session\.close\(\)|continue;/,
+    "原生外观同步失败不能关闭会话或跳过模型注入");
 });
 
 test("Codex 原生模式广播会暂停 GPT Switch 覆盖并同步面板", () => {
