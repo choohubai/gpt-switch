@@ -52,6 +52,8 @@ $script:releaseUrl = $null
 $script:checkingUpdate = $false
 $script:quitting = $false
 $script:confirmAction = $null
+$script:deleteKind = ""
+$script:deleteIndex = -1
 $script:pendingDeleteRestore = $null
 $script:pendingDeleteNote = ""
 $script:fetchingModels = $false
@@ -1170,8 +1172,9 @@ function Get-ActiveChannel {
 
 function Get-ActiveModels {
   $channel = Get-ActiveChannel
-  if ($channel) { return @($channel.models) }
-  return @()
+  # 函数返回单个 HashTable 时，PowerShell 会把它展开成字段；必须保留模型数组边界。
+  if ($channel) { return ,@($channel.models) }
+  return ,@()
 }
 
 function Update-ChannelFields {
@@ -2174,6 +2177,8 @@ function Show-ConfirmCard(
 
 function Hide-ConfirmCard {
   $script:confirmAction = $null
+  $script:deleteKind = ""
+  $script:deleteIndex = -1
   $confirmLayer.Visibility = "Collapsed"
 }
 
@@ -2205,11 +2210,10 @@ function Request-Delete([string]$Kind, [int]$Index) {
     $title = "删除模型「$label」？"
     $message = "会从当前渠道的模型目录里移除它，保存后生效。"
   }
-  $action = {
-    if ($Kind -eq "channel") { Remove-Channel $Index }
-    elseif ($Kind -eq "model") { Remove-Model $Index }
-  }.GetNewClosure()
-  Show-ConfirmCard -Title $title -Message $message -ConfirmText $confirmText -Danger $true -Action $action
+  # WPF 按钮回调晚于弹窗函数返回；把目标留在脚本状态里，避免延迟闭包在宿主 runspace 中丢失。
+  $script:deleteKind = $Kind
+  $script:deleteIndex = $Index
+  Show-ConfirmCard -Title $title -Message $message -ConfirmText $confirmText -Danger $true -Action $null
 }
 
 # 问渠道端点要它公布的模型；拿回来的清单先在卡片里勾选，不直接进目录。
@@ -2696,7 +2700,13 @@ $deleteChannelButton.Add_Click({
 $confirmClose.Add_Click({ Hide-ConfirmCard })
 $confirmCancel.Add_Click({ Hide-ConfirmCard })
 $confirmPrimary.Add_Click({ Invoke-ConfirmCard })
-$confirmDelete.Add_Click({ Invoke-ConfirmCard })
+$confirmDelete.Add_Click({
+  $kind = $script:deleteKind
+  $index = $script:deleteIndex
+  Hide-ConfirmCard
+  if ($kind -eq "channel") { Remove-Channel $index }
+  elseif ($kind -eq "model") { Remove-Model $index }
+})
 
 $channelIdField.Add_TextChanged({ Update-ChannelField "id" $channelIdField.Text })
 $channelBaseUrlField.Add_TextChanged({ Update-ChannelField "baseUrl" $channelBaseUrlField.Text })

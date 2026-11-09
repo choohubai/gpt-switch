@@ -53,6 +53,8 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Update-RestartHint")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Add-SelectedModels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Get-ActiveChannel")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Get-ActiveModels")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Remove-Model")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
@@ -79,6 +81,12 @@ if ([Math]::Abs([double]$appearancePreviewFrame.Height - 350.0) -gt 0.01) {
   throw "窗口宽度变化后顶部主题预览没有保持等比例"
 }
 $sourceText = Get-Content -LiteralPath $sourcePath -Raw
+if ($sourceText -match '\.GetNewClosure\(\)') {
+  throw "面板确认动作不能依赖延迟闭包，WPF 点击回调可能拿不到删除目标"
+}
+if ($sourceText -notmatch '(?s)\$confirmDelete\.Add_Click\(\{\s*\$kind = \$script:deleteKind\s*\$index = \$script:deleteIndex\s*Hide-ConfirmCard') {
+  throw "确认删除按钮没有直接读取待删除目标和索引"
+}
 if ($sourceText -match 'label = "(网页搜索|并行工具)"') {
   throw "模型卡片不应再显示工具能力开关"
 }
@@ -297,6 +305,15 @@ $script:busy = $false
 Remove-Model 1
 if ($script:channels[0].models.Count -ne 1 -or $script:channels[0].models[0].id -ne "keep") {
   throw "删除模型后没有从当前渠道草稿中移除目标模型"
+}
+$remainingModels = Get-ActiveModels
+if ($remainingModels -isnot [array] -or $remainingModels.Count -ne 1 -or $remainingModels[0].id -ne "keep") {
+  throw "删除到只剩一个模型后没有保留模型数组边界"
+}
+Remove-Model 0
+$remainingModels = Get-ActiveModels
+if ($remainingModels -isnot [array] -or $remainingModels.Count -ne 0) {
+  throw "删除最后一个模型后没有清空当前渠道的模型数组"
 }
 if ($script:lastFeedbackText -ne "有未保存的更改") {
   throw "删除模型后没有提示保存"
