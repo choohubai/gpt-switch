@@ -14,7 +14,7 @@ import {
 import {
   loadChannelState, handlePanelRequest, applyChannelToCodex, restoreCodexConfig,
   modelProviderFromToml, modelFromToml, channelDefaultModel, recordedProxyAddress,
-  repointProxyUrl,
+  repointProxyUrl, recordedProviderId,
   readProxySettings, writeProxySettings,
 } from "./channel-config.mjs";
 import {
@@ -22,6 +22,7 @@ import {
   pickerChannelNamesFromState, DEFAULT_PROXY_PORT, DEFAULT_PROXY_HOST, MODEL_PREFIX,
 } from "./proxy.mjs";
 import { isLoopbackHost, outboundProxyFrom, requestText } from "./outbound.mjs";
+import { migrateThreadProviders, restoreThreadProviders } from "./thread-migration.mjs";
 import {
   appearanceNativeMode, appearancePanelState, appearanceRuntimeTheme,
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
@@ -1007,13 +1008,16 @@ const waitForTargets = async (port, timeoutMs = 30_000) => {
   throw new Error("Timed out waiting for the Codex renderer");
 };
 
-const CODEX_HOME = path.join(HOME, ".codex");
+const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(HOME, ".codex"));
 const USER_CONFIG = path.join(CODEX_HOME, "config.toml");
 const AUTH_PATH = path.join(CODEX_HOME, "auth.json");
 const DEFAULT_CATALOG_PATH = path.join(CODEX_HOME, "model_catalog.json");
-const CATALOG_RECORD = path.join(SUPPORT_DIR, "catalog.json");
+const CATALOG_RECORD = CODEX_HOME === path.join(HOME, ".codex")
+  ? path.join(SUPPORT_DIR, "catalog.json") : path.join(CODEX_HOME, "gptswitch-catalog.json");
 const CHANNELS_CONFIG = path.join(HOME, ".gptswitch", "channels.json");
-const CODEX_RECORD = path.join(HOME, ".gptswitch", "codex.json");
+const CODEX_RECORD = CODEX_HOME === path.join(HOME, ".codex")
+  ? path.join(HOME, ".gptswitch", "codex.json") : path.join(CODEX_HOME, "gptswitch-codex.json");
+const THREAD_PROVIDER_BACKUP = path.join(CODEX_HOME, "gptswitch-thread-providers");
 const PROXY_CONFIG = path.join(HOME, ".gptswitch", "proxy.json");
 const AGENTS_STATE = path.join(HOME, ".gptswitch", "agents.json");
 const APPEARANCE_CONFIG = path.join(HOME, ".gptswitch", "appearance.json");
@@ -1154,6 +1158,19 @@ const clearCatalog = (appPath) => {
 const appMissing = () => new Error(IS_WINDOWS
   ? "未找到 ChatGPT/Codex 客户端，请先安装桌面端"
   : "未找到 ChatGPT.app 或 Codex.app");
+
+/// 历史迁移要求所有 Codex 写入进程退出，避免替换仍在追加内容的聊天文件。
+const assertCodexIdle = () => {
+  const result = IS_WINDOWS
+    ? spawnSync("tasklist.exe", ["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"],
+      { encoding: "utf8", windowsHide: true, timeout: 10_000 })
+    : spawnSync("/bin/ps", ["-axo", "comm="], { encoding: "utf8", timeout: 10_000 });
+  if (result.status !== 0) throw new Error("无法确认 Codex 已退出，已停止历史聊天迁移");
+  const running = IS_WINDOWS
+    ? /^"codex\.exe",/im.test(result.stdout)
+    : result.stdout.split("\n").some((line) => /(?:^|\/)codex$/i.test(line.trim()));
+  if (running) throw new Error("迁移历史聊天前请先退出所有 Codex CLI 和桌面客户端，再点击重启");
+};
 
 const main = async () => {
   if (typeof WebSocket !== "function") {
@@ -1609,16 +1626,19 @@ const main = async () => {
     return run;
   };
 
-  const restart = async (existingPort = 0) => {
+  /// 冷启动按真实执行顺序上报阶段；热刷新沿用连接，不显示重启进度。
+  const restart = async (existingPort = 0, onProgress = () => {}) => {
     let target = appPath;
     if (!existingPort) {
+      onProgress("正在检查客户端…");
       // Windows 商店更新会更换安装路径；先重新定位，才能退出真正运行的客户端。
       target = clientPath(IS_WINDOWS);
       if (!target) throw appMissing();
       // 先确认还能把客户端拉起来；商店版别名不可用时直接报错，别先退出客户端。
       assertLaunchable(target);
-      if (appIsRunning(target, true) && !await quitApp(target)) {
-        throw new Error("ChatGPT 未能正常退出；请稍后重试");
+      if (appIsRunning(target, true)) {
+        onProgress("正在退出 ChatGPT…");
+        if (!await quitApp(target)) throw new Error("ChatGPT 未能正常退出；请稍后重试");
       }
     }
     injectionGeneration += 1;
@@ -1630,6 +1650,20 @@ const main = async () => {
     // 选择器里要出现的是全部启用渠道的模型（见 pickerModels）；没有当前渠道说明刚「还原」，
     // 那就一个都别注入。面板送回的那份模型列表只用来落盘，不决定注入内容。
     const state = visiblePickerState();
+    if (!existingPort) {
+      const migration = { codexHome: CODEX_HOME, backupDir: THREAD_PROVIDER_BACKUP, assertIdle: assertCodexIdle };
+      if (state.current) {
+        onProgress("正在检查并迁移历史聊天…");
+        const providerId = recordedProviderId(CODEX_RECORD);
+        if (!providerId) throw new Error("缺少 GPT Switch 提供商身份，已停止历史聊天迁移");
+        const result = await migrateThreadProviders({ ...migration, providerId });
+        if (result.files || result.threads) log("thread_providers_migrated", result);
+      } else {
+        onProgress("正在还原历史聊天身份…");
+        const text = fs.existsSync(USER_CONFIG) ? fs.readFileSync(USER_CONFIG, "utf8") : "";
+        await restoreThreadProviders({ ...migration, fallbackProviderId: modelProviderFromToml(text) || "openai" });
+      }
+    }
     models = state.current ? pickerModelsFromState(state) : [];
     const appearanceState = readAppearanceState(APPEARANCE_CONFIG);
     const appearance = appearanceRuntimeTheme(appearanceState, APPEARANCE_RESOURCE_DIR);
@@ -1640,7 +1674,11 @@ const main = async () => {
       appearance,
     );
     const nextPort = existingPort || await getFreePort();
-    if (!existingPort) await launchApp(target, nextPort);
+    if (!existingPort) {
+      onProgress("正在启动 ChatGPT…");
+      await launchApp(target, nextPort);
+      onProgress("正在等待 ChatGPT 就绪…");
+    }
     const eventRevision = targetEventRevision;
     // 现有端口只是热刷新，页面短暂重载时最多等 2 秒；冷启动才允许等渲染进程完整起来。
     const targets = await waitForTargets(nextPort, existingPort ? 2000 : 30_000);
@@ -1650,6 +1688,7 @@ const main = async () => {
     browserWatch = new BrowserWatch(nextPort, markTargetsDirty);
     // 连不上不影响功能：没有事件就退回轮询。
     browserWatch.connect().catch((error) => log("browser_watch_failed", String(error?.message || error)));
+    if (!existingPort) onProgress("正在初始化模型选择器…");
     await injectTargets(targets, existingPort ? {} : {
       nativeAppearanceTheme: appearanceState.followNative ? null : appearanceState.theme,
     });
@@ -1762,7 +1801,8 @@ const main = async () => {
       return;
     }
     const provider = modelProviderFromToml(text);
-    if (provider !== active.id) log("codex_config_mismatch", { expected: active.id, found: provider });
+    const expectedProvider = recordedProviderId(CODEX_RECORD);
+    if (provider !== expectedProvider) log("codex_config_mismatch", { expected: expectedProvider, found: provider });
     // 和 applyCodex 用同一份「认识的模型」：用户选的是别的渠道的模型（gpts- 前缀）时不该当成被盖回去。
     const expectedModel = channelDefaultModel(text, active, pickerModels().map((model) => model.id));
     if (expectedModel) {
@@ -1770,7 +1810,7 @@ const main = async () => {
     }
   };
 
-  const dispatchRequest = async (request) => {
+  const dispatchRequest = async (request, onProgress = () => {}) => {
     let restartedProxy = null;
     if (request?.action === "quit") {
       // Windows 托盘菜单的“退出”走这里；macOS 面板是直接结束父进程。
@@ -1836,6 +1876,7 @@ const main = async () => {
         }
       },
       restart: async () => {
+        onProgress("正在启动本地代理…");
         // 配置里的目标地址若被其他进程占用，startProxy 会顺延；候选服务必须先启动再切客户端。
         const settings = readProxySettings(PROXY_CONFIG);
         const switched = await switchProxyAndRestart({
@@ -1843,7 +1884,7 @@ const main = async () => {
           currentServer: proxyServer,
           currentHost: proxyHost,
           currentPort: proxyPort,
-          restartClient: () => restart(),
+          restartClient: () => restart(0, onProgress),
           // 渠道写入在 restart 之前执行，这里用候选地址覆盖刚写进去的旧地址。
           updateCodex: async (baseUrl) => {
             const state = loadChannelState(CHANNELS_CONFIG, channelImportOptions());
@@ -1871,6 +1912,7 @@ const main = async () => {
       }),
       applyCatalog: applySavedCatalog,
       clearCatalog: () => clearCatalog(clientPath()),
+      onProgress,
     });
     if (request?.action === "load" && answer?.ok) {
       answer.nativeAppearance = nativeAppearanceUnsupported ? "unsupported" : "supported";
@@ -1908,7 +1950,9 @@ const main = async () => {
   while (true) {
     const pending = requests.shift();
     if (pending) {
-      const result = await dispatchRequest(pending.request);
+      const result = await dispatchRequest(pending.request, (message) => {
+        pending.reply({ event: "restart-progress", message });
+      });
       if (!result.ok) log("panel_action_failed", result.error);
       pending.reply(result);
     }

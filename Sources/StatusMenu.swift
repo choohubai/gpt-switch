@@ -630,12 +630,12 @@ final class PanelStore: ObservableObject {
         loaded && !busy && proxyDirty
     }
 
-    /// 面板不为「正在启用/正在重启」这类过程刷提示：浮层留给报错和操作结果。
+    /// 发起操作并立即显示重启等待状态，后续阶段由后端事件更新。
     private func submit(action: String, currentID: String) {
         guard loaded, !busy else { return }
         busy = true
         restarting = action == "switch"
-        feedback = ""
+        feedback = restarting ? "正在准备重启 ChatGPT…" : ""
         feedbackIsError = false
         send([
             "action": action,
@@ -645,11 +645,12 @@ final class PanelStore: ObservableObject {
         ])
     }
 
+    /// 发起配置还原，保留重启状态直到最终结果到达。
     func clearAndRestart() {
         guard loaded, !busy else { return }
         busy = true
         restarting = true
-        feedback = ""
+        feedback = "正在准备还原配置…"
         feedbackIsError = false
         send(["action": "clear"])
     }
@@ -696,7 +697,15 @@ final class PanelStore: ObservableObject {
 
     // MARK: 响应
 
+    /// 分别处理阶段事件和最终结果；阶段更新不能解除在途操作状态。
     func apply(_ response: [String: Any]) {
+        if response["event"] as? String == "restart-progress" {
+            if restarting, let message = response["message"] as? String, !message.isEmpty {
+                feedback = message
+                feedbackIsError = false
+            }
+            return
+        }
         let wasLoaded = loaded
         if let value = response["version"] as? String, !value.isEmpty, value != version {
             version = value

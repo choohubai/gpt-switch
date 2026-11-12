@@ -223,7 +223,7 @@ function Update-ChannelList { }
 function Hide-ModelPicker { }
 $script:lastFeedbackText = ""
 $script:lastFeedbackError = $false
-function Set-Feedback([string]$Text, [bool]$IsError = $false) {
+function Set-Feedback([string]$Text, [bool]$IsError = $false, [string]$Kind = "") {
   $script:lastFeedbackText = $Text
   $script:lastFeedbackError = $IsError
 }
@@ -238,6 +238,15 @@ $appearancePage = [pscustomobject]@{ Visibility = "Visible" }
 
 $script:checkingUpdate = $false
 $script:fetchingModels = $false
+$script:restarting = $true
+$script:busy = $true
+Receive-Response @{ event = "restart-progress"; message = "正在迁移历史聊天…" }
+if (-not $script:busy -or -not $script:restarting) { throw "阶段事件提前解除了重启状态" }
+if ($script:lastFeedbackText -ne "正在迁移历史聊天…") { throw "阶段提示没有显示" }
+$script:restarting = $false
+Receive-Response @{ event = "restart-progress"; message = "过期阶段" }
+if ($script:lastFeedbackText -ne "正在迁移历史聊天…") { throw "过期阶段覆盖了最终状态" }
+$script:busy = $false
 $script:savingProxy = $false
 $script:savingAppearance = $false
 $script:cleared = $false

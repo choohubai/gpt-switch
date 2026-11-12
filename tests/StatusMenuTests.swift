@@ -727,9 +727,15 @@ struct StatusMenuTests {
         store.requestRestart()
         store.confirmRestart()
         assert(store.restarting, "重启请求发出后按钮要进「重启中」")
+        assert(!store.feedback.isEmpty && store.busy, "重启一开始就应显示持续的阶段提示")
+        store.apply(["event": "restart-progress", "message": "正在迁移历史聊天…"])
+        assert(store.restarting && store.busy, "阶段事件不能提前结束重启或解除按钮禁用")
+        assert(store.feedback == "正在迁移历史聊天…" && !store.feedbackIsError)
         store.apply(["ok": false, "error": "客户端没能正常退出"])
         assert(!store.restarting && !store.busy, "重启失败要把按钮放回来")
         assert(store.feedback == "客户端没能正常退出" && store.feedbackIsError)
+        store.apply(["event": "restart-progress", "message": "过期阶段"])
+        assert(store.feedback == "客户端没能正常退出", "过期事件不能覆盖最终错误")
 
         // 提示的含义是「文件里的配置和客户端里的不一样」：改回原值就该自己消失。
         let baseline: [[String: Any]] = [

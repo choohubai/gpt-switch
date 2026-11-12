@@ -265,7 +265,7 @@ test("switching writes auth.json and config.toml, clearing puts both back", (con
   assert.equal(auth.OPENAI_API_KEY, "sk-relay");
   assert.deepEqual(auth.tokens, { id: "keep-me" });
   const written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^model_provider = "relay"$/m);
+  assert.match(written, /^model_provider = "OpenAI"$/m);
   assert.match(written, /\[model_providers\.relay\]/);
   if (process.platform !== "win32") {
     assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
@@ -277,7 +277,7 @@ test("switching writes auth.json and config.toml, clearing puts both back", (con
   });
   assert.equal(JSON.parse(fs.readFileSync(authPath, "utf8")).OPENAI_API_KEY, "sk-relay");
   const switched = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(switched, /^model_provider = "second"$/m);
+  assert.match(switched, /^model_provider = "OpenAI"$/m);
   assert.equal(readProviderTable(switched, "relay").base_url, "https://b.example/v1",
     "换 id 后旧的段改成新渠道，别删：回话绑着它");
   assert.equal(readProviderTable(switched, "OpenAI").base_url, "https://b.example/v1",
@@ -300,7 +300,7 @@ test("switching points every provider id a thread may have pinned at the active 
     channelIds, authPath, userConfigPath, recordPath,
   });
   let written = fs.readFileSync(userConfigPath, "utf8");
-  assert.match(written, /^model_provider = "feiyu"$/m);
+  assert.match(written, /^model_provider = "OpenAI"$/m);
   for (const id of channelIds) {
     assert.equal(readProviderTable(written, id).base_url, "https://www.feiyutoken.com/v1", `${id} 要指到当前渠道`);
   }
@@ -314,6 +314,117 @@ test("switching points every provider id a thread may have pinned at the active 
   }
   restoreCodexConfig({ authPath, userConfigPath, recordPath });
   assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG, "还原只留用户原来那张表");
+});
+
+test("switching and renaming channels keep the existing custom provider identity", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, CONFIG);
+  const apply = (id) => applyChannelToCodex({
+    channel: channel({ id }), authPath, userConfigPath, recordPath,
+    proxyUrl: "http://127.0.0.1:47123/v1",
+  });
+  for (const id of ["relay", "second", "renamed"]) {
+    apply(id);
+    const written = fs.readFileSync(userConfigPath, "utf8");
+    assert.equal(modelProviderFromToml(written), "OpenAI",
+      "客户端按 ID 校验旧聊天，渠道切换不能改变提供商身份");
+    assert.equal(readProviderTable(written, "OpenAI").base_url, "http://127.0.0.1:47123/v1");
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+    assert.equal(record.providerId, "OpenAI");
+    assert.equal(record.appliedId, id, "当前渠道与稳定的提供商身份分别记录");
+  }
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), CONFIG);
+});
+
+test("upgrading an old apply record pins its last provider before the next channel switch", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, 'model_provider = "legacy"\n[model_providers.legacy]\nbase_url = "http://127.0.0.1:47123/v1"\n');
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, JSON.stringify({
+    appliedId: "legacy", modelProvider: { existed: true, value: "OpenAI" },
+    tablesAdded: ["legacy"],
+  }));
+  for (const id of ["second", "third"]) {
+    applyChannelToCodex({
+      channel: channel({ id }), authPath, userConfigPath, recordPath,
+      proxyUrl: "http://127.0.0.1:47124/v1",
+    });
+    assert.equal(modelProviderFromToml(fs.readFileSync(userConfigPath, "utf8")), "legacy",
+      "升级不能再把当前可用聊天的提供商身份换掉");
+  }
+});
+
+test("a new configuration pins its first channel without overriding a built-in provider", (context) => {
+  const { userConfigPath, authPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, 'model_provider = "openai"\n');
+  for (const id of ["relay", "renamed"]) {
+    applyChannelToCodex({
+      channel: channel({ id }), authPath, userConfigPath, recordPath,
+      proxyUrl: "http://127.0.0.1:47123/v1",
+    });
+    const written = fs.readFileSync(userConfigPath, "utf8");
+    assert.equal(modelProviderFromToml(written), "relay");
+    assert.equal(readProviderTable(written, "openai"), null,
+      "内置提供商不能被自定义表覆盖");
+  }
+  restoreCodexConfig({ authPath, userConfigPath, recordPath });
+  assert.equal(fs.readFileSync(userConfigPath, "utf8"), 'model_provider = "openai"\n');
+});
+
+test("a backup owned by another config cannot overwrite its provider or credentials", (context) => {
+  const first = sandbox(context);
+  const second = sandbox(context);
+  fs.writeFileSync(first.userConfigPath, CONFIG);
+  fs.writeFileSync(second.userConfigPath, 'model_provider = "independent"\n');
+  fs.writeFileSync(second.authPath, '{"OPENAI_API_KEY":"independent-secret"}\n');
+  applyChannelToCodex({ channel: channel(), ...first });
+  assert.throws(() => applyChannelToCodex({
+    channel: channel(), ...second, recordPath: first.recordPath,
+  }), /备份不属于当前 Codex/);
+  assert.throws(() => restoreCodexConfig({ ...second, recordPath: first.recordPath }), /备份不属于当前 Codex/);
+  assert.equal(fs.readFileSync(second.userConfigPath, "utf8"), 'model_provider = "independent"\n');
+  assert.equal(fs.readFileSync(second.authPath, "utf8"), '{"OPENAI_API_KEY":"independent-secret"}\n');
+});
+
+test("a channel named after a built-in provider still uses an independent stable identity", (context) => {
+  const files = sandbox(context);
+  fs.writeFileSync(files.userConfigPath, 'model_provider = "openai"\n');
+  applyChannelToCodex({ channel: channel({ id: "openai" }), ...files, proxyUrl: "http://127.0.0.1:47123/v1" });
+  const text = fs.readFileSync(files.userConfigPath, "utf8");
+  const id = modelProviderFromToml(text);
+  assert.notEqual(id, "openai");
+  assert.equal(readProviderTable(text, id).base_url, "http://127.0.0.1:47123/v1");
+  assert.equal(readProviderTable(text, "openai"), null);
+  restoreCodexConfig(files);
+  assert.equal(fs.readFileSync(files.userConfigPath, "utf8"), 'model_provider = "openai"\n');
+});
+
+test("injector backups follow each Codex home and independently restore its credentials", (context) => {
+  const { directory } = sandbox(context);
+  const source = fs.readFileSync(new URL("../Sources/injector.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("const CODEX_HOME =");
+  const end = source.indexOf("const THREAD_PROVIDER_BACKUP =", start);
+  assert.ok(start >= 0 && end > start);
+  const pathsFor = new Function("path", "HOME", "SUPPORT_DIR", "process", `
+    ${source.slice(start, end)}
+    return { userConfigPath: USER_CONFIG, authPath: AUTH_PATH, recordPath: CODEX_RECORD, catalogRecord: CATALOG_RECORD };
+  `);
+  const profiles = ["", path.join(directory, "other-codex")].map((codexHome) =>
+    pathsFor(path, directory, path.join(directory, "support"), { env: { CODEX_HOME: codexHome } }));
+  assert.notEqual(profiles[0].recordPath, profiles[1].recordPath);
+  assert.notEqual(profiles[0].catalogRecord, profiles[1].catalogRecord);
+  for (const [index, files] of profiles.entries()) {
+    fs.mkdirSync(path.dirname(files.userConfigPath), { recursive: true });
+    fs.writeFileSync(files.userConfigPath, `model_provider = "original${index}"\n`);
+    fs.writeFileSync(files.authPath, `{"OPENAI_API_KEY":"original-${index}"}\n`);
+    applyChannelToCodex({ channel: channel(), ...files });
+  }
+  for (const [index, files] of profiles.entries()) {
+    restoreCodexConfig(files);
+    assert.equal(fs.readFileSync(files.userConfigPath, "utf8"), `model_provider = "original${index}"\n`);
+    assert.equal(fs.readFileSync(files.authPath, "utf8"), `{"OPENAI_API_KEY":"original-${index}"}\n`);
+  }
 });
 
 test("switching over a provider table the user already had puts it back on clear", (context) => {
@@ -455,6 +566,25 @@ const panelOptions = (paths, over = {}) => {
   };
   return { options, calls };
 };
+
+test("restart progress precedes the real configuration and catalog operations", async (context) => {
+  const paths = sandbox(context);
+  const events = [];
+  const { options } = panelOptions(paths, {
+    onProgress: (message) => events.push(["progress", message]),
+    applyCodex: () => events.push(["config"]),
+    applyCatalog: () => events.push(["catalog"]),
+    restart: () => events.push(["restart"]),
+  });
+  const response = await handlePanelRequest({
+    action: "switch", restart: true, channels: [channel()], current: "relay",
+  }, options);
+  assert.equal(response.ok, true);
+  assert.deepEqual(events, [
+    ["progress", "正在更新渠道配置…"], ["config"],
+    ["progress", "正在生成模型目录…"], ["catalog"], ["restart"],
+  ]);
+});
 
 test("panel save stores channels and switch applies the active one", async (context) => {
   const paths = sandbox(context);
@@ -904,6 +1034,17 @@ test("recorded proxy address imports both host and port from our provider", (con
   fs.writeFileSync(recordPath, JSON.stringify({ appliedId: "relay" }));
   assert.deepEqual(recordedProxyAddress({ userConfigPath, recordPath }),
     { host: "192.168.1.20", port: 47123 });
+});
+
+test("proxy port changes follow the stable provider after its channel is removed", (context) => {
+  const { userConfigPath, recordPath } = sandbox(context);
+  fs.writeFileSync(userConfigPath, 'model_provider = "stable"\n[model_providers.stable]\nbase_url = "http://127.0.0.1:47123/v1"\n');
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(recordPath, JSON.stringify({ providerId: "stable", appliedId: "removed" }));
+  assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 47123);
+  assert.deepEqual(recordedProxyAddress({ userConfigPath, recordPath }), { host: "127.0.0.1", port: 47123 });
+  assert.equal(repointProxyUrl({ userConfigPath, recordPath, baseUrl: "http://127.0.0.1:47124/v1" }), true);
+  assert.equal(recordedProxyPort({ userConfigPath, recordPath }), 47124);
 });
 
 test("repointProxyUrl moves only base_url when the forward port changed", (context) => {

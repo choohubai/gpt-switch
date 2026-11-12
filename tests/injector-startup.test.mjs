@@ -1262,6 +1262,42 @@ test("商店版启动方式不可用时先报错，不退出正在运行的客�
   assert.deepEqual(stopped, [], "启动方式不可用时不允许先退出客户端");
 });
 
+test("restart reports its actual client and migration stages through initialization", async () => {
+  const start = injectorSource.indexOf("  const restart = async");
+  const end = injectorSource.indexOf("\n  const applyCodexForChannel", start);
+  const events = [];
+  const dependencies = {
+    IS_WINDOWS: false, CODEX_HOME: "/isolated", THREAD_PROVIDER_BACKUP: "/backups", CODEX_RECORD: "/record",
+    APPEARANCE_CONFIG: "/appearance", APPEARANCE_RESOURCE_DIR: "/resources", VERSION: "test",
+    clientPath: () => "/client", assertLaunchable() {}, appIsRunning: () => true,
+    quitApp: async () => { events.push("quit"); return true; },
+    visiblePickerState: () => ({ current: "relay" }), recordedProviderId: () => "stable",
+    assertCodexIdle() {},
+    migrateThreadProviders: async () => { events.push("migrate"); return { files: 0, threads: 0 }; },
+    pickerModelsFromState: () => [], readAppearanceState: () => ({}), appearanceRuntimeTheme: () => null,
+    pickerGroupNameFromState: () => "", pickerChannelNamesFromState: () => ({}), buildInjectionSource: () => "",
+    getFreePort: async () => 12345,
+    launchApp: async () => { events.push("launch"); },
+    waitForTargets: async () => { events.push("wait"); return []; },
+    BrowserWatch: class { async connect() {} }, markTargetsDirty() {},
+    injectTargets: async () => { events.push("initialize"); }, log() {}, writeState() {},
+  };
+  const restart = new Function(...Object.keys(dependencies), `
+    let appPath = "/client", injectionGeneration = 0, port = 0, appMissingSince, clientConnectionLostSince;
+    let models, source, browserWatch, targetsDirty, lastTargetPoll, nextClientRestartAt, clientRestartBackoffMs;
+    const sessions = new Map(), targetEventRevision = 0;
+    ${injectorSource.slice(start, end)}
+    return restart;
+  `)(...Object.values(dependencies));
+  await restart(0, (message) => events.push(message));
+  assert.deepEqual(events, [
+    "正在检查客户端…", "正在退出 ChatGPT…", "quit",
+    "正在检查并迁移历史聊天…", "migrate",
+    "正在启动 ChatGPT…", "launch", "正在等待 ChatGPT 就绪…", "wait",
+    "正在初始化模型选择器…", "initialize",
+  ]);
+});
+
 test("Windows helper 启动失败或非零退出时保留真实错误", () => {
   const start = injectorSource.indexOf("const runWindowsLauncher =");
   const end = injectorSource.indexOf("/// Windows 没有 osascript", start);

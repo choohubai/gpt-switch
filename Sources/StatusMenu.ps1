@@ -45,6 +45,7 @@ $script:channelIndex = -1
 $script:currentChannelId = ""
 $script:loaded = $false
 $script:busy = $false
+$script:restarting = $false
 $script:rendering = $false
 $script:currentVersion = ""
 $script:latestVersion = $null
@@ -1813,6 +1814,9 @@ function Update-Controls {
   $proxyRestartButton.IsEnabled = $restartButton.IsEnabled
   $agentsRestartButton.IsEnabled = $restartButton.IsEnabled
   $appearanceRestartButton.IsEnabled = $restartButton.IsEnabled
+  foreach ($button in @($restartButton, $proxyRestartButton, $agentsRestartButton, $appearanceRestartButton)) {
+    $button.Content = if ($script:restarting) { "重启中" } else { "重启 ChatGPT" }
+  }
   $dirty = Compare-Channels $script:channels $script:savedChannels
   # 「保存」只写渠道文件；把改动写进 ChatGPT 是右上角那个「重启」的事，按钮文案不再跟着变。
   $saveButton.Content = "保存"
@@ -2382,7 +2386,12 @@ function Update-ChannelField([string]$Field, [string]$Value) {
   Update-Controls
 }
 
+# 阶段事件只更新反馈，最终回包才结束在途重启。
 function Receive-Response($Response) {
+  if ($Response.event -eq "restart-progress") {
+    if ($script:restarting -and $Response.message) { Set-Feedback ([string]$Response.message) -Kind Pending }
+    return
+  }
   $wasLoaded = $script:loaded
   $proxyDirtyBeforeResponse = Test-ProxyDirty
   if ($Response.version -and $Response.version -ne $script:currentVersion) {
@@ -2483,6 +2492,7 @@ function Receive-Response($Response) {
     return
   }
   $script:busy = $false
+  $script:restarting = $false
   $ok = $Response.ok -eq $true
   $cleared = $Response.cleared -eq $true
   $pendingImmediate = $script:pendingDeleteRestore
@@ -2601,11 +2611,13 @@ function Finish-UpdateCheck($Response) {
   $updateButton.IsEnabled = $true
 }
 
+# 提交现有面板操作，重启状态由阶段事件持续更新。
 function Submit([string]$Action, [string]$Note = "", [string]$Current = "") {
   if (-not $script:loaded -or $script:busy) { return }
   $channel = Get-ActiveChannel
   # 保存整份列表不需要当前渠道（删掉最后一个之后也要能存）；「重启」也一样，后台自己挑渠道。
   $script:busy = $true
+  $script:restarting = $Action -eq "switch"
   Set-Feedback $(if ($Note) { $Note } elseif ($Action -eq "switch") { "正在重启 ChatGPT…" } else { "正在保存…" })
   Rebuild-Rows
   Update-Controls
@@ -2794,6 +2806,7 @@ $clearButton.Add_Click({
     -Message "会还原插件写进 ChatGPT 的渠道配置、清掉模型目录并重启客户端；面板里保存的渠道列表保留。" `
     -ConfirmText "还原并重启" -Danger $true -Action {
       $script:busy = $true
+      $script:restarting = $true
       Set-Feedback "正在清空并重启 ChatGPT…"
       Rebuild-Rows
       Update-Controls

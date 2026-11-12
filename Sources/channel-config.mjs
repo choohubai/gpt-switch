@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import {
   atomicWrite, MAX_LABEL_LENGTH, validateModels,
 } from "./model-config.mjs";
@@ -17,6 +18,7 @@ const MAX_URL_LENGTH = 300;
 const MAX_KEY_LENGTH = 400;
 const MAX_HEADER_VALUE = 500;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+const BUILTIN_PROVIDER_IDS = new Set(["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime", "gcp"]);
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const TABLE_START = /^[ \t]*\[/m;
 const MODEL_PROVIDER_LINE = /^[ \t]*model_provider[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\r?\n?/m;
@@ -338,7 +340,7 @@ const localProxyPortOf = (baseUrl) => {
 /// （Ollama 的 11434、LM Studio 的 1234），按全文取第一处 `127.0.0.1` 会认成我们的端口：
 /// 要么客户端继续指着旧端口、要么转发服务把别人要用的端口占了。
 export const recordedProxyPort = ({ userConfigPath, recordPath }) => {
-  const id = readRecord(recordPath)?.appliedId;
+  const id = recordedProviderId(recordPath);
   if (typeof id !== "string" || !ID_PATTERN.test(id)) return 0;
   try {
     return localProxyPortOf(readProviderTable(fs.readFileSync(userConfigPath, "utf8"), id)?.base_url);
@@ -349,7 +351,7 @@ export const recordedProxyPort = ({ userConfigPath, recordPath }) => {
 
 /// 上次写进 Codex 的本地转发地址。IPv4 代理页允许用户改监听地址，这里要和端口一起还原。
 export const recordedProxyAddress = ({ userConfigPath, recordPath }) => {
-  const id = readRecord(recordPath)?.appliedId;
+  const id = recordedProviderId(recordPath);
   if (typeof id !== "string" || !ID_PATTERN.test(id)) return null;
   try {
     const value = readProviderTable(fs.readFileSync(userConfigPath, "utf8"), id)?.base_url;
@@ -397,24 +399,34 @@ const readAuthKey = (authPath) => {
   }
 };
 
-const readRecord = (recordPath) => {
+/// 读取配置备份，并在写入或还原时校验其所属配置，防止跨数据目录覆盖凭据。
+const readRecord = (recordPath, userConfigPath = null) => {
+  let record;
   try {
-    const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
-    return record && typeof record === "object" && !Array.isArray(record) ? record : null;
+    record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
   } catch {
     return null;
   }
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  if (userConfigPath && record.userConfigPath && record.userConfigPath !== path.resolve(userConfigPath)) {
+    throw new Error("备份不属于当前 Codex 数据目录，已停止修改配置");
+  }
+  return record;
 };
 
-/// 每个回话会把创建时的 provider ID 记在自己身上，重开时只按这个 ID 去 config.toml 找表，
-/// 不会回落到当前渠道。所以每次切换都要把当前渠道写进所有出现过的 ID（渠道列表 + 历史写入记录），
-/// 否则旧回话要么继续指着旧地址（地址与全局密钥错配），要么因为表被删掉而打不开。
+/// 读取本机代理的稳定提供商身份；旧记录仍使用当时写入的渠道 ID。
+export const recordedProviderId = (recordPath) => {
+  const record = readRecord(recordPath);
+  return record?.providerId ?? record?.appliedId ?? null;
+};
+
+/// 更新我们接管过的自定义提供商地址，保留旧别名供配置还原和历史记录识别。
 const providerIdsToRepoint = ({ channel, channelIds, record }) => {
-  const candidates = [channel.id, ...channelIds, record.appliedId, record.modelProvider?.value,
+  const candidates = [record.providerId, channel.id, ...channelIds, record.appliedId, record.modelProvider?.value,
     ...(record.tablesAdded ?? []), ...Object.keys(record.tablesOriginal ?? {})];
   const ids = [];
   for (const id of candidates) {
-    if (typeof id !== "string" || !ID_PATTERN.test(id) || ids.includes(id)) continue;
+    if (typeof id !== "string" || !ID_PATTERN.test(id) || BUILTIN_PROVIDER_IDS.has(id) || ids.includes(id)) continue;
     ids.push(id);
   }
   return ids;
@@ -444,12 +456,13 @@ export const repointProxyUrl = ({ userConfigPath, recordPath, baseUrl }) => {
   return changed;
 };
 
-/// 切换渠道：密钥进 auth.json，地址和 provider 段进 config.toml，原值记下来供还原。
+/// 切换渠道时保留提供商身份，避免客户端拒绝恢复旧聊天；渠道与还原信息分别记入备份。
 export const applyChannelToCodex = ({
   channel, channelIds = [], authPath, userConfigPath, recordPath, proxyUrl = "", knownModels = null,
 }) => {
   if (!channel.baseUrl) throw new Error(`渠道「${channel.name}」还没填地址`);
-  const record = readRecord(recordPath) ?? { auth: null, modelProvider: null, tablesAdded: [] };
+  const record = readRecord(recordPath, userConfigPath) ?? { auth: null, modelProvider: null, tablesAdded: [] };
+  record.userConfigPath = path.resolve(userConfigPath);
   if (!Array.isArray(record.tablesAdded)) record.tablesAdded = [];
   if (!record.tablesOriginal || typeof record.tablesOriginal !== "object") record.tablesOriginal = {};
 
@@ -464,6 +477,8 @@ export const applyChannelToCodex = ({
       value: modelProviderFromToml(text),
     };
   }
+  record.providerId ??= [record.appliedId, modelProviderFromToml(text), channel.id]
+    .find((id) => typeof id === "string" && ID_PATTERN.test(id) && !BUILTIN_PROVIDER_IDS.has(id)) || "gptswitch";
   if (!record.globalKeys || typeof record.globalKeys !== "object") record.globalKeys = {};
   const defaultModel = channelDefaultModel(text, channel, knownModels);
   const globalKeys = defaultModel
@@ -494,7 +509,8 @@ export const applyChannelToCodex = ({
         record.tablesAdded.push(id);
       }
     }
-    text = replaceProviderTable(text, id, buildProviderBlock(channel, id, proxyUrl || channel.baseUrl));
+    const providerChannel = proxyUrl && id === record.providerId ? { ...channel, name: "GPT Switch" } : channel;
+    text = replaceProviderTable(text, id, buildProviderBlock(providerChannel, id, proxyUrl || channel.baseUrl));
   }
   record.appliedId = channel.id;
   // 备份先落盘再动 auth.json 和 config.toml：中间崩掉也还留得住还原信息。
@@ -514,13 +530,13 @@ export const applyChannelToCodex = ({
     atomicWrite(authPath, `${JSON.stringify(data, null, 2)}\n`);
   }
 
-  atomicWrite(userConfigPath, setModelProvider(text, channel.id));
+  atomicWrite(userConfigPath, setModelProvider(text, record.providerId));
   return { id: channel.id, baseUrl: channel.baseUrl, keyWritten: Boolean(channel.apiKey) };
 };
 
 /// 清空：把 config.toml 和 auth.json 恢复到插件第一次写入之前的样子。
 export const restoreCodexConfig = ({ authPath, userConfigPath, recordPath }) => {
-  const record = readRecord(recordPath);
+  const record = readRecord(recordPath, userConfigPath);
   if (!record) return null;
   if (record.auth) {
     if (record.auth.existed) atomicWrite(authPath, record.auth.content);
@@ -598,7 +614,7 @@ const adoptRenamedCurrent = (state, options = {}) => {
   } catch {
     return null;
   }
-  if (modelProviderFromToml(text) !== applied) return null;
+  if (modelProviderFromToml(text) !== (record.providerId ?? applied)) return null;
   if (state.channels.some((channel) => channel.id === applied)) return applied;
   const baseUrl = readProviderTable(text, applied)?.base_url;
   const matches = typeof baseUrl === "string" && baseUrl.trim()
@@ -731,10 +747,12 @@ export const discoverChannelModels = async (request = {}, proxy = null) => {
 };
 
 /// 面板协议：load 返回可编辑草稿；保存时只把插件标记段写入用户的 Codex 配置。
+/// 执行面板操作；重启相关的阶段在实际配置写入前上报，最终结果仍只返回一次。
 export const handlePanelRequest = async (request, {
   configPath, proxyConfigPath, codexHome, agentsStatePath, importOptions,
   applyCodex, restoreCodex, applyCatalog, clearCatalog, restart, codexClientVersion,
   proxyTestUrl = PROXY_TEST_URL,
+  onProgress = () => {},
 }) => {
   let savedState = null;
   let cleared = false;
@@ -822,6 +840,7 @@ export const handlePanelRequest = async (request, {
       }
     }
     if (request?.action === "clear") {
+      onProgress("正在还原原有配置…");
       if (restoreCodex) {
         await restoreCodex();
         restored = true;
@@ -879,8 +898,14 @@ export const handlePanelRequest = async (request, {
     const proxy = request.action === "switch" && proxyConfigPath
       ? validateProxySettings(readProxySettings(proxyConfigPath))
       : null;
-    if (active && applyCodex) await applyCodex(active, savedState.channels.map((item) => item.id));
-    if (active && applyCatalog) await applyCatalog(active.models);
+    if (active && applyCodex) {
+      onProgress("正在更新渠道配置…");
+      await applyCodex(active, savedState.channels.map((item) => item.id));
+    }
+    if (active && applyCatalog) {
+      onProgress("正在生成模型目录…");
+      await applyCatalog(active.models);
+    }
     if (request.restart && restart) await restart();
     return {
       ok: true, saved: true, restarted: request.restart,

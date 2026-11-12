@@ -25,7 +25,7 @@
 
 GPT Switch 是面向 ChatGPT / Codex 桌面应用的本地模型渠道管理工具。它把不同供应商的模型合进同一份 Codex 模型目录，并在原生选择器里按渠道分组；多个渠道可以同时启用，**不同会话可以分别使用不同渠道的模型**。选中的模型会自动通过所属渠道发送请求，不必为每个供应商反复修改客户端配置。
 
-它不会修改官方应用本体、`app.asar`、代码签名或历史会话。
+它不会修改官方应用本体、`app.asar` 或代码签名。首次应用稳定提供商身份时，会备份并统一全部本地历史聊天（含归档）的提供商标识，同时调整聊天索引；完整正文、附件引用和工具记录保持不变。
 
 ## 赞助商
 
@@ -84,13 +84,15 @@ GPT Switch 是面向 ChatGPT / Codex 桌面应用的本地模型渠道管理工�
 
 > 启用、禁用或删除已有渠道会立即更新模型选择器，不需要重启。新增渠道，或者修改地址、API Key、自定义请求头、模型列表等配置后，点一次「重启 ChatGPT」即可应用。
 
+> 重启时，面板会按实际执行阶段显示配置更新、模型目录生成、客户端退出、历史聊天迁移、客户端启动和模型选择器初始化等状态。等待期间保持“重启中”，失败时显示具体原因。
+
 > GPT Switch 会在后台持续监听 ChatGPT，进程检测不受重启重试间隔影响。即使启动时客户端没有运行，之后打开或手动重启时也会自动应用已保存的渠道配置并恢复注入。只有客户端已经运行、但插件无法成功重启它时，才会延长下一次重启尝试的间隔；客户端关闭时立即清零，重新出现后立即接管。
 
 ## 配置说明
 
 每个渠道包含：
 
-- **Provider ID：** 写入 Codex `config.toml` 的渠道标识，只能包含字母、数字、`-` 和 `_`。
+- **Provider ID：** 渠道标识，用于区分模型归属，只能包含字母、数字、`-` 和 `_`。Codex 使用的提供商 ID 会单独固定保存，切换或改名渠道不会再改变聊天绑定的提供商身份。
 - **地址：** 供应商的 API Base URL。
 - **API Key：** 当前渠道使用的密钥，面板中默认打码显示。
 - **自定义请求头：** 可选，用于兼容需要额外认证或路由头的网关。
@@ -109,7 +111,9 @@ GPT Switch 的请求转发服务默认监听本机 `127.0.0.1`，按模型 ID �
 - macOS：`~/.gptswitch/channels.json`
 - Windows：`%USERPROFILE%\.gptswitch\channels.json`
 
-点击「重启 ChatGPT」后，GPT Switch 会更新 `~/.codex/config.toml`、`~/.codex/auth.json` 和 Codex 模型目录。`config.toml` 与 `auth.json` 同时供 Codex CLI 和桌面端使用，因此重启会同时影响两边。
+点击「重启 ChatGPT」后，GPT Switch 默认更新 `~/.codex/config.toml`、`~/.codex/auth.json` 和 Codex 模型目录。`config.toml` 与 `auth.json` 同时供 Codex CLI 和桌面端使用，因此重启会同时影响两边。
+
+GPT Switch 会固定 Codex 的提供商 ID，模型仍由现有代理按渠道归属转发。旧版本留下的不同提供商 ID 会在客户端退出后统一迁移，覆盖活动及归档聊天，不区分原供应商。迁移前需退出所有 Codex CLI；无法确认进程已退出或迁移失败时会停止启动，保留备份并恢复未完成的写入。完整原文件、身份备份和操作计划保存在 Codex 数据目录的 `gptswitch-thread-providers/` 中；“还原配置”会恢复原有聊天的提供商身份，启用后新建的聊天会使用还原后的默认提供商，迁移后新增的消息保持不变。设置了 `CODEX_HOME` 时使用该数据目录，配置与模型目录备份也按目录独立保存；未设置时使用 `~/.codex`。迁移使用 Node.js 内置 SQLite，需要 Node.js 22.13 或更新版本。
 
 需要恢复原配置时，进入左侧“关于”，点击「还原配置」。GPT Switch 会撤销自己写入的 provider、密钥和模型目录，并重启客户端；面板中的渠道列表会保留，之后可以继续启用或删除。升级到新版本时，已有的 Codex provider、密钥和旧版模型列表会自动导入为第一个渠道。
 
@@ -131,6 +135,7 @@ GPT Switch 的请求转发服务默认监听本机 `127.0.0.1`，按模型 ID �
 | `Sources/WindowsLauncher.cs` | Windows 原生启动器，并在 `GPT Switch.exe` 进程内承载现有 WPF 面板 |
 | `Sources/model-config.mjs` | 模型校验、模型目录合并与读写 |
 | `Sources/channel-config.mjs` | 渠道存储、Codex 配置写入与还原、端点模型发现 |
+| `Sources/thread-migration.mjs` | 全量历史聊天提供商迁移、索引位置同步、完整原文件备份与身份还原 |
 | `Scripts/` | 构建、打包、测试和本地发布脚本 |
 | `.github/workflows/release.yml` | 打 tag 后构建并发布 macOS DMG 与 Windows 安装包 |
 
