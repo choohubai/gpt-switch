@@ -53,6 +53,9 @@ function Get-SourceFunctionText([string]$Name) {
 . ([scriptblock]::Create((Get-SourceFunctionText "Test-AgentsDirty")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Update-RestartHint")))
 . ([scriptblock]::Create((Get-SourceFunctionText "Add-SelectedModels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Get-ActiveChannel")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Get-ActiveModels")))
+. ([scriptblock]::Create((Get-SourceFunctionText "Remove-Model")))
 
 if ((Get-ChannelIdError "") -ne "渠道 ID 不能为空") { throw "空渠道 ID 没有提示" }
 if ((Get-ChannelIdError "bad id") -ne "渠道 ID 只能用字母、数字、- 和 _") {
@@ -78,6 +81,12 @@ if ([Math]::Abs([double]$appearancePreviewFrame.Height - 350.0) -gt 0.01) {
   throw "窗口宽度变化后顶部主题预览没有保持等比例"
 }
 $sourceText = Get-Content -LiteralPath $sourcePath -Raw
+if ($sourceText -match '\.GetNewClosure\(\)') {
+  throw "面板确认动作不能依赖延迟闭包，WPF 点击回调可能拿不到删除目标"
+}
+if ($sourceText -notmatch '(?s)\$confirmDelete\.Add_Click\(\{\s*\$kind = \$script:deleteKind\s*\$index = \$script:deleteIndex\s*Hide-ConfirmCard') {
+  throw "确认删除按钮没有直接读取待删除目标和索引"
+}
 if ($sourceText -match 'label = "(网页搜索|并行工具)"') {
   throw "模型卡片不应再显示工具能力开关"
 }
@@ -297,6 +306,28 @@ if ($script:lastFeedbackText -ne "已添加 1 个模型，点「保存」后生�
   throw "重新导入模型后的反馈不准确"
 }
 
+$script:channels = Convert-ResponseChannels (@'
+{"channels":[{"id":"relay","models":[{"id":"keep","displayName":"保留","context":64,"inputModalities":["text"]},{"id":"remove","displayName":"删除","context":64,"inputModalities":["text"]}]}]}
+'@ | ConvertFrom-Json).channels
+$script:savedChannels = Copy-Channels $script:channels
+$script:busy = $false
+Remove-Model 1
+if ($script:channels[0].models.Count -ne 1 -or $script:channels[0].models[0].id -ne "keep") {
+  throw "删除模型后没有从当前渠道草稿中移除目标模型"
+}
+$remainingModels = Get-ActiveModels
+if ($remainingModels -isnot [array] -or $remainingModels.Count -ne 1 -or $remainingModels[0].id -ne "keep") {
+  throw "删除到只剩一个模型后没有保留模型数组边界"
+}
+Remove-Model 0
+$remainingModels = Get-ActiveModels
+if ($remainingModels -isnot [array] -or $remainingModels.Count -ne 0) {
+  throw "删除最后一个模型后没有清空当前渠道的模型数组"
+}
+if ($script:lastFeedbackText -ne "有未保存的更改") {
+  throw "删除模型后没有提示保存"
+}
+
 $script:showListCalls = 0
 $script:modelEditorActive = $true
 Receive-Response ([pscustomobject]@{ ok = $false; error = "测试用失败" })
@@ -449,7 +480,10 @@ function New-TestControl {
     Password = ""
     IsChecked = $false
     IsEnabled = $true
+    IsHitTestVisible = $true
     Visibility = "Collapsed"
+    Background = $null
+    Foreground = $null
     testStyle = $null
   }
   $control | Add-Member -MemberType ScriptProperty -Name Style -Value {

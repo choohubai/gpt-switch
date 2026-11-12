@@ -28,7 +28,7 @@ import {
   readAppearanceState, writeAppearanceTheme, writeNativeAppearanceOverride,
 } from "./appearance-config.mjs";
 
-const VERSION = "0.1.63";
+const VERSION = "0.1.65";
 const REPOSITORY = "choohubai/gpt-switch";
 const APP_TITLE = "GPT Switch";
 const IS_WINDOWS = process.platform === "win32";
@@ -916,9 +916,11 @@ class CDPSession {
       try {
         response = await responsePromise;
       } catch (error) {
-        // 主进程没注册这个 handler 时返回的就是 not implemented，属于接口缺失。
+        // 新客户端还可能把旧桥接改道到 HTTP fetch service；这同样是接口能力缺失。
         const message = String(error?.message || "");
-        if (/not implemented/i.test(message)) return { unsupported: true, reason: message };
+        if (/not implemented|HTTP requests must use the HTTP fetch service/i.test(message)) {
+          return { unsupported: true, reason: message };
+        }
         throw error;
       }
       const result = response.bodyJsonString ? JSON.parse(response.bodyJsonString) : null;
@@ -935,7 +937,7 @@ class CDPSession {
       const description = evaluated.exceptionDetails.exception?.description
         || evaluated.exceptionDetails.text
         || "ChatGPT 原生外观设置失败";
-      if (/not implemented/i.test(description)) {
+      if (/not implemented|HTTP requests must use the HTTP fetch service/i.test(description)) {
         return { unsupported: true, reason: description };
       }
       throw new Error(description);
@@ -1362,7 +1364,7 @@ const main = async () => {
    * - 成功设置：返回 mode
    * - 客户端已移除该接口（unsupported）：返回 null，并把原生覆盖标记为不可用；
    *   这是能力边界，重启不会恢复，插件配色仍然照常生效
-   * - 其它异常：继续抛出，那是真的出了问题
+   * - 其它异常：继续抛出，由调用方记录；不能阻断模型注入
    */
   const syncNativeAppearanceMode = async (activeSessions, theme) => {
     let lastError = null;
@@ -1586,13 +1588,10 @@ const main = async () => {
               unsupported = await syncNativeAppearanceMode([session], nativeAppearanceTheme) === null;
               nativeAppearanceSynced = true;
             } catch (error) {
-              if (sessions.get(target.id) === session) sessions.delete(target.id);
-              session.close();
               log("target_native_sync_failed", {
                 targetId: target.id,
                 error: String(error?.message || error),
               });
-              continue;
             }
             // 原生明暗接口已被客户端移除时插件配色仍要生效，不能因此放弃注入。
             if (unsupported) nativeAppearanceSynced = true;
